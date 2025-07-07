@@ -21,6 +21,10 @@ export class User {
   })
   @Prop({ type: [Types.ObjectId], ref: 'Raffle', default: [] })
   participations: Types.ObjectId[];
+
+  @ApiProperty({ description: 'Saldo actual del usuario', example: 100.5 })
+  @Prop({ required: true, default: 0 })
+  balance: number;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
