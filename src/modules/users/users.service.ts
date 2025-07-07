@@ -4,7 +4,6 @@ import {
   ConflictException,
   NotFoundException,
   BadRequestException,
-  InternalServerErrorException,
   Logger,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
@@ -77,14 +76,11 @@ export class UsersService {
     userId: string,
     raffleId: string,
   ): Promise<UserDocument> {
-    logger.log(`[ADD_PARTICIPATION] userId: ${userId}`);
-    logger.log(`[ADD_PARTICIPATION] raffleId: ${raffleId}`);
+    logger.log(`[ADD_PARTICIPATION] userId: ${userId}, raffleId: ${raffleId}`);
 
-    // Validación de IDs
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException(`ID de usuario inválido: ${userId}`);
     }
-
     if (!Types.ObjectId.isValid(raffleId)) {
       throw new BadRequestException(`ID de rifa inválido: ${raffleId}`);
     }
@@ -92,56 +88,35 @@ export class UsersService {
     const userObjectId = new Types.ObjectId(userId);
     const raffleObjectId = new Types.ObjectId(raffleId);
 
-    try {
-      const user = await this.userModel.findById(userObjectId);
-      if (!user) {
-        throw new NotFoundException(`Usuario con ID ${userId} no encontrado`);
-      }
-
-      const raffle = await this.raffleModel.findById(raffleObjectId);
-      if (!raffle) {
-        throw new NotFoundException(`Rifa con ID ${raffleId} no encontrada`);
-      }
-
-      logger.log(
-        `[ADD_PARTICIPATION] Participaciones antes: ${user.participations.map((id) => id.toString())}`,
-      );
-      logger.log(
-        `[ADD_PARTICIPATION] Participantes antes: ${raffle.participants.map((id) => id.toString())}`,
-      );
-
-      // Agregar rifa al usuario si no está ya
-      if (!user.participations.some((id) => id.equals(raffleObjectId))) {
-        user.participations.push(raffleObjectId);
-        await user.save();
-        logger.log(`[ADD_PARTICIPATION] Rifa añadida a usuario`);
-      }
-
-      // Agregar usuario a la rifa si no está ya
-      if (!raffle.participants.some((id) => id.equals(userObjectId))) {
-        raffle.participants.push(userObjectId);
-        await raffle.save();
-        logger.log(`[ADD_PARTICIPATION] Usuario añadido a la rifa`);
-      }
-
-      const updatedUser = await this.userModel.findById(userId);
-      if (!updatedUser) {
-        throw new NotFoundException(`Usuario no encontrado tras guardar`);
-      }
-
-      logger.log(
-        `[ADD_PARTICIPATION] Participaciones después: ${updatedUser.participations.map((id) => id.toString())}`,
-      );
-      return updatedUser;
-    } catch (err) {
-      logger.error(
-        `[ADD_PARTICIPATION] Error al agregar participación: ${err.message}`,
-        err.stack,
-      );
-      throw new InternalServerErrorException(
-        'Ocurrió un error al agregar la participación',
-      );
+    const user = await this.userModel.findById(userObjectId);
+    if (!user) {
+      throw new NotFoundException(`Usuario con ID ${userId} no encontrado`);
     }
+
+    const raffle = await this.raffleModel.findById(raffleObjectId);
+    if (!raffle) {
+      throw new NotFoundException(`Rifa con ID ${raffleId} no encontrada`);
+    }
+
+    // Siempre agregamos participación, permitiendo duplicados
+    user.participations.push(raffleObjectId);
+    await user.save();
+    logger.log(
+      `[ADD_PARTICIPATION] Rifa añadida al usuario (total=${user.participations.length})`,
+    );
+
+    raffle.participants.push(userObjectId);
+    await raffle.save();
+    logger.log(
+      `[ADD_PARTICIPATION] Usuario añadido a la rifa (total=${raffle.participants.length})`,
+    );
+
+    // Refrescar y devolver usuario actualizado
+    const updatedUser = await this.userModel.findById(userId).exec();
+    if (!updatedUser) {
+      throw new NotFoundException(`Usuario no encontrado tras guardar`);
+    }
+    return updatedUser;
   }
 
   async removeParticipation(

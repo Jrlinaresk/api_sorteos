@@ -8,8 +8,9 @@ export class CreateUserDto {
     example: '+1234567890',
   })
   @IsNotEmpty()
-  @Matches(/^\+?[1-9]\d{1,14}$/, {
-    message: 'El número de teléfono no es válido',
+  @Matches(/^\+[1-9]\d{1,14}$/, {
+    message:
+      'El número debe empezar con “+” y tener entre 2 y 16 dígitos en total',
   })
   phone: string;
 

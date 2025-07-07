@@ -16,11 +16,15 @@ import { RaffleMessages } from './enums/raffle-messages.enum';
 import { RaffleOperationSummaries } from './enums/raffle-operation-summaries.enum';
 import { Raffle } from './schema/raffle.schema';
 import { UpdateRaffleDto } from './enums/update-raffle.dto';
+import { WinnersService } from '../winners/winners.service';
 
 @ApiTags('Raffles')
 @Controller('raffles')
 export class RafflesController {
-  constructor(private readonly rafflesService: RafflesService) {}
+  constructor(
+    private readonly rafflesService: RafflesService,
+    private readonly winnersService: WinnersService,
+  ) {}
 
   @Post()
   @ApiOperation({ summary: RaffleOperationSummaries.CREATE })
@@ -91,5 +95,24 @@ export class RafflesController {
     @Body('userId') userId: string,
   ): Promise<Raffle> {
     return this.rafflesService.addParticipant(raffleId, userId);
+  }
+
+  @Post(':id/close')
+  @ApiOperation({ summary: 'Cerrar y sortear rifa manualmente' })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Rifa cerrada y sorteada exitosamente',
+    type: Raffle,
+  })
+  @ApiResponse({
+    status: HttpStatus.BAD_REQUEST,
+    description: 'ID inválido o rifa ya cerrada',
+  })
+  async close(@Param('id') id: string): Promise<Raffle> {
+    // 1) Cerrar y sortear
+    await this.rafflesService.closeRaffle(id);
+
+    // 2) Recuperar con población
+    return this.rafflesService.findOne(id);
   }
 }

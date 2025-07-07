@@ -12,11 +12,13 @@ import { CreateRaffleDto } from './dto/create-raffle.dto';
 import { RaffleMessages } from './enums/raffle-messages.enum';
 import { Raffle, RaffleDocument } from './schema/raffle.schema';
 import { UpdateRaffleDto } from './enums/update-raffle.dto';
+import { WinnersService } from '../winners/winners.service';
 
 @Injectable()
 export class RafflesService {
   constructor(
     @InjectModel(Raffle.name) private raffleModel: Model<RaffleDocument>,
+    private readonly winnersService: WinnersService,
   ) {}
 
   async create(dto: CreateRaffleDto): Promise<RaffleDocument> {
@@ -28,12 +30,11 @@ export class RafflesService {
   }
 
   async findAll(): Promise<RaffleDocument[]> {
+    console.log('findAll');
     return this.raffleModel
       .find()
-      .populate({
-        path: 'participants',
-        select: 'phone nickname',
-      })
+      .populate({ path: 'participants', select: 'phone nickname' })
+      .populate({ path: 'winners', select: 'phone nickname' }) // ← aquí
       .exec();
   }
 
@@ -43,7 +44,8 @@ export class RafflesService {
 
     const raffle = await this.raffleModel
       .findById(id)
-      .populate('participants')
+      .populate({ path: 'participants', select: 'phone nickname' })
+      .populate({ path: 'winners', select: 'phone nickname' })
       .exec();
 
     if (!raffle) throw new NotFoundException(RaffleMessages.RAFFLE_NOT_FOUND);
@@ -99,5 +101,21 @@ export class RafflesService {
       (id) => id.toString() !== userId,
     );
     return raffle.save();
+  }
+  /** Cierra manualmente una rifa y lanza el sorteo de ganadores */
+  async closeRaffle(id: string): Promise<RaffleDocument> {
+    // 1) Valida ID y que no haya sido ya sorteada
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException(RaffleMessages.INVALID_ID);
+    }
+    const raffle = await this.findOne(id);
+    const hasWinners =
+      Array.isArray(raffle.winners) && raffle.winners.length > 0;
+    if (raffle.status === 'closed' && hasWinners) {
+      throw new ConflictException('La rifa ya fue sorteada');
+    }
+
+    // 2) Delegamos TODO a drawWinners, que cierra, guarda, sortea y popula
+    return this.winnersService.drawWinners(id);
   }
 }
