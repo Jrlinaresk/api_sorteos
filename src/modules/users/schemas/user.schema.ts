@@ -23,8 +23,68 @@ export class User {
   participations: Types.ObjectId[];
 
   @ApiProperty({ description: 'Saldo actual del usuario', example: 100.5 })
-  @Prop({ required: true, default: 0 })
+  @Prop({ required: true, default: 5.5 })
   balance: number;
+
+  // NUEVOS CAMPOS OPCIONALES
+
+  @ApiProperty({
+    description: 'Dirección de residencia del usuario',
+    nullable: true,
+  })
+  @Prop({ required: false })
+  address?: string;
+
+  @ApiProperty({ description: 'Primer nombre del usuario', nullable: true })
+  @Prop({ required: false })
+  firstName?: string;
+
+  @ApiProperty({ description: 'Segundo nombre del usuario', nullable: true })
+  @Prop({ required: false })
+  middleName?: string;
+
+  @ApiProperty({ description: 'Primer apellido del usuario', nullable: true })
+  @Prop({ required: false })
+  lastName?: string;
+
+  @ApiProperty({ description: 'Segundo apellido del usuario', nullable: true })
+  @Prop({ required: false })
+  secondLastName?: string;
+
+  @ApiProperty({
+    description: 'Indica si el correo electrónico ha sido verificado',
+    type: Boolean,
+    example: false,
+  })
+  @Prop({ type: Boolean, default: false, required: false })
+  emailVerified: boolean;
+
+  @ApiProperty({
+    description: 'La contraseña del cliente.',
+    example: 'password123',
+  })
+  @Prop({ required: false, minlength: 8 })
+  password: string;
+
+  @ApiProperty({
+    description: 'El correo electrónico del cliente.',
+    example: 'john@example.com',
+    nullable: true,
+  })
+  @Prop({
+    required: false,
+    unique: true,
+    index: 1,
+    minlength: 5,
+    maxlength: 150,
+    trim: true,
+    lowercase: true,
+  })
+  email?: string;
+
+  @ApiProperty({ description: 'Foto de perfil del usuario', nullable: true })
+  @Prop({ required: false, default: 'https://i.imgur.com/vMppUMs.png' })
+  profilePictureUrl?: string;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

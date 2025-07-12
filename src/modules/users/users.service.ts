@@ -5,14 +5,17 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
 import { User, UserDocument } from './schemas/user.schema';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserMessages } from './enums/user-messages.enum';
 import { Raffle, RaffleDocument } from '../riffles/schema/raffle.schema';
+import { TransactionsService } from '../transactions/transactions.service';
+import { Model, Types } from 'mongoose';
+import { CreateTransactionDto } from '../transactions/dto/create-transaction.dto';
 
 const logger = new Logger('UsersService');
 
@@ -20,7 +23,8 @@ const logger = new Logger('UsersService');
 export class UsersService {
   constructor(
     @InjectModel(User.name) private userModel: Model<UserDocument>,
-    @InjectModel(Raffle.name) private raffleModel: Model<RaffleDocument>, // ⬅️ ESTO ES LO QUE FALTABA
+    @InjectModel(Raffle.name) private raffleModel: Model<RaffleDocument>,
+    private readonly txService: TransactionsService,
   ) {}
 
   async create(dto: CreateUserDto): Promise<UserDocument> {
@@ -72,12 +76,17 @@ export class UsersService {
     const user = await this.findOne(userId);
     return user.participations;
   }
+  /**
+   * Descuenta el ticketPrice del usuario y añade su participación,
+   * registrando la transacción con todos los campos requeridos.
+   */
   async addParticipation(
     userId: string,
     raffleId: string,
   ): Promise<UserDocument> {
-    logger.log(`[ADD_PARTICIPATION] userId: ${userId}, raffleId: ${raffleId}`);
+    logger.log(`[ADD_PARTICIPATION] userId=${userId}, raffleId=${raffleId}`);
 
+    // 1) Validar IDs
     if (!Types.ObjectId.isValid(userId)) {
       throw new BadRequestException(`ID de usuario inválido: ${userId}`);
     }
@@ -85,38 +94,73 @@ export class UsersService {
       throw new BadRequestException(`ID de rifa inválido: ${raffleId}`);
     }
 
-    const userObjectId = new Types.ObjectId(userId);
-    const raffleObjectId = new Types.ObjectId(raffleId);
+    // 2) Cargar usuario y rifa
+    const [dbUser, dbRaffle] = await Promise.all([
+      this.userModel.findById(userId).exec(),
+      this.raffleModel.findById(raffleId).exec(),
+    ]);
+    if (!dbUser) throw new NotFoundException('Usuario no encontrado');
+    if (!dbRaffle) throw new NotFoundException('Rifa no encontrada');
 
-    const user = await this.userModel.findById(userObjectId);
-    if (!user) {
-      throw new NotFoundException(`Usuario con ID ${userId} no encontrado`);
+    // 3) Validar saldo
+    const price = dbRaffle.ticketPrice;
+    if (dbUser.balance < price) {
+      throw new ConflictException('Saldo insuficiente');
     }
 
-    const raffle = await this.raffleModel.findById(raffleObjectId);
-    if (!raffle) {
-      throw new NotFoundException(`Rifa con ID ${raffleId} no encontrada`);
+    // 4) Descontar saldo y crear transacción PENDING
+    const txDto: CreateTransactionDto = {
+      userId,
+      amountUsd: -price,
+      description: `Pago ticket de rifa "${dbRaffle.name}"`,
+      paymentMethod: 'Raffle Ticket',
+      account: raffleId,
+      rate: 1, // no aplica para tickets, usamos 1
+      fee: 0, // sin fee adicional
+      confirmationCode: '',
+    };
+
+    let tx;
+    try {
+      tx = await this.txService.create(txDto);
+      logger.log(`[ADD_PARTICIPATION] Transacción creada: ${tx._id}`);
+    } catch (err) {
+      logger.error(
+        `[ADD_PARTICIPATION] Error creando transacción: ${err.message}`,
+      );
+      throw new InternalServerErrorException(
+        'Error al registrar pago de ticket',
+      );
     }
 
-    // Siempre agregamos participación, permitiendo duplicados
-    user.participations.push(raffleObjectId);
-    await user.save();
-    logger.log(
-      `[ADD_PARTICIPATION] Rifa añadida al usuario (total=${user.participations.length})`,
-    );
+    // 5) Registrar la participación en User y Raffle
+    try {
+      dbUser.participations.push(dbRaffle.id);
+      await dbUser.save();
 
-    raffle.participants.push(userObjectId);
-    await raffle.save();
-    logger.log(
-      `[ADD_PARTICIPATION] Usuario añadido a la rifa (total=${raffle.participants.length})`,
-    );
+      dbRaffle.participants.push(dbUser.id);
+      await dbRaffle.save();
 
-    // Refrescar y devolver usuario actualizado
-    const updatedUser = await this.userModel.findById(userId).exec();
-    if (!updatedUser) {
-      throw new NotFoundException(`Usuario no encontrado tras guardar`);
+      logger.log(`[ADD_PARTICIPATION] Participación registrada.`);
+    } catch (err) {
+      // 6) Si falla guardado, revertir saldo y transacción
+      logger.error(
+        `[ADD_PARTICIPATION] Falla guardando participación: ${err.message}`,
+      );
+      await this.txService
+        .create({
+          ...txDto,
+          amountUsd: price, // devolución
+          description: `Reversión pago ticket "${dbRaffle.name}"`,
+        })
+        .catch(() => {
+          logger.error('[ADD_PARTICIPATION] Error al revertir transacción');
+        });
+      throw new InternalServerErrorException('Error al guardar participación');
     }
-    return updatedUser;
+
+    // 7) Devolver usuario actualizado
+    return this.userModel.findById(userId).exec() as Promise<UserDocument>;
   }
 
   async removeParticipation(
