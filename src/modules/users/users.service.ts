@@ -16,6 +16,7 @@ import { Raffle, RaffleDocument } from '../riffles/schema/raffle.schema';
 import { TransactionsService } from '../transactions/transactions.service';
 import { Model, Types } from 'mongoose';
 import { CreateTransactionDto } from '../transactions/dto/create-transaction.dto';
+import { LoginUserDto } from './dto/login-user.dto';
 
 const logger = new Logger('UsersService');
 
@@ -31,6 +32,26 @@ export class UsersService {
     const exists = await this.userModel.findOne({ phone: dto.phone }).exec();
     if (exists) throw new ConflictException(UserMessages.PHONE_CONFLICT);
     return this.userModel.create(dto);
+  }
+
+  // Nuevo método de login
+  async login(dto: LoginUserDto): Promise<UserDocument> {
+    const { phone, nickname } = dto;
+
+    if (!phone || !nickname) {
+      throw new BadRequestException('Phone y nickname son obligatorios');
+    }
+
+    const user = await this.userModel
+      .findOne({ phone: phone.trim(), nickname: nickname.trim() })
+      .exec();
+
+    if (!user) {
+      throw new NotFoundException(
+        'Usuario no encontrado con esas credenciales',
+      );
+    }
+    return user;
   }
 
   async findAll(): Promise<UserDocument[]> {

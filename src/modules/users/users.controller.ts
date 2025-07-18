@@ -18,6 +18,7 @@ import { User } from './schemas/user.schema';
 import { UserOperationSummaries } from './enums/user-operation-summaries.enum';
 import { UserMessages } from './enums/user-messages.enum';
 import { Types } from 'mongoose';
+import { LoginUserDto } from './dto/login-user.dto';
 
 @ApiTags('Users')
 @Controller('users')
@@ -33,6 +34,21 @@ export class UsersController {
   })
   create(@Body() dto: CreateUserDto): Promise<User> {
     return this.usersService.create(dto);
+  }
+
+  @Post('login')
+  @ApiOperation({ summary: 'Login de usuario por phone + nickname' })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Credenciales válidas, devuelve objeto User',
+    type: User,
+  })
+  @ApiResponse({
+    status: HttpStatus.NOT_FOUND,
+    description: 'No existe un usuario con esas credenciales',
+  })
+  login(@Body() dto: LoginUserDto): Promise<User> {
+    return this.usersService.login(dto);
   }
 
   @Get()
