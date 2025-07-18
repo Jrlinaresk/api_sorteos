@@ -3,6 +3,10 @@
 # Script para desplegar la aplicación en producción
 echo "🚀 Iniciando despliegue de producción..."
 
+# Limpiar package-lock.json para evitar conflictos
+echo "🧹 Limpiando package-lock.json..."
+rm -f package-lock.json
+
 # Detener contenedores existentes
 echo "⏹️  Deteniendo contenedores existentes..."
 docker-compose -f docker-compose.prod.yml down

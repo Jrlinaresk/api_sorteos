@@ -9,9 +9,13 @@ RUN apk add --no-cache libc6-compat wget
 
 # Copiar archivos de configuración de dependencias
 COPY package*.json ./
+COPY .npmrc ./
 
-# Instalar dependencias
-RUN npm ci --only=production && npm cache clean --force
+# Limpiar cache de npm y generar package-lock fresh
+RUN npm cache clean --force
+
+# Instalar dependencias con npm install (no ci para evitar conflictos)
+RUN npm install --omit=dev --verbose && npm cache clean --force
 
 # Etapa de desarrollo/construcción
 FROM node:18-alpine AS builder
@@ -20,11 +24,12 @@ WORKDIR /app
 
 # Copiar archivos de configuración
 COPY package*.json ./
+COPY .npmrc ./
 COPY tsconfig*.json ./
 COPY nest-cli.json ./
 
 # Instalar todas las dependencias (incluyendo dev)
-RUN npm ci
+RUN npm install --verbose
 
 # Copiar código fuente
 COPY src ./src

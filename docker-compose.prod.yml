@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   # Aplicación NestJS - Producción
   api-sorteos:
