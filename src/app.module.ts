@@ -10,6 +10,7 @@ import { CategoriesModule } from './modules/category/categories.module';
 import { UsersModule } from './modules/users/users.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
 import { ProductsModule } from './modules/products/products.module';
+import { HealthModule } from './health/health.module';
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -19,6 +20,7 @@ import { ProductsModule } from './modules/products/products.module';
     MongooseModule.forRoot(
       `mongodb://${process.env.DB_USER}:${process.env.DB_PASSWORD}@${process.env.DB_HOST}/?retryWrites=true&w=majority`,
     ),
+    HealthModule,
     CategoriesModule,
     LocationsModule,
     EmailModule,

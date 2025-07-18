@@ -1,21 +1,22 @@
 version: '3.8'
 services:
-  # Aplicación NestJS
+  # Aplicación NestJS - Producción
   api-sorteos:
     build:
       context: .
       dockerfile: Dockerfile
       target: production
-    container_name: api-sorteos-app
+    container_name: api-sorteos-prod
     restart: unless-stopped
     ports:
-      - '8080:8080'
+      - '8017:8080'
     environment:
       - NODE_ENV=production
       - PORT=8080
       - MONGODB_URI=mongodb://develop:Dbabnsmdb2024@mongodb:27017/api_rest_sorteos_nestjs_mongodb?authSource=admin
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
     networks:
       - sorteos-network
     volumes:
@@ -26,11 +27,19 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
 
-  # Base de datos MongoDB
+  # Base de datos MongoDB - Producción
   mongodb:
     image: mongo:7.0
-    container_name: mongodb-api-rest-sorteos
+    container_name: mongodb-prod
     restart: unless-stopped
     environment:
       MONGO_INITDB_ROOT_USERNAME: develop
@@ -39,8 +48,9 @@ services:
     ports:
       - '27017:27017'
     volumes:
-      - mongo-data:/data/db
+      - mongo-data-prod:/data/db
       - ./mongodb-init:/docker-entrypoint-initdb.d
+      - ./mongodb-config:/etc/mongo
     networks:
       - sorteos-network
     healthcheck:
@@ -49,25 +59,17 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
-
-  # Nginx como proxy reverso (opcional)
-  nginx:
-    image: nginx:alpine
-    container_name: nginx-api-sorteos
-    restart: unless-stopped
-    ports:
-      - '80:80'
-      - '443:443'
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-    depends_on:
-      - api-sorteos
-    networks:
-      - sorteos-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
 volumes:
-  mongo-data:
+  mongo-data-prod:
     driver: local
 
 networks:
