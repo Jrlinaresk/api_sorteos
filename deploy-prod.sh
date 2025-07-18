@@ -3,6 +3,20 @@
 # Script para desplegar la aplicación en producción
 echo "🚀 Iniciando despliegue de producción..."
 
+# Verificar si existe el archivo de variables de entorno
+if [ ! -f .env.server ]; then
+    echo "📝 Creando archivo de variables de entorno..."
+    cp .env.server .env.server
+    echo "⚠️  IMPORTANTE: Edita el archivo .env.server con los valores reales antes de continuar"
+    echo "⚠️  Especialmente las variables SMTP_* y JWT_SECRET"
+    read -p "¿Deseas continuar con valores temporales? (y/n): " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "❌ Despliegue cancelado. Configura .env.server primero."
+        exit 1
+    fi
+fi
+
 # Limpiar package-lock.json para evitar conflictos
 echo "🧹 Limpiando package-lock.json..."
 rm -f package-lock.json

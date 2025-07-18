@@ -9,6 +9,8 @@ services:
     restart: unless-stopped
     ports:
       - '8017:8080'
+    env_file:
+      - .env.server
     environment:
       - NODE_ENV=production
       - PORT=8080
