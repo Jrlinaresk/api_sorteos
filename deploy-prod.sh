@@ -9,7 +9,7 @@ rm -f package-lock.json
 
 # Detener contenedores existentes
 echo "⏹️  Deteniendo contenedores existentes..."
-docker-compose -f docker-compose.prod.yml down
+docker compose -f docker-compose.prod.yml down
 
 # Limpiar imágenes no utilizadas
 echo "🧹 Limpiando imágenes no utilizadas..."
