@@ -13,20 +13,20 @@ docker image prune -f
 
 # Construir nueva imagen
 echo "🏗️  Construyendo nueva imagen..."
-docker-compose -f docker-compose.prod.yml build --no-cache
+docker compose -f docker-compose.prod.yml build --no-cache
 
 # Iniciar servicios
 echo "🚀 Iniciando servicios en producción..."
-docker-compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml up -d
 
 # Mostrar estado de los servicios
 echo "📊 Estado de los servicios:"
-docker-compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml ps
 
 # Verificar health checks
 echo "🔍 Verificando health checks..."
 sleep 30
-docker-compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml ps
 
 echo "✅ Despliegue completado!"
 echo "🌐 La aplicación está disponible en:"
