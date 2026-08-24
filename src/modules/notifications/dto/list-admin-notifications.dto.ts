@@ -4,14 +4,15 @@ import {
   IsInt,
   IsMongoId,
   IsOptional,
-  IsString,
   Max,
-  MaxLength,
   Min,
 } from 'class-validator';
-import { OrderStatus } from '../schemas/order.schema';
+import {
+  NotificationDeliveryStatus,
+  NotificationType,
+} from '../schemas/notification.schema';
 
-export class ListOrdersDto {
+export class ListAdminNotificationsDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -23,18 +24,17 @@ export class ListOrdersDto {
   @IsInt()
   @Min(1)
   @Max(100)
-  limit = 20;
-
-  @IsOptional()
-  @IsEnum(OrderStatus)
-  status?: OrderStatus;
+  limit = 25;
 
   @IsOptional()
   @IsMongoId()
-  campaignId?: string;
+  userId?: string;
 
   @IsOptional()
-  @IsString()
-  @MaxLength(120)
-  search?: string;
+  @IsEnum(NotificationType)
+  type?: NotificationType;
+
+  @IsOptional()
+  @IsEnum(NotificationDeliveryStatus)
+  deliveryStatus?: NotificationDeliveryStatus;
 }

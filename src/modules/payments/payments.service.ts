@@ -386,19 +386,35 @@ export class PaymentsService {
     status?: PaymentStatus,
     page = 1,
     limit = 50,
-  ): Promise<{ data: PaymentDocument[]; page: number; limit: number }> {
+  ): Promise<{
+    data: PaymentDocument[];
+    page: number;
+    limit: number;
+    total: number;
+    pages: number;
+  }> {
     if (status && !Object.values(PaymentStatus).includes(status)) {
       throw new BadRequestException(`Estado de pago inválido: ${status}`);
     }
     const safePage = Math.max(1, Math.floor(page));
     const safeLimit = Math.min(200, Math.max(1, Math.floor(limit)));
-    const data = await this.paymentModel
-      .find(status ? { status } : {})
-      .sort({ createdAt: -1 })
-      .skip((safePage - 1) * safeLimit)
-      .limit(safeLimit)
-      .exec();
-    return { data, page: safePage, limit: safeLimit };
+    const filter = status ? { status } : {};
+    const [data, total] = await Promise.all([
+      this.paymentModel
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip((safePage - 1) * safeLimit)
+        .limit(safeLimit)
+        .exec(),
+      this.paymentModel.countDocuments(filter).exec(),
+    ]);
+    return {
+      data,
+      page: safePage,
+      limit: safeLimit,
+      total,
+      pages: Math.max(1, Math.ceil(total / safeLimit)),
+    };
   }
 
   async findPublic(

@@ -43,4 +43,9 @@ export class AdminOrdersController {
       await this.orders.participantsCsv(campaignId, true),
     );
   }
+
+  @Get(':publicId')
+  detail(@Param('publicId') publicId: string) {
+    return this.orders.findAdminDetail(publicId);
+  }
 }

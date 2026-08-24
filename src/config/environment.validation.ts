@@ -125,6 +125,7 @@ export function validateEnvironment(input: Environment): Environment {
     environment.EFI_WEBHOOK_REQUIRE_MTLS,
     'EFI_WEBHOOK_REQUIRE_MTLS',
   );
+  validateBoolean(environment.ADMIN_PANEL_ENABLED, 'ADMIN_PANEL_ENABLED');
   validateInteger(
     environment.WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER,
     'WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER',

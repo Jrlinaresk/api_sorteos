@@ -23,6 +23,8 @@ import { SettingsModule } from './modules/settings/settings.module';
 import { TasksModule } from './modules/task/tasks.module';
 import { validateEnvironment } from './config/environment.validation';
 import { mongoConnectionOptions } from './config/mongo.config';
+import { AdminPanelModule } from './modules/admin-panel/admin-panel.module';
+import { AdminDashboardModule } from './modules/admin-dashboard/admin-dashboard.module';
 
 @Module({
   imports: [
@@ -48,6 +50,8 @@ import { mongoConnectionOptions } from './config/mongo.config';
       ],
     }),
     HealthModule,
+    AdminPanelModule,
+    AdminDashboardModule,
     AuthModule,
     AuditModule,
     SettingsModule,

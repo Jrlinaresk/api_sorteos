@@ -43,6 +43,16 @@ export interface CampaignPriceQuote {
   maxAllocatedTitles: number;
 }
 
+export interface AdminCampaignPage {
+  data: Array<Record<string, unknown>>;
+  meta: {
+    page: number;
+    limit: number;
+    total: number;
+    pages: number;
+  };
+}
+
 const PUBLIC_STATUSES = [
   CampaignStatus.Scheduled,
   CampaignStatus.Active,
@@ -190,6 +200,51 @@ export class RafflesService {
       .find()
       .sort({ featured: -1, sortOrder: 1, createdAt: -1 })
       .exec();
+  }
+
+  async findAdmin(query: ListCampaignsDto): Promise<AdminCampaignPage> {
+    const page = query.page || 1;
+    const limit = query.limit || 25;
+    const filter: FilterQuery<RaffleDocument> = {};
+    if (query.status) filter.status = query.status;
+    if (query.category) filter.category = new Types.ObjectId(query.category);
+    if (query.featured !== undefined) filter.featured = query.featured;
+    if (query.search?.trim()) filter.$text = { $search: query.search.trim() };
+    const [rows, total] = await Promise.all([
+      this.raffleModel
+        .find(filter)
+        .sort({ featured: -1, sortOrder: 1, createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean()
+        .exec(),
+      this.raffleModel.countDocuments(filter),
+    ]);
+    return {
+      data: rows.map((row) => ({
+        ...(row as unknown as Record<string, unknown>),
+        allowedTransitions: this.availableTransitions(row.status),
+      })),
+      meta: {
+        page,
+        limit,
+        total,
+        pages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
+  }
+
+  async findAllowedTransitions(id: string): Promise<{
+    campaignId: string;
+    status: CampaignStatus;
+    allowedTransitions: CampaignStatus[];
+  }> {
+    const campaign = await this.findOne(id);
+    return {
+      campaignId: campaign.id,
+      status: campaign.status,
+      allowedTransitions: this.availableTransitions(campaign.status),
+    };
   }
 
   async findPublic(query: ListCampaignsDto) {
@@ -420,6 +475,11 @@ export class RafflesService {
     status: CampaignStatus,
   ): Promise<RaffleDocument> {
     const campaign = await this.findOne(id);
+    if (status === CampaignStatus.Drawn) {
+      throw new ConflictException(
+        'El estado drawn solo puede alcanzarse publicando un resultado verificado',
+      );
+    }
     this.sanitizeStoredDraftContent(campaign);
     const leavingDraft =
       campaign.status === CampaignStatus.Draft &&
@@ -1488,5 +1548,11 @@ export class RafflesService {
       [CampaignStatus.Cancelled]: [],
     };
     return map[current] || [];
+  }
+
+  private availableTransitions(current: CampaignStatus): CampaignStatus[] {
+    return this.allowedTransitions(current).filter(
+      (status) => status !== CampaignStatus.Drawn,
+    );
   }
 }

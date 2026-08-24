@@ -1,5 +1,6 @@
 # Compiled output
 /dist
+/admin/coverage
 /node_modules
 /build
 

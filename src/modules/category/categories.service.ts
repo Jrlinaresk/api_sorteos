@@ -11,11 +11,13 @@ import { Category } from './schemas/category.schema';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { CategoryMessages } from './enums/category-messages.enum.ts';
+import { Raffle } from '../riffles/schema/raffle.schema';
 
 @Injectable()
 export class CategoriesService {
   constructor(
     @InjectModel(Category.name) private categoryModel: Model<Category>,
+    @InjectModel(Raffle.name) private raffleModel: Model<Raffle>,
   ) {}
 
   async create(dto: CreateCategoryDto): Promise<Category> {
@@ -68,6 +70,12 @@ export class CategoriesService {
   async remove(id: string): Promise<void> {
     if (!Types.ObjectId.isValid(id))
       throw new BadRequestException(CategoryMessages.INVALID_ID);
+    const referenced = await this.raffleModel.exists({ category: id });
+    if (referenced) {
+      throw new ConflictException(
+        'No se puede eliminar una categoría utilizada por campañas',
+      );
+    }
     const res = await this.categoryModel.findByIdAndDelete(id).exec();
     if (!res) throw new NotFoundException(CategoryMessages.CATEGORY_NOT_FOUND);
   }

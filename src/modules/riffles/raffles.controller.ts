@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Req,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -21,8 +22,9 @@ import { PublicUserDto } from '../users/dto/public-user.dto';
 import { ChangeCampaignStatusDto } from './dto/change-campaign-status.dto';
 import { CreateRaffleDto } from './dto/create-raffle.dto';
 import { ExtendCampaignDto } from './dto/extend-campaign.dto';
+import { ListCampaignsDto } from './dto/list-campaigns.dto';
 import { UpdateRaffleDto } from './enums/update-raffle.dto';
-import { RafflesService } from './raffles.service';
+import { AdminCampaignPage, RafflesService } from './raffles.service';
 
 type AuthenticatedRequest = Request & { user: PublicUserDto };
 
@@ -46,6 +48,18 @@ export class RafflesController {
   })
   list() {
     return this.campaigns.findAll();
+  }
+
+  @Get('page')
+  @ApiOperation({ summary: 'Lista administrativa paginada y filtrable' })
+  page(@Query() query: ListCampaignsDto): Promise<AdminCampaignPage> {
+    return this.campaigns.findAdmin(query);
+  }
+
+  @Get(':id/transitions')
+  @ApiOperation({ summary: 'Acciones de estado permitidas para la campaña' })
+  transitions(@Param('id') id: string) {
+    return this.campaigns.findAllowedTransitions(id);
   }
 
   @Get(':id')

@@ -15,7 +15,19 @@ module.exports = {
     node: true,
     jest: true,
   },
-  ignorePatterns: ['.eslintrc.js'],
+  ignorePatterns: ['.eslintrc.js', 'dist', 'admin/coverage'],
+  overrides: [
+    {
+      files: ['admin/**/*.{ts,tsx}'],
+      env: {
+        browser: true,
+        node: false,
+        jest: false,
+      },
+      plugins: ['react-hooks'],
+      extends: ['plugin:react-hooks/recommended'],
+    },
+  ],
   rules: {
     '@typescript-eslint/interface-name-prefix': 'off',
     '@typescript-eslint/explicit-function-return-type': 'off',

@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { configureHttpBodyParsers } from './config/http-body-parser.config';
+import { configureAdminPanel } from './config/admin-panel.config';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -38,6 +39,7 @@ async function bootstrap() {
   configureHttpBodyParsers(app);
   app.enableCors(corsOptions(config));
   app.useGlobalFilters(new AllExceptionsFilter());
+  configureAdminPanel(express, config, logger);
 
   if (config.get<string>('SWAGGER_ENABLED') !== 'false') {
     const swaggerConfig = new DocumentBuilder()

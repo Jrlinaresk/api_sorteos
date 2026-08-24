@@ -328,12 +328,24 @@ export class OrdersService {
     if (query.status) filter.status = query.status;
     if (query.campaignId)
       filter.campaign = new Types.ObjectId(query.campaignId);
+    if (query.search?.trim()) {
+      const search = this.escapeRegex(query.search.trim());
+      const pattern = new RegExp(search, 'i');
+      filter.$or = [
+        { publicId: pattern },
+        { 'buyer.name': pattern },
+        { 'buyer.phone': pattern },
+        { 'buyer.email': pattern },
+        { 'buyer.cpf': pattern },
+      ];
+    }
     const [data, total] = await Promise.all([
       this.orderModel
         .find(filter)
         .select('-titleNumbers -quotas -instantPrizes -statusHistory')
         .populate('campaign', 'name slug status')
         .populate('user', 'phone nickname firstName lastName email cpf')
+        .populate('payment', 'status provider amount currency paidAt expiresAt')
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
@@ -342,6 +354,29 @@ export class OrdersService {
       this.orderModel.countDocuments(filter),
     ]);
     return { data, meta: { page, limit, total } };
+  }
+
+  async findAdminDetail(publicId: string) {
+    if (!/^[0-9a-f-]{16,64}$/i.test(publicId)) {
+      throw new BadRequestException('Identificador de pedido inválido');
+    }
+    const order = await this.orderModel
+      .findOne({ publicId })
+      .populate(
+        'campaign',
+        'name slug status prizeTitle media imageUrl drawDate winningQuotaNumber',
+      )
+      .populate('user', 'phone nickname name email cpf role isActive')
+      .populate('quotas', 'number status isBonus instantPrize paidAt')
+      .populate('instantPrizes')
+      .populate(
+        'payment',
+        'status provider txid endToEndId amount amountCents receivedAmountCents refundedAmountCents currency expiresAt paidAt cancelledAt refundedAt createdAt updatedAt',
+      )
+      .lean()
+      .exec();
+    if (!order) throw new NotFoundException('Pedido no encontrado');
+    return order;
   }
 
   async cancel(
@@ -1078,6 +1113,10 @@ export class OrdersService {
     return createHmac('sha256', secret)
       .update(`${dto.buyer.phone}:${dto.idempotencyKey}`)
       .digest('base64url');
+  }
+
+  private escapeRegex(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   private assertIdempotentReservation(

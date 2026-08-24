@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto';
 import { FilterQuery, Model, Types } from 'mongoose';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { ListNotificationsQueryDto } from './dto/list-notifications-query.dto';
+import { ListAdminNotificationsDto } from './dto/list-admin-notifications.dto';
 import { RegisterPushSubscriptionDto } from './dto/register-push-subscription.dto';
 import { UpdateNotificationPreferencesDto } from './dto/update-notification-preferences.dto';
 import {
@@ -26,6 +27,7 @@ import {
   PublicNotificationView,
   PushSubscriptionView,
   toNotificationPreference,
+  toAdminNotification,
   toPublicNotification,
   toPushSubscription,
 } from './notification.presenter';
@@ -208,6 +210,38 @@ export class NotificationsService {
       total,
       unread,
     };
+  }
+
+  async listAdmin(query: ListAdminNotificationsDto) {
+    const page = query.page || 1;
+    const limit = query.limit || 25;
+    const filter: FilterQuery<NotificationDocument> = {};
+    if (query.userId) filter.user = new Types.ObjectId(query.userId);
+    if (query.type) filter.type = query.type;
+    if (query.deliveryStatus) filter.deliveryStatus = query.deliveryStatus;
+    const [rows, total] = await Promise.all([
+      this.notificationModel
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean()
+        .exec(),
+      this.notificationModel.countDocuments(filter).exec(),
+    ]);
+    return {
+      data: (rows as Notification[]).map(toAdminNotification),
+      meta: {
+        page,
+        limit,
+        total,
+        pages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
+  }
+
+  getAdminById(notificationId: string): Promise<NotificationDocument> {
+    return this.getById(notificationId);
   }
 
   async unreadCount(userId: string): Promise<{ unread: number }> {
