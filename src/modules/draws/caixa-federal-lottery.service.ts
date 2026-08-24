@@ -1,5 +1,6 @@
 import {
   BadGatewayException,
+  ConflictException,
   GatewayTimeoutException,
   Injectable,
 } from '@nestjs/common';
@@ -35,8 +36,18 @@ export interface CaixaFederalNormalizedResult {
   prizes: [string, string, string, string, string];
   drawnPrizes?: [string, string, string, string, string];
   rateio: [CaixaRateioTier, CaixaRateioTier];
+  nextContest?: string;
+  nextDrawDate?: string;
   venue?: string;
   municipality?: string;
+}
+
+export interface CaixaFederalUpcomingEvidence {
+  contest: string;
+  drawDate: Date;
+  latestContest: string;
+  sourceUrl: string;
+  reads: [CaixaFederalSourceRead, CaixaFederalSourceRead];
 }
 
 export interface CaixaFederalSourceRead {
@@ -132,9 +143,80 @@ export class CaixaFederalLotteryService {
     };
   }
 
+  /**
+   * Confirma contra dos lecturas del endpoint oficial que el concurso es el
+   * siguiente aún no publicado y que CAIXA anuncia la misma fecha declarada.
+   * Si CAIXA omite cualquiera de esos datos se falla cerrado.
+   */
+  async assertContestUpcoming(
+    contest: string,
+    expectedDrawDate: Date,
+    now = new Date(),
+  ): Promise<CaixaFederalUpcomingEvidence> {
+    if (!/^[1-9]\d{0,9}$/.test(contest)) {
+      throw new ConflictException(
+        'El concurso Federal configurado no es válido',
+      );
+    }
+    if (
+      !Number.isFinite(expectedDrawDate.getTime()) ||
+      expectedDrawDate <= now
+    ) {
+      throw new ConflictException(
+        'La fecha declarada del sorteo Federal debe ser futura',
+      );
+    }
+
+    const sourceUrl = this.baseUrl.toString();
+    const first = await this.fetchOnce(sourceUrl);
+    if (this.confirmationDelayMs > 0) {
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, this.confirmationDelayMs),
+      );
+    }
+    const confirmation = await this.fetchOnce(sourceUrl);
+    if (
+      this.stableJson(first.normalized) !==
+      this.stableJson(confirmation.normalized)
+    ) {
+      throw new BadGatewayException(
+        'CAIXA devolvió datos distintos en las dos lecturas del próximo concurso',
+      );
+    }
+
+    const latest = first.normalized;
+    if (Number(contest) <= Number(latest.contest)) {
+      throw new ConflictException(
+        'El concurso Federal configurado ya fue publicado por CAIXA',
+      );
+    }
+    if (latest.nextContest !== contest) {
+      throw new BadGatewayException(
+        'CAIXA no confirma el concurso configurado como próximo concurso Federal',
+      );
+    }
+    if (!latest.nextDrawDate) {
+      throw new BadGatewayException(
+        'CAIXA no publicó una fecha que permita confirmar el próximo concurso Federal',
+      );
+    }
+    if (this.utcDateKey(expectedDrawDate) !== latest.nextDrawDate) {
+      throw new ConflictException(
+        'La fecha declarada no coincide con la fecha oficial del próximo concurso Federal',
+      );
+    }
+    return {
+      contest,
+      drawDate: new Date(`${latest.nextDrawDate}T00:00:00.000Z`),
+      latestContest: latest.contest,
+      sourceUrl,
+      reads: [first, confirmation],
+    };
+  }
+
   private async fetchOnce(
     url: string,
-    expectedContest: string,
+    expectedContest?: string,
   ): Promise<CaixaFederalSourceRead> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -244,13 +326,14 @@ export class CaixaFederalLotteryService {
 
   private normalizePayload(
     value: unknown,
-    expectedContest: string,
+    expectedContest?: string,
   ): CaixaFederalNormalizedResult {
     const payload = this.record(value, 'respuesta');
     if (
       !Number.isSafeInteger(payload.numero) ||
       Number(payload.numero) < 1 ||
-      String(payload.numero) !== expectedContest
+      (expectedContest !== undefined &&
+        String(payload.numero) !== expectedContest)
     ) {
       throw new BadGatewayException(
         'El concurso devuelto por CAIXA no coincide con la campaña',
@@ -262,6 +345,7 @@ export class CaixaFederalLotteryService {
       );
     }
 
+    const contest = String(payload.numero);
     const drawDate = this.parseDrawDate(payload.dataApuracao);
     const prizes = this.prizeList(payload.listaDezenas, 'listaDezenas');
     const drawnPrizes =
@@ -300,14 +384,28 @@ export class CaixaFederalLotteryService {
     }
     const tierOne = this.uniqueTier(rateio, 1);
     const tierTwo = this.uniqueTier(rateio, 2);
+    const nextContest = this.optionalContest(payload.numeroConcursoProximo);
+    const nextDrawDate =
+      payload.dataProximoConcurso === undefined ||
+      payload.dataProximoConcurso === null ||
+      payload.dataProximoConcurso === ''
+        ? undefined
+        : this.parseDrawDate(payload.dataProximoConcurso, true);
+    if (nextContest !== undefined && Number(nextContest) <= Number(contest)) {
+      throw new BadGatewayException(
+        'CAIXA devolvió un próximo concurso incoherente',
+      );
+    }
 
     return {
-      contest: expectedContest,
+      contest,
       game: 'LOTERIA_FEDERAL',
       drawDate,
       prizes,
       drawnPrizes,
       rateio: [tierOne, tierTwo],
+      nextContest,
+      nextDrawDate,
       venue: this.optionalText(payload.localSorteio, 'localSorteio'),
       municipality: this.optionalText(
         payload.nomeMunicipioUFSorteio,
@@ -373,7 +471,7 @@ export class CaixaFederalLotteryService {
     return value as [string, string, string, string, string];
   }
 
-  private parseDrawDate(value: unknown): string {
+  private parseDrawDate(value: unknown, allowFuture = false): string {
     if (typeof value !== 'string') {
       throw new BadGatewayException('CAIXA devolvió una fecha inválida');
     }
@@ -400,12 +498,26 @@ export class CaixaFederalLotteryService {
       now.getUTCMonth(),
       now.getUTCDate(),
     );
-    if (timestamp > today) {
+    if (!allowFuture && timestamp > today) {
       throw new BadGatewayException(
         'CAIXA devolvió una fecha de sorteo futura',
       );
     }
     return `${yearText}-${monthText}-${dayText}`;
+  }
+
+  private optionalContest(value: unknown): string | undefined {
+    if (value === undefined || value === null || value === '') return undefined;
+    if (!Number.isSafeInteger(value) || Number(value) < 1) {
+      throw new BadGatewayException(
+        'CAIXA devolvió un próximo concurso inválido',
+      );
+    }
+    return String(value);
+  }
+
+  private utcDateKey(value: Date): string {
+    return value.toISOString().slice(0, 10);
   }
 
   private optionalText(value: unknown, field: string): string | undefined {

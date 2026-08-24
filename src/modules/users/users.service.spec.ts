@@ -9,10 +9,14 @@ describe('UsersService security', () => {
   };
   duplicateQuery.select.mockReturnValue(duplicateQuery);
   duplicateQuery.lean.mockReturnValue(duplicateQuery);
+  const updateQuery = {
+    exec: jest.fn(),
+  };
 
   const userModel = {
     findOne: jest.fn().mockReturnValue(duplicateQuery),
     create: jest.fn(),
+    findByIdAndUpdate: jest.fn().mockReturnValue(updateQuery),
   };
   const service = new UsersService(userModel as never);
 
@@ -21,6 +25,10 @@ describe('UsersService security', () => {
     duplicateQuery.select.mockReturnValue(duplicateQuery);
     duplicateQuery.lean.mockReturnValue(duplicateQuery);
     duplicateQuery.exec.mockResolvedValue(null);
+    updateQuery.exec.mockResolvedValue({
+      _id: '507f1f77bcf86cd799439011',
+      isActive: false,
+    });
   });
 
   it('guarda un hash bcrypt y nunca la contraseña recibida', async () => {
@@ -61,5 +69,18 @@ describe('UsersService security', () => {
     expect(publicUser).not.toHaveProperty('passwordHash');
     expect(publicUser.role).toBe(UserRole.CUSTOMER);
     expect(publicUser.isActive).toBe(true);
+  });
+
+  it('incrementa authVersion al desactivar o reactivar una cuenta', async () => {
+    await service.update('507f1f77bcf86cd799439011', { isActive: false });
+
+    expect(userModel.findByIdAndUpdate).toHaveBeenCalledWith(
+      '507f1f77bcf86cd799439011',
+      {
+        $set: { isActive: false },
+        $inc: { authVersion: 1 },
+      },
+      { new: true, runValidators: true },
+    );
   });
 });

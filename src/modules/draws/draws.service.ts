@@ -5,12 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
 import { Connection, Model, Types } from 'mongoose';
-import {
-  AdditionalOutcomeDto,
-  VerifyFederalDrawDto,
-} from './dto/verify-federal-draw.dto';
+import { VerifyFederalDrawDto } from './dto/verify-federal-draw.dto';
 import { VerifyManualDrawDto } from './dto/verify-manual-draw.dto';
 import {
   CommitCryptographicDrawDto,
@@ -36,6 +34,7 @@ import { Order, OrderDocument } from '../orders/schemas/order.schema';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/schemas/notification.schema';
 import { CaixaFederalLotteryService } from './caixa-federal-lottery.service';
+import { EntropyBeaconService } from './entropy-beacon.service';
 
 @Injectable()
 export class DrawsService {
@@ -51,6 +50,8 @@ export class DrawsService {
     @InjectConnection() private readonly connection: Connection,
     private readonly notifications: NotificationsService,
     private readonly caixaFederal: CaixaFederalLotteryService,
+    private readonly entropyBeacon: EntropyBeaconService,
+    private readonly config: ConfigService,
   ) {}
 
   async commitCryptographic(
@@ -99,9 +100,10 @@ export class DrawsService {
 
   async verifyFederal(
     campaignId: string,
-    dto: VerifyFederalDrawDto,
+    _dto: VerifyFederalDrawDto,
     actorId: string,
   ) {
+    void _dto;
     const campaign = await this.loadDrawableCampaign(
       campaignId,
       DrawMethod.FederalLottery,
@@ -113,6 +115,7 @@ export class DrawsService {
       );
     }
     const official = await this.caixaFederal.reconcile(configuredContest);
+    this.assertFederalTiming(campaign, official.sourceDrawAt);
     const firstDigits = campaign.federalLottery?.firstPrizeDigits ?? 3;
     const secondDigits = campaign.federalLottery?.secondPrizeDigits ?? 3;
     const combination = campaign.federalLottery?.combination ?? 'concatenate';
@@ -143,7 +146,6 @@ export class DrawsService {
       normalized: official.normalized,
       rule,
       primaryNumber,
-      additionalOutcomes: dto.additionalOutcomes || [],
     };
     return this.storeVerifiedResult(
       campaign,
@@ -163,7 +165,6 @@ export class DrawsService {
         evidenceHash: this.evidenceHash(evidence),
       },
       primaryNumber,
-      dto.additionalOutcomes || [],
       actorId,
     );
   }
@@ -173,6 +174,7 @@ export class DrawsService {
     dto: VerifyManualDrawDto,
     actorId: string,
   ) {
+    this.assertMethodEnabled(DrawMethod.ManualExternal);
     const campaign = await this.loadDrawableCampaign(
       campaignId,
       DrawMethod.ManualExternal,
@@ -185,7 +187,6 @@ export class DrawsService {
       primaryNumber,
       evidenceUrl: dto.evidenceUrl,
       explanation: dto.explanation,
-      additionalOutcomes: dto.additionalOutcomes || [],
     };
     return this.storeVerifiedResult(
       campaign,
@@ -196,7 +197,6 @@ export class DrawsService {
         evidenceHash: this.evidenceHash(evidence),
       },
       primaryNumber,
-      dto.additionalOutcomes || [],
       actorId,
     );
   }
@@ -206,6 +206,7 @@ export class DrawsService {
     dto: VerifyCryptographicDrawDto,
     actorId: string,
   ) {
+    this.assertMethodEnabled(DrawMethod.Cryptographic);
     const campaign = await this.loadDrawableCampaign(
       campaignId,
       DrawMethod.Cryptographic,
@@ -223,8 +224,18 @@ export class DrawsService {
         'La revelación no corresponde al compromiso publicado',
       );
     }
+    const salesClosedAt = this.effectiveSalesClosedAt(campaign);
+    if (!campaign.drawDate) {
+      throw new ConflictException(
+        'La campaña no fijó el instante de la baliza antes de abrir ventas',
+      );
+    }
+    const beacon = await this.entropyBeacon.readAt(
+      new Date(campaign.drawDate),
+      salesClosedAt,
+    );
     const entropyDigest = createHash('sha256')
-      .update(`${dto.reveal}:${dto.externalEntropy}:${campaign._id.toString()}`)
+      .update(`${dto.reveal}:${beacon.outputValue}:${campaign._id.toString()}`)
       .digest('hex');
     const primaryNumber = (
       BigInt(`0x${entropyDigest}`) % BigInt(campaign.totalTitles)
@@ -232,38 +243,40 @@ export class DrawsService {
       .toString()
       .padStart(campaign.quotaDigits, '0');
     const rule =
-      dto.explanation ||
-      'sha256(reveal:entropía-externa:campaignId) módulo totalTitles';
+      'sha256(reveal:outputValue de baliza NIST:campaignId) módulo totalTitles';
     const evidence = {
       method: DrawMethod.Cryptographic,
       campaignId,
       commitment: campaign.drawCommitment,
       revealedSecret: dto.reveal,
-      externalEntropy: dto.externalEntropy,
+      externalEntropy: beacon.outputValue,
       entropyDigest,
-      sourceUrl: dto.sourceUrl,
-      sourcePublishedAt: dto.sourcePublishedAt,
+      sourceUrl: beacon.sourceUrl,
+      sourcePublishedAt: beacon.publishedAt.toISOString(),
+      beaconPulseUri: beacon.pulseUri,
+      beaconSignatureValue: beacon.signatureValue,
+      beaconCertificateId: beacon.certificateId,
+      beaconBodySha256: beacon.bodySha256,
+      beaconFetchedAt: beacon.fetchedAt.toISOString(),
       primaryNumber,
       rule,
-      additionalOutcomes: dto.additionalOutcomes || [],
     };
     return this.storeVerifiedResult(
       campaign,
       {
-        sourceUrl: dto.sourceUrl,
-        sourcePublishedAt: dto.sourcePublishedAt
-          ? new Date(dto.sourcePublishedAt)
-          : undefined,
+        sourceUrl: beacon.sourceUrl,
+        sourcePublishedAt: beacon.publishedAt,
+        sourceFetchedAt: beacon.fetchedAt,
+        sourceBodySha256: beacon.bodySha256,
         commitment: campaign.drawCommitment,
         revealedSecret: dto.reveal,
-        externalEntropy: dto.externalEntropy,
+        externalEntropy: beacon.outputValue,
         entropyDigest,
         calculationRule: rule,
         rawEvidence: evidence,
         evidenceHash: this.evidenceHash(evidence),
       },
       primaryNumber,
-      dto.additionalOutcomes || [],
       actorId,
     );
   }
@@ -295,6 +308,18 @@ export class DrawsService {
           throw new ConflictException(
             'El número ganador no tiene una cuota pagada asociada',
           );
+        }
+        if (result.status === DrawResultStatus.Verified) {
+          if (!result.verifiedBy) {
+            throw new ConflictException(
+              'El resultado no conserva la identidad de quien lo verificó',
+            );
+          }
+          if (result.verifiedBy.toString() === actorId) {
+            throw new ConflictException(
+              'Quien verificó el resultado no puede publicarlo',
+            );
+          }
         }
         const campaign = await this.campaignModel
           .findById(campaignId)
@@ -429,6 +454,11 @@ export class DrawsService {
         'El resultado solo puede verificarse con el 100% vendido',
       );
     }
+    if ((campaign.reservedCount || 0) !== 0) {
+      throw new ConflictException(
+        'El resultado no puede verificarse con cuotas aún reservadas',
+      );
+    }
     return campaign;
   }
 
@@ -436,7 +466,6 @@ export class DrawsService {
     campaign: RaffleDocument,
     evidenceFields: Partial<DrawResult>,
     primaryNumber: string,
-    additional: AdditionalOutcomeDto[],
     actorId: string,
   ) {
     const session = await this.connection.startSession();
@@ -450,20 +479,17 @@ export class DrawsService {
         if (existing?.status === DrawResultStatus.Published) {
           throw new ConflictException('Un resultado publicado es inmutable');
         }
+        if (existing?.status === DrawResultStatus.Verified) {
+          throw new ConflictException(
+            'El resultado ya fue verificado y no puede sustituirse',
+          );
+        }
         const inputs = [
           {
             position: 1,
             prizeTitle: campaign.prizeTitle,
             winningNumber: primaryNumber,
           },
-          ...additional.map((item, index) => ({
-            position: index + 2,
-            prizeTitle: item.prizeTitle,
-            winningNumber: item.winningNumber.padStart(
-              campaign.quotaDigits,
-              '0',
-            ),
-          })),
         ];
         const outcomes: Array<{
           position: number;
@@ -510,20 +536,11 @@ export class DrawsService {
           verifiedAt: new Date(),
         };
         if (existing) {
-          const updated = await this.resultModel.findByIdAndUpdate(
-            existing._id,
-            payload,
-            { new: true, runValidators: true, session },
+          throw new ConflictException(
+            'Ya existe un resultado para esta campaña',
           );
-          if (!updated) {
-            throw new ConflictException(
-              'El resultado cambió durante la verificación',
-            );
-          }
-          stored = updated;
-        } else {
-          [stored] = await this.resultModel.create([payload], { session });
         }
+        [stored] = await this.resultModel.create([payload], { session });
         campaign.status = CampaignStatus.AwaitingDraw;
         campaign.drawDate = campaign.drawDate || new Date();
         await campaign.save({ session });
@@ -534,6 +551,61 @@ export class DrawsService {
     if (!stored)
       throw new ConflictException('No se pudo verificar el resultado');
     return stored;
+  }
+
+  private assertFederalTiming(campaign: Raffle, officialDrawAt: Date): void {
+    if (!campaign.drawDate) {
+      throw new ConflictException(
+        'La campaña Federal no conserva la fecha de sorteo declarada',
+      );
+    }
+    const declared = new Date(campaign.drawDate);
+    if (
+      !Number.isFinite(declared.getTime()) ||
+      this.utcDateKey(declared) !== this.utcDateKey(officialDrawAt)
+    ) {
+      throw new ConflictException(
+        'La fecha oficial de CAIXA no coincide con la fecha declarada de la campaña',
+      );
+    }
+    const salesClosedAt = this.effectiveSalesClosedAt(campaign);
+    if (this.utcDateKey(officialDrawAt) <= this.utcDateKey(salesClosedAt)) {
+      throw new ConflictException(
+        'El resultado oficial debe ser de una fecha posterior al cierre efectivo de ventas',
+      );
+    }
+  }
+
+  private effectiveSalesClosedAt(campaign: Raffle): Date {
+    const value = campaign.salesClosedAt
+      ? new Date(campaign.salesClosedAt)
+      : undefined;
+    if (!value || !Number.isFinite(value.getTime())) {
+      throw new ConflictException(
+        'La campaña no conserva una fecha fiable de cierre efectivo de ventas',
+      );
+    }
+    return value;
+  }
+
+  private utcDateKey(value: Date): string {
+    return value.toISOString().slice(0, 10);
+  }
+
+  private assertMethodEnabled(method: DrawMethod): void {
+    const production =
+      (this.config.get<string>('NODE_ENV') || process.env.NODE_ENV) ===
+      'production';
+    if (!production) return;
+    const setting =
+      method === DrawMethod.ManualExternal
+        ? 'DRAW_MANUAL_EXTERNAL_ENABLED'
+        : 'DRAW_CRYPTOGRAPHIC_ENABLED';
+    if (this.config.get<string>(setting) !== 'true') {
+      throw new ConflictException(
+        `El método ${method} está deshabilitado en producción`,
+      );
+    }
   }
 
   private assertNumberInCampaign(campaign: Raffle, number: string) {

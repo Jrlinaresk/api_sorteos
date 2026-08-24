@@ -21,6 +21,7 @@ describe('RefreshTokensService rotation and reuse detection', () => {
       create: jest.fn().mockResolvedValue(undefined),
       findOne: jest.fn(),
       findOneAndUpdate: jest.fn(),
+      exists: jest.fn().mockReturnValue(queryResult(null)),
       updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
       updateMany: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
     };
@@ -42,16 +43,18 @@ describe('RefreshTokensService rotation and reuse detection', () => {
   it('emite alta entropía, almacena solo SHA-256 y fija caducidad', async () => {
     const userId = new Types.ObjectId().toString();
     const familyId = randomUUID();
-    const issued = await service.issue(userId, familyId);
+    const issued = await service.issue(userId, familyId, 7);
 
     expect(issued.token).toMatch(/^[A-Za-z0-9_-]{64}$/);
     expect(issued.expiresAt).toEqual(new Date(now.getTime() + 30 * 86_400_000));
     expect(sessions.create).toHaveBeenCalledWith({
       user: new Types.ObjectId(userId),
       familyId,
+      authVersion: 7,
       tokenHash: createHash('sha256').update(issued.token).digest('hex'),
       expiresAt: issued.expiresAt,
     });
+    expect(issued.authVersion).toBe(7);
     expect(sessions.create.mock.calls[0][0].tokenHash).not.toBe(issued.token);
   });
 
@@ -62,6 +65,7 @@ describe('RefreshTokensService rotation and reuse detection', () => {
       _id: new Types.ObjectId(),
       user,
       familyId: 'family-rotation',
+      authVersion: 4,
       expiresAt: new Date(now.getTime() + 86_400_000),
     };
     sessions.findOne.mockReturnValue(queryResult(session));
@@ -87,10 +91,12 @@ describe('RefreshTokensService rotation and reuse detection', () => {
     expect(sessions.create).toHaveBeenCalledWith({
       user,
       familyId: 'family-rotation',
+      authVersion: 4,
       tokenHash: newHash,
       expiresAt: new Date(now.getTime() + 30 * 86_400_000),
     });
     expect(rotated.userId).toBe(user.toString());
+    expect(rotated.authVersion).toBe(4);
   });
 
   it('detecta reutilización de un token revocado y revoca toda la familia', async () => {
@@ -109,11 +115,13 @@ describe('RefreshTokensService rotation and reuse detection', () => {
       UnauthorizedException,
     );
     expect(sessions.updateMany).toHaveBeenCalledWith(
-      { familyId: 'compromised-family', revokedAt: { $exists: false } },
+      { familyId: 'compromised-family' },
       {
         $set: {
           revokedAt: now,
           revokeReason: 'Reutilización de refresh token detectada',
+          familyCompromisedAt: now,
+          familyCompromiseReason: 'Reutilización de refresh token detectada',
         },
       },
     );
@@ -135,15 +143,75 @@ describe('RefreshTokensService rotation and reuse detection', () => {
       UnauthorizedException,
     );
     expect(sessions.updateMany).toHaveBeenCalledWith(
-      { familyId: 'parallel-family', revokedAt: { $exists: false } },
+      { familyId: 'parallel-family' },
       {
         $set: {
           revokedAt: now,
           revokeReason: 'Refresh token usado en paralelo',
+          familyCompromisedAt: now,
+          familyCompromiseReason: 'Refresh token usado en paralelo',
         },
       },
     );
     expect(sessions.create).not.toHaveBeenCalled();
+  });
+
+  it('rechaza un sucesor si la familia fue comprometida durante la rotación', async () => {
+    const current = {
+      _id: new Types.ObjectId(),
+      user: new Types.ObjectId(),
+      familyId: 'raced-family',
+      expiresAt: new Date(now.getTime() + 86_400_000),
+    };
+    sessions.findOne.mockReturnValue(queryResult(current));
+    sessions.findOneAndUpdate.mockResolvedValue({ ...current, revokedAt: now });
+    sessions.exists.mockReturnValue(queryResult({ _id: current._id }));
+
+    await expect(service.rotate('raced-token')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+
+    expect(sessions.create).toHaveBeenCalledTimes(1);
+    expect(sessions.updateMany).toHaveBeenCalledWith(
+      { familyId: 'raced-family' },
+      {
+        $set: {
+          revokedAt: now,
+          revokeReason: 'Refresh token usado en paralelo',
+          familyCompromisedAt: now,
+          familyCompromiseReason: 'Refresh token usado en paralelo',
+        },
+      },
+    );
+  });
+
+  it('rechaza directamente cualquier token de una familia ya comprometida', async () => {
+    sessions.findOne.mockReturnValue(
+      queryResult({
+        _id: new Types.ObjectId(),
+        user: new Types.ObjectId(),
+        familyId: 'marked-family',
+        expiresAt: new Date(now.getTime() + 86_400_000),
+        familyCompromisedAt: new Date(now.getTime() - 1_000),
+        familyCompromiseReason: 'Incidente previo',
+      }),
+    );
+
+    await expect(service.rotate('marked-token')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(sessions.findOneAndUpdate).not.toHaveBeenCalled();
+    expect(sessions.updateMany).toHaveBeenCalledWith(
+      { familyId: 'marked-family' },
+      {
+        $set: {
+          revokedAt: now,
+          revokeReason: 'Incidente previo',
+          familyCompromisedAt: now,
+          familyCompromiseReason: 'Incidente previo',
+        },
+      },
+    );
   });
 
   it('revoca y persiste un token expirado sin crear sucesor', async () => {

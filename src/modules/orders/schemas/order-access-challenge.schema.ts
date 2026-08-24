@@ -23,6 +23,9 @@ export class OrderAccessChallenge {
   })
   orderIds: Types.ObjectId[];
 
+  @Prop({ required: true, default: false, select: false })
+  truncated: boolean;
+
   @Prop({ required: true, min: 0, max: 5, default: 0 })
   attempts: number;
 

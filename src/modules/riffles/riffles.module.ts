@@ -7,12 +7,14 @@ import { Raffle, RaffleSchema } from './schema/raffle.schema';
 import { CampaignsController } from './campaigns.controller';
 import { AuthModule } from '../auth/auth.module';
 import { MediaModule } from '../media/media.module';
+import { CaixaFederalLotteryModule } from '../draws/caixa-federal-lottery.module';
 
 @Module({
   imports: [
     MongooseModule.forFeature([{ name: Raffle.name, schema: RaffleSchema }]),
     AuthModule,
     MediaModule,
+    CaixaFederalLotteryModule,
   ],
   controllers: [RafflesController, CampaignsController],
   providers: [RafflesService],

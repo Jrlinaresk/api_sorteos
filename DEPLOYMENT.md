@@ -94,8 +94,10 @@ Los datos viven en cuatro volúmenes:
 ## Proxy TLS
 
 En CloudPanel o en el balanceador configure el destino
-`http://127.0.0.1:8017`. Debe conservar `Host`, `X-Real-IP`,
-`X-Forwarded-For` y `X-Forwarded-Proto`. Abra públicamente solo 80/443; el
+`http://127.0.0.1:8017`. Debe conservar `Host` y sobrescribir
+`X-Real-IP`/`X-Forwarded-For` con la IP de la conexión, además de fijar
+`X-Forwarded-Proto`. Nunca reenvíe esos encabezados tal como los envió el
+cliente. Abra públicamente solo 80/443; el
 puerto 8017 permanece ligado a loopback.
 
 Si se desea usar además el rate limiting del Nginx incluido:

@@ -3,8 +3,8 @@ name: api-sorteos
 services:
   mongo-keyfile-init:
     image: mongo:7.0
-    restart: "no"
-    user: "0:0"
+    restart: 'no'
+    user: '0:0'
     read_only: true
     cap_drop:
       - ALL
@@ -15,8 +15,8 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      MONGO_REPLICA_KEY: "${MONGO_REPLICA_KEY:?MONGO_REPLICA_KEY es obligatorio}"
-    entrypoint: ["/bin/bash", "-ec"]
+      MONGO_REPLICA_KEY: '${MONGO_REPLICA_KEY:?MONGO_REPLICA_KEY es obligatorio}'
+    entrypoint: ['/bin/bash', '-ec']
     command:
       - |
         umask 077
@@ -31,13 +31,13 @@ services:
     image: mongo:7.0
     restart: unless-stopped
     environment:
-      MONGO_INITDB_ROOT_USERNAME: "${MONGO_ROOT_USERNAME:?MONGO_ROOT_USERNAME es obligatorio}"
-      MONGO_INITDB_ROOT_PASSWORD: "${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD es obligatorio}"
-      MONGO_INITDB_DATABASE: "${MONGO_DATABASE:-api_sorteos}"
+      MONGO_INITDB_ROOT_USERNAME: '${MONGO_ROOT_USERNAME:?MONGO_ROOT_USERNAME es obligatorio}'
+      MONGO_INITDB_ROOT_PASSWORD: '${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD es obligatorio}'
+      MONGO_INITDB_DATABASE: '${MONGO_DATABASE:-api_sorteos}'
     command:
       - mongod
       - --replSet
-      - "${MONGO_REPLICA_SET:-rs0}"
+      - '${MONGO_REPLICA_SET:-rs0}'
       - --bind_ip_all
       - --keyFile
       - /run/mongo-keyfile/keyfile
@@ -46,7 +46,7 @@ services:
       mongo-keyfile-init:
         condition: service_completed_successfully
     ports:
-      - "127.0.0.1:${MONGO_PORT:-27017}:27017"
+      - '127.0.0.1:${MONGO_PORT:-27017}:27017'
     volumes:
       - mongo-data:/data/db
       - mongo-keyfile:/run/mongo-keyfile:ro
@@ -68,15 +68,15 @@ services:
 
   mongo-init-replica:
     image: mongo:7.0
-    restart: "no"
+    restart: 'no'
     environment:
-      MONGO_ROOT_USERNAME: "${MONGO_ROOT_USERNAME:?MONGO_ROOT_USERNAME es obligatorio}"
-      MONGO_ROOT_PASSWORD: "${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD es obligatorio}"
-      MONGO_APP_USERNAME: "${MONGO_APP_USERNAME:?MONGO_APP_USERNAME es obligatorio}"
-      MONGO_APP_PASSWORD: "${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD es obligatorio}"
-      MONGO_DATABASE: "${MONGO_DATABASE:-api_sorteos}"
-      MONGO_REPLICA_SET: "${MONGO_REPLICA_SET:-rs0}"
-    entrypoint: ["/bin/bash", "-ec"]
+      MONGO_ROOT_USERNAME: '${MONGO_ROOT_USERNAME:?MONGO_ROOT_USERNAME es obligatorio}'
+      MONGO_ROOT_PASSWORD: '${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD es obligatorio}'
+      MONGO_APP_USERNAME: '${MONGO_APP_USERNAME:?MONGO_APP_USERNAME es obligatorio}'
+      MONGO_APP_PASSWORD: '${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD es obligatorio}'
+      MONGO_DATABASE: '${MONGO_DATABASE:-api_sorteos}'
+      MONGO_REPLICA_SET: '${MONGO_REPLICA_SET:-rs0}'
+    entrypoint: ['/bin/bash', '-ec']
     command:
       - |
         mongo=(mongosh --quiet --host mongodb:27017
@@ -135,8 +135,8 @@ services:
 
   efi-cert-init:
     image: alpine:3.20
-    restart: "no"
-    user: "0:0"
+    restart: 'no'
+    user: '0:0'
     read_only: true
     cap_drop:
       - ALL
@@ -147,10 +147,10 @@ services:
     security_opt:
       - no-new-privileges:true
     environment:
-      EFI_PIX_CERTIFICATE_PATH: "${EFI_PIX_CERTIFICATE_PATH:-}"
-      EFI_PIX_CERT_PATH: "${EFI_PIX_CERT_PATH:-}"
-      EFI_PIX_KEY_PATH: "${EFI_PIX_KEY_PATH:-}"
-    entrypoint: ["/bin/sh", "-ec"]
+      EFI_PIX_CERTIFICATE_PATH: '${EFI_PIX_CERTIFICATE_PATH:-}'
+      EFI_PIX_CERT_PATH: '${EFI_PIX_CERT_PATH:-}'
+      EFI_PIX_KEY_PATH: '${EFI_PIX_KEY_PATH:-}'
+    entrypoint: ['/bin/sh', '-ec']
     command:
       - |
         new_manifest=/target/.managed.new
@@ -195,7 +195,7 @@ services:
         fi
         mv -f "$${new_manifest}" "$${old_manifest}"
     volumes:
-      - "${EFI_CERTS_DIR:-./runtime/efi}:/source:ro"
+      - '${EFI_CERTS_DIR:-./runtime/efi}:/source:ro'
       - efi-secrets:/target
     network_mode: none
 
@@ -211,82 +211,93 @@ services:
     security_opt:
       - no-new-privileges:true
     ports:
-      - "127.0.0.1:${API_PORT:-8080}:8080"
+      - '127.0.0.1:${API_PORT:-8080}:8080'
     environment:
-      NODE_ENV: "${NODE_ENV:-development}"
-      HOST: "0.0.0.0"
-      PORT: "8080"
-      TRUST_PROXY: "${TRUST_PROXY:-false}"
-      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000}"
-      SWAGGER_ENABLED: "${SWAGGER_ENABLED:-true}"
-      DB_HOST: "mongodb"
-      DB_PORT: "27017"
-      DB_NAME: "${MONGO_DATABASE:-api_sorteos}"
-      DB_USER: "${MONGO_APP_USERNAME:?MONGO_APP_USERNAME es obligatorio}"
-      DB_PASSWORD: "${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD es obligatorio}"
-      DB_AUTH_SOURCE: "${MONGO_DATABASE:-api_sorteos}"
-      MONGODB_URI: "${MONGODB_URI:?MONGODB_URI es obligatorio y debe incluir replicaSet}"
-      MONGODB_REPLICA_SET: "${MONGO_REPLICA_SET:-rs0}"
-      MONGODB_MAX_POOL_SIZE: "${MONGODB_MAX_POOL_SIZE:-20}"
-      MONGODB_AUTO_INDEX: "${MONGODB_AUTO_INDEX:-true}"
-      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET es obligatorio}"
-      JWT_ACCESS_EXPIRES_IN: "${JWT_ACCESS_EXPIRES_IN:-15m}"
-      JWT_ISSUER: "${JWT_ISSUER:-api-sorteos}"
-      JWT_AUDIENCE: "${JWT_AUDIENCE:-api-sorteos-clients}"
-      JWT_REFRESH_DAYS: "${JWT_REFRESH_DAYS:-30}"
-      SMTP_HOST: "${SMTP_HOST:-}"
-      SMTP_PORT: "${SMTP_PORT:-587}"
-      SMTP_USER: "${SMTP_USER:-}"
-      SMTP_PASS: "${SMTP_PASS:-}"
-      SMTP_FROM: "${SMTP_FROM:-}"
-      SMTP_SECURE: "${SMTP_SECURE:-false}"
-      SMTP_REQUIRE_TLS: "${SMTP_REQUIRE_TLS:-true}"
-      SMTP_TLS_REJECT_UNAUTHORIZED: "${SMTP_TLS_REJECT_UNAUTHORIZED:-true}"
-      SMTP_CONNECTION_TIMEOUT_MS: "${SMTP_CONNECTION_TIMEOUT_MS:-10000}"
-      SMTP_GREETING_TIMEOUT_MS: "${SMTP_GREETING_TIMEOUT_MS:-10000}"
-      SMTP_SOCKET_TIMEOUT_MS: "${SMTP_SOCKET_TIMEOUT_MS:-20000}"
-      EMAIL_CODE_SECRET: "${EMAIL_CODE_SECRET:?EMAIL_CODE_SECRET es obligatorio}"
-      ORDER_RESERVATION_MINUTES: "${ORDER_RESERVATION_MINUTES:-15}"
-      CHECKOUT_ACCESS_SECRET_KEY: "${CHECKOUT_ACCESS_SECRET_KEY:?CHECKOUT_ACCESS_SECRET_KEY es obligatorio}"
-      PAYMENTS_PROVIDER: "${PAYMENTS_PROVIDER:-mock}"
-      PAYMENTS_ALLOW_MOCK: "${PAYMENTS_ALLOW_MOCK:-true}"
-      PAYMENTS_PUBLIC_SECRET_KEY: "${PAYMENTS_PUBLIC_SECRET_KEY:?PAYMENTS_PUBLIC_SECRET_KEY es obligatorio}"
-      EFI_PIX_ENV: "${EFI_PIX_ENV:-sandbox}"
-      EFI_PIX_CLIENT_ID: "${EFI_PIX_CLIENT_ID:-}"
-      EFI_PIX_CLIENT_SECRET: "${EFI_PIX_CLIENT_SECRET:-}"
-      EFI_PIX_KEY: "${EFI_PIX_KEY:-}"
-      EFI_PIX_TIMEOUT_MS: "${EFI_PIX_TIMEOUT_MS:-15000}"
-      EFI_PIX_BASE_URL: "${EFI_PIX_BASE_URL:-}"
-      EFI_PIX_CERTIFICATE_PATH: "${EFI_PIX_CERTIFICATE_PATH:-}"
-      EFI_PIX_CERT_PATH: "${EFI_PIX_CERT_PATH:-}"
-      EFI_PIX_KEY_PATH: "${EFI_PIX_KEY_PATH:-}"
-      EFI_PIX_CERTIFICATE_PASSPHRASE: "${EFI_PIX_CERTIFICATE_PASSPHRASE:-}"
-      EFI_WEBHOOK_HMAC: "${EFI_WEBHOOK_HMAC:-}"
-      EFI_WEBHOOK_REQUIRE_MTLS: "${EFI_WEBHOOK_REQUIRE_MTLS:-false}"
-      EFI_WEBHOOK_MTLS_HEADER: "${EFI_WEBHOOK_MTLS_HEADER:-x-ssl-client-verify}"
-      EFI_WEBHOOK_MTLS_SUCCESS_VALUE: "${EFI_WEBHOOK_MTLS_SUCCESS_VALUE:-SUCCESS}"
-      CAIXA_FEDERAL_API_BASE_URL: "${CAIXA_FEDERAL_API_BASE_URL:-https://servicebus3.caixa.gov.br/portaldeloterias/api/federal}"
-      CAIXA_FEDERAL_TIMEOUT_MS: "${CAIXA_FEDERAL_TIMEOUT_MS:-10000}"
-      CAIXA_FEDERAL_MAX_RESPONSE_BYTES: "${CAIXA_FEDERAL_MAX_RESPONSE_BYTES:-131072}"
-      CAIXA_FEDERAL_CONFIRMATION_DELAY_MS: "${CAIXA_FEDERAL_CONFIRMATION_DELAY_MS:-250}"
-      MEDIA_STORAGE_PROVIDER: "${MEDIA_STORAGE_PROVIDER:-local}"
-      MEDIA_LOCAL_ROOT: "/app/uploads/media"
-      MEDIA_UPLOAD_TMP_DIR: "/tmp/api-sorteos-media"
-      MEDIA_MAX_IMAGE_BYTES: "${MEDIA_MAX_IMAGE_BYTES:-10485760}"
-      MEDIA_MAX_VIDEO_BYTES: "${MEDIA_MAX_VIDEO_BYTES:-262144000}"
-      NOTIFICATION_PUSH_PROVIDER: "${NOTIFICATION_PUSH_PROVIDER:-noop}"
-      WEB_PUSH_VAPID_SUBJECT: "${WEB_PUSH_VAPID_SUBJECT:-}"
-      WEB_PUSH_VAPID_PUBLIC_KEY: "${WEB_PUSH_VAPID_PUBLIC_KEY:-}"
-      WEB_PUSH_VAPID_PRIVATE_KEY: "${WEB_PUSH_VAPID_PRIVATE_KEY:-}"
-      WEB_PUSH_ALLOWED_ENDPOINT_HOSTS: "${WEB_PUSH_ALLOWED_ENDPOINT_HOSTS:-}"
-      WEB_PUSH_TTL_SECONDS: "${WEB_PUSH_TTL_SECONDS:-300}"
-      WEB_PUSH_TIMEOUT_MS: "${WEB_PUSH_TIMEOUT_MS:-10000}"
-      WEB_PUSH_URGENCY: "${WEB_PUSH_URGENCY:-normal}"
-      WEB_PUSH_MAX_PAYLOAD_BYTES: "${WEB_PUSH_MAX_PAYLOAD_BYTES:-3500}"
-      WEB_PUSH_MAX_CONCURRENCY: "${WEB_PUSH_MAX_CONCURRENCY:-10}"
-      REFERRAL_IP_HASH_SECRET: "${REFERRAL_IP_HASH_SECRET:?REFERRAL_IP_HASH_SECRET es obligatorio}"
-      RATE_LIMIT_WINDOW_MS: "${RATE_LIMIT_WINDOW_MS:-60000}"
-      RATE_LIMIT_MAX: "${RATE_LIMIT_MAX:-180}"
+      NODE_ENV: '${NODE_ENV:-development}'
+      HOST: '0.0.0.0'
+      PORT: '8080'
+      TRUST_PROXY: '${TRUST_PROXY:-false}'
+      CORS_ORIGINS: '${CORS_ORIGINS:-http://localhost:3000}'
+      SWAGGER_ENABLED: '${SWAGGER_ENABLED:-true}'
+      DB_HOST: 'mongodb'
+      DB_PORT: '27017'
+      DB_NAME: '${MONGO_DATABASE:-api_sorteos}'
+      DB_USER: '${MONGO_APP_USERNAME:?MONGO_APP_USERNAME es obligatorio}'
+      DB_PASSWORD: '${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD es obligatorio}'
+      DB_AUTH_SOURCE: '${MONGO_DATABASE:-api_sorteos}'
+      MONGODB_URI: '${MONGODB_URI:?MONGODB_URI es obligatorio y debe incluir replicaSet}'
+      MONGODB_REPLICA_SET: '${MONGO_REPLICA_SET:-rs0}'
+      MONGODB_MAX_POOL_SIZE: '${MONGODB_MAX_POOL_SIZE:-20}'
+      MONGODB_AUTO_INDEX: '${MONGODB_AUTO_INDEX:-true}'
+      JWT_SECRET: '${JWT_SECRET:?JWT_SECRET es obligatorio}'
+      JWT_ACCESS_EXPIRES_IN: '${JWT_ACCESS_EXPIRES_IN:-15m}'
+      JWT_ISSUER: '${JWT_ISSUER:-api-sorteos}'
+      JWT_AUDIENCE: '${JWT_AUDIENCE:-api-sorteos-clients}'
+      JWT_REFRESH_DAYS: '${JWT_REFRESH_DAYS:-30}'
+      SMTP_HOST: '${SMTP_HOST:-}'
+      SMTP_PORT: '${SMTP_PORT:-587}'
+      SMTP_USER: '${SMTP_USER:-}'
+      SMTP_PASS: '${SMTP_PASS:-}'
+      SMTP_FROM: '${SMTP_FROM:-}'
+      SMTP_SECURE: '${SMTP_SECURE:-false}'
+      SMTP_REQUIRE_TLS: '${SMTP_REQUIRE_TLS:-true}'
+      SMTP_TLS_REJECT_UNAUTHORIZED: '${SMTP_TLS_REJECT_UNAUTHORIZED:-true}'
+      SMTP_CONNECTION_TIMEOUT_MS: '${SMTP_CONNECTION_TIMEOUT_MS:-10000}'
+      SMTP_GREETING_TIMEOUT_MS: '${SMTP_GREETING_TIMEOUT_MS:-10000}'
+      SMTP_SOCKET_TIMEOUT_MS: '${SMTP_SOCKET_TIMEOUT_MS:-20000}'
+      EMAIL_CODE_SECRET: '${EMAIL_CODE_SECRET:?EMAIL_CODE_SECRET es obligatorio}'
+      ORDER_RESERVATION_MINUTES: '${ORDER_RESERVATION_MINUTES:-15}'
+      CHECKOUT_ACCESS_SECRET_KEY: '${CHECKOUT_ACCESS_SECRET_KEY:?CHECKOUT_ACCESS_SECRET_KEY es obligatorio}'
+      ORDER_ACCESS_CODE_SECRET: '${ORDER_ACCESS_CODE_SECRET:?ORDER_ACCESS_CODE_SECRET es obligatorio}'
+      ORDER_ACCESS_MAX_ORDERS: '${ORDER_ACCESS_MAX_ORDERS:-20}'
+      ORDER_ACCESS_REQUEST_COOLDOWN_SECONDS: '${ORDER_ACCESS_REQUEST_COOLDOWN_SECONDS:-60}'
+      PAYMENTS_PROVIDER: '${PAYMENTS_PROVIDER:-mock}'
+      PAYMENTS_ALLOW_MOCK: '${PAYMENTS_ALLOW_MOCK:-true}'
+      PAYMENTS_PUBLIC_SECRET_KEY: '${PAYMENTS_PUBLIC_SECRET_KEY:?PAYMENTS_PUBLIC_SECRET_KEY es obligatorio}'
+      PAYMENTS_OUTBOX_MAX_ATTEMPTS: '${PAYMENTS_OUTBOX_MAX_ATTEMPTS:-12}'
+      PAYMENTS_OUTBOX_LOCK_SECONDS: '${PAYMENTS_OUTBOX_LOCK_SECONDS:-300}'
+      PAYMENTS_OUTBOX_BACKOFF_SECONDS: '${PAYMENTS_OUTBOX_BACKOFF_SECONDS:-5}'
+      EFI_PIX_ENV: '${EFI_PIX_ENV:-sandbox}'
+      EFI_PIX_CLIENT_ID: '${EFI_PIX_CLIENT_ID:-}'
+      EFI_PIX_CLIENT_SECRET: '${EFI_PIX_CLIENT_SECRET:-}'
+      EFI_PIX_KEY: '${EFI_PIX_KEY:-}'
+      EFI_PIX_TIMEOUT_MS: '${EFI_PIX_TIMEOUT_MS:-15000}'
+      EFI_PIX_BASE_URL: '${EFI_PIX_BASE_URL:-}'
+      EFI_PIX_CERTIFICATE_PATH: '${EFI_PIX_CERTIFICATE_PATH:-}'
+      EFI_PIX_CERT_PATH: '${EFI_PIX_CERT_PATH:-}'
+      EFI_PIX_KEY_PATH: '${EFI_PIX_KEY_PATH:-}'
+      EFI_PIX_CERTIFICATE_PASSPHRASE: '${EFI_PIX_CERTIFICATE_PASSPHRASE:-}'
+      EFI_WEBHOOK_HMAC: '${EFI_WEBHOOK_HMAC:-}'
+      EFI_WEBHOOK_REQUIRE_MTLS: '${EFI_WEBHOOK_REQUIRE_MTLS:-false}'
+      EFI_WEBHOOK_MTLS_HEADER: '${EFI_WEBHOOK_MTLS_HEADER:-x-ssl-client-verify}'
+      EFI_WEBHOOK_MTLS_SUCCESS_VALUE: '${EFI_WEBHOOK_MTLS_SUCCESS_VALUE:-SUCCESS}'
+      CAIXA_FEDERAL_API_BASE_URL: '${CAIXA_FEDERAL_API_BASE_URL:-https://servicebus3.caixa.gov.br/portaldeloterias/api/federal}'
+      CAIXA_FEDERAL_TIMEOUT_MS: '${CAIXA_FEDERAL_TIMEOUT_MS:-10000}'
+      CAIXA_FEDERAL_MAX_RESPONSE_BYTES: '${CAIXA_FEDERAL_MAX_RESPONSE_BYTES:-131072}'
+      CAIXA_FEDERAL_CONFIRMATION_DELAY_MS: '${CAIXA_FEDERAL_CONFIRMATION_DELAY_MS:-250}'
+      DRAW_MANUAL_EXTERNAL_ENABLED: '${DRAW_MANUAL_EXTERNAL_ENABLED:-false}'
+      DRAW_CRYPTOGRAPHIC_ENABLED: '${DRAW_CRYPTOGRAPHIC_ENABLED:-false}'
+      DRAW_ENTROPY_BEACON_URL: '${DRAW_ENTROPY_BEACON_URL:-https://beacon.nist.gov/beacon/2.0/pulse/last}'
+      DRAW_ENTROPY_BEACON_TIMEOUT_MS: '${DRAW_ENTROPY_BEACON_TIMEOUT_MS:-10000}'
+      DRAW_ENTROPY_BEACON_MAX_RESPONSE_BYTES: '${DRAW_ENTROPY_BEACON_MAX_RESPONSE_BYTES:-262144}'
+      MEDIA_STORAGE_PROVIDER: '${MEDIA_STORAGE_PROVIDER:-local}'
+      MEDIA_LOCAL_ROOT: '/app/uploads/media'
+      MEDIA_UPLOAD_TMP_DIR: '/tmp/api-sorteos-media'
+      MEDIA_MAX_IMAGE_BYTES: '${MEDIA_MAX_IMAGE_BYTES:-10485760}'
+      MEDIA_MAX_VIDEO_BYTES: '${MEDIA_MAX_VIDEO_BYTES:-262144000}'
+      NOTIFICATION_PUSH_PROVIDER: '${NOTIFICATION_PUSH_PROVIDER:-noop}'
+      WEB_PUSH_VAPID_SUBJECT: '${WEB_PUSH_VAPID_SUBJECT:-}'
+      WEB_PUSH_VAPID_PUBLIC_KEY: '${WEB_PUSH_VAPID_PUBLIC_KEY:-}'
+      WEB_PUSH_VAPID_PRIVATE_KEY: '${WEB_PUSH_VAPID_PRIVATE_KEY:-}'
+      WEB_PUSH_ALLOWED_ENDPOINT_HOSTS: '${WEB_PUSH_ALLOWED_ENDPOINT_HOSTS:-}'
+      WEB_PUSH_TTL_SECONDS: '${WEB_PUSH_TTL_SECONDS:-300}'
+      WEB_PUSH_TIMEOUT_MS: '${WEB_PUSH_TIMEOUT_MS:-10000}'
+      WEB_PUSH_URGENCY: '${WEB_PUSH_URGENCY:-normal}'
+      WEB_PUSH_MAX_PAYLOAD_BYTES: '${WEB_PUSH_MAX_PAYLOAD_BYTES:-3500}'
+      WEB_PUSH_MAX_CONCURRENCY: '${WEB_PUSH_MAX_CONCURRENCY:-10}'
+      REFERRAL_IP_HASH_SECRET: '${REFERRAL_IP_HASH_SECRET:?REFERRAL_IP_HASH_SECRET es obligatorio}'
+      RATE_LIMIT_WINDOW_MS: '${RATE_LIMIT_WINDOW_MS:-60000}'
+      RATE_LIMIT_MAX: '${RATE_LIMIT_MAX:-180}'
     depends_on:
       mongo-init-replica:
         condition: service_completed_successfully
@@ -318,14 +329,14 @@ services:
     profiles:
       - proxy
     restart: unless-stopped
-    user: "101:101"
+    user: '101:101'
     read_only: true
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     ports:
-      - "127.0.0.1:${HTTP_PORT:-8081}:8080"
+      - '127.0.0.1:${HTTP_PORT:-8081}:8080'
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     tmpfs:

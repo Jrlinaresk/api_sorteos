@@ -22,9 +22,14 @@ describe('FixedWindowReferralRateLimiter', () => {
 
   it('uses a stable keyed hash instead of retaining the raw address', () => {
     const request = { ip: '203.0.113.10' };
-    const first = hashReferralClientAddress(request);
+    const first = hashReferralClientAddress(request, 'stable-test-secret');
 
-    expect(first).toBe(hashReferralClientAddress(request));
+    expect(first).toBe(
+      hashReferralClientAddress(request, 'stable-test-secret'),
+    );
+    expect(first).not.toBe(
+      hashReferralClientAddress(request, 'another-test-secret'),
+    );
     expect(first).not.toContain(request.ip);
     expect(first).toMatch(/^[a-f0-9]{64}$/);
   });

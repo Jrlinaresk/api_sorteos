@@ -16,6 +16,18 @@ export function validateEnvironment(input: Environment): Environment {
     5,
     120,
   );
+  validateInteger(
+    environment.ORDER_ACCESS_MAX_ORDERS,
+    'ORDER_ACCESS_MAX_ORDERS',
+    1,
+    50,
+  );
+  validateInteger(
+    environment.ORDER_ACCESS_REQUEST_COOLDOWN_SECONDS,
+    'ORDER_ACCESS_REQUEST_COOLDOWN_SECONDS',
+    30,
+    3_600,
+  );
   validateInteger(environment.RATE_LIMIT_MAX, 'RATE_LIMIT_MAX', 1, 100_000);
   validateInteger(
     environment.RATE_LIMIT_WINDOW_MS,
@@ -41,6 +53,44 @@ export function validateEnvironment(input: Environment): Environment {
     0,
     5_000,
   );
+  validateInteger(
+    environment.PAYMENTS_OUTBOX_MAX_ATTEMPTS,
+    'PAYMENTS_OUTBOX_MAX_ATTEMPTS',
+    1,
+    50,
+  );
+  validateInteger(
+    environment.PAYMENTS_OUTBOX_LOCK_SECONDS,
+    'PAYMENTS_OUTBOX_LOCK_SECONDS',
+    30,
+    3_600,
+  );
+  validateInteger(
+    environment.PAYMENTS_OUTBOX_BACKOFF_SECONDS,
+    'PAYMENTS_OUTBOX_BACKOFF_SECONDS',
+    1,
+    300,
+  );
+  validateInteger(
+    environment.DRAW_ENTROPY_BEACON_TIMEOUT_MS,
+    'DRAW_ENTROPY_BEACON_TIMEOUT_MS',
+    100,
+    30_000,
+  );
+  validateInteger(
+    environment.DRAW_ENTROPY_BEACON_MAX_RESPONSE_BYTES,
+    'DRAW_ENTROPY_BEACON_MAX_RESPONSE_BYTES',
+    1_024,
+    1_048_576,
+  );
+  validateBoolean(
+    environment.DRAW_MANUAL_EXTERNAL_ENABLED,
+    'DRAW_MANUAL_EXTERNAL_ENABLED',
+  );
+  validateBoolean(
+    environment.DRAW_CRYPTOGRAPHIC_ENABLED,
+    'DRAW_CRYPTOGRAPHIC_ENABLED',
+  );
 
   if (nodeEnvironment !== 'production') return environment;
 
@@ -52,6 +102,7 @@ export function validateEnvironment(input: Environment): Environment {
   }
   requireSecret(environment, 'PAYMENTS_PUBLIC_SECRET_KEY');
   requireSecret(environment, 'CHECKOUT_ACCESS_SECRET_KEY');
+  requireSecret(environment, 'ORDER_ACCESS_CODE_SECRET');
   requireSecret(environment, 'REFERRAL_IP_HASH_SECRET');
 
   validateCors(environment);
@@ -59,6 +110,7 @@ export function validateEnvironment(input: Environment): Environment {
   validateSmtp(environment);
   validatePayments(environment);
   validateCaixaFederal(environment);
+  validateEntropyBeacon(environment);
 
   const mediaRoot = required(environment, 'MEDIA_LOCAL_ROOT');
   if (!mediaRoot.startsWith('/')) {
@@ -66,6 +118,30 @@ export function validateEnvironment(input: Environment): Environment {
   }
 
   return environment;
+}
+
+function validateEntropyBeacon(environment: Environment): void {
+  const raw =
+    text(environment.DRAW_ENTROPY_BEACON_URL) ||
+    'https://beacon.nist.gov/beacon/2.0/pulse/last';
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    fail('DRAW_ENTROPY_BEACON_URL no es una URL válida');
+  }
+  if (
+    url!.protocol !== 'https:' ||
+    url!.hostname !== 'beacon.nist.gov' ||
+    url!.port ||
+    url!.username ||
+    url!.password ||
+    url!.pathname !== '/beacon/2.0/pulse/last' ||
+    url!.search ||
+    url!.hash
+  ) {
+    fail('DRAW_ENTROPY_BEACON_URL debe ser el endpoint HTTPS oficial de NIST');
+  }
 }
 
 function validateCaixaFederal(environment: Environment): void {
@@ -217,6 +293,13 @@ function validateInteger(
   const value = Number(raw);
   if (!Number.isInteger(value) || value < minimum || value > maximum) {
     fail(`${name} debe ser un entero entre ${minimum} y ${maximum}`);
+  }
+}
+
+function validateBoolean(raw: unknown, name: string): void {
+  if (raw === undefined || raw === null || raw === '') return;
+  if (!['true', 'false'].includes(text(raw).toLowerCase())) {
+    fail(`${name} debe ser true o false`);
   }
 }
 

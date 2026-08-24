@@ -11,7 +11,31 @@ export enum PrizeAttemptStatus {
   Expired = 'expired',
 }
 
-@Schema({ timestamps: true, collection: 'prize_attempts', optimisticConcurrency: true })
+export enum PrizeAttemptOutcome {
+  NoPrize = 'no_prize',
+  Awarded = 'awarded',
+  InventoryExhausted = 'inventory_exhausted',
+}
+
+export interface PrizePlanSnapshotEntry {
+  prizeId: string;
+  weight: number;
+  stock: number;
+  sortOrder: number;
+}
+
+export interface PrizePlanSnapshot {
+  version: 1;
+  mechanic: PrizeMechanic.Roulette | PrizeMechanic.Scratch;
+  noPrizeWeight: number;
+  prizes: PrizePlanSnapshotEntry[];
+}
+
+@Schema({
+  timestamps: true,
+  collection: 'prize_attempts',
+  optimisticConcurrency: true,
+})
 export class PrizeAttempt {
   @Prop({ required: true, unique: true, default: () => randomUUID() })
   publicId: string;
@@ -28,10 +52,17 @@ export class PrizeAttempt {
   @Prop({ type: Types.ObjectId, ref: 'User', index: true })
   user?: Types.ObjectId;
 
-  @Prop({ enum: [PrizeMechanic.Roulette, PrizeMechanic.Scratch], required: true })
+  @Prop({
+    enum: [PrizeMechanic.Roulette, PrizeMechanic.Scratch],
+    required: true,
+  })
   mechanic: PrizeMechanic.Roulette | PrizeMechanic.Scratch;
 
-  @Prop({ enum: Object.values(PrizeAttemptStatus), default: PrizeAttemptStatus.Pending, index: true })
+  @Prop({
+    enum: Object.values(PrizeAttemptStatus),
+    default: PrizeAttemptStatus.Pending,
+    index: true,
+  })
   status: PrizeAttemptStatus;
 
   @Prop({ type: Types.ObjectId, ref: 'InstantPrize' })
@@ -40,17 +71,54 @@ export class PrizeAttempt {
   @Prop({ type: Types.ObjectId, ref: 'PrizeAward' })
   award?: Types.ObjectId;
 
+  @Prop({ type: Types.ObjectId, ref: 'InstantPrize' })
+  drawnPrize?: Types.ObjectId;
+
+  @Prop({ enum: Object.values(PrizeAttemptOutcome) })
+  outcome?: PrizeAttemptOutcome;
+
   @Prop({ required: true, min: 0 })
   ordinal: number;
 
   @Prop()
   playedAt?: Date;
 
-  @Prop()
-  entropyCommitment?: string;
+  @Prop({ required: true, match: /^[a-f0-9]{64}$/ })
+  entropyCommitment: string;
 
-  @Prop({ select: false })
-  entropyReveal?: string;
+  @Prop({ required: true, match: /^[a-f0-9]{64}$/ })
+  configurationHash: string;
+
+  @Prop({
+    type: {
+      version: { type: Number, required: true },
+      mechanic: {
+        type: String,
+        enum: [PrizeMechanic.Roulette, PrizeMechanic.Scratch],
+        required: true,
+      },
+      noPrizeWeight: { type: Number, required: true, min: 0 },
+      prizes: {
+        type: [
+          {
+            _id: false,
+            prizeId: { type: String, required: true },
+            weight: { type: Number, required: true, min: 0 },
+            stock: { type: Number, required: true, min: 1 },
+            sortOrder: { type: Number, required: true },
+          },
+        ],
+        required: true,
+        default: [],
+      },
+    },
+    required: true,
+    select: false,
+  })
+  configurationSnapshot: PrizePlanSnapshot;
+
+  @Prop({ required: true, select: false })
+  entropyReveal: string;
 }
 
 export const PrizeAttemptSchema = SchemaFactory.createForClass(PrizeAttempt);

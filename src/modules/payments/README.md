@@ -15,8 +15,10 @@ defecto es `mock`; ninguna llamada real se realiza hasta configurar
    expiración, liberar la reserva. En devolución, actualizar el pedido.
    Se pueden registrar varios listeners; cada módulo debe conservar la función de
    desregistro devuelta por el método.
-4. Programar `expireDuePayments()` y usar `retryLifecycleHooks()` para pagos con
-   callbacks pendientes (`lifecycleHookError`) desde el job de pedidos.
+4. Cada transición y su evento se guardan en una misma transacción MongoDB. El
+   outbox ejecuta cada callback por pasos, conserva los pasos completados y aplica
+   reintentos con backoff hasta `dead_letter`. `retryLifecycleHooks()` reactiva el
+   mismo flujo persistente; no ejecuta callbacks al margen de la cola.
 5. Las rutas `/payments/admin/**` usan JWT y `RolesGuard`: operaciones y
    administradores pueden consultar/conciliar; solo administradores pueden
    devolver o forzar transiciones manuales. No se usa una API key administrativa.
@@ -35,6 +37,9 @@ hash.
 PAYMENTS_PROVIDER=mock
 PAYMENTS_PUBLIC_SECRET_KEY=use-un-secreto-aleatorio-largo
 CHECKOUT_ACCESS_SECRET_KEY=use-un-secreto-distinto-para-pedidos
+PAYMENTS_OUTBOX_MAX_ATTEMPTS=12
+PAYMENTS_OUTBOX_LOCK_SECONDS=300
+PAYMENTS_OUTBOX_BACKOFF_SECONDS=5
 
 # Efí
 EFI_PIX_ENV=sandbox
@@ -59,6 +64,21 @@ Si se usa el secreto HMAC, debe llegar exclusivamente en la cabecera
 `x-efi-webhook-token`, normalmente inyectada por el proxy confiable. Nunca se
 acepta en la URL: los query strings suelen terminar en logs, historiales y
 herramientas de observabilidad. Con Efí, la opción preferida es mTLS en el proxy.
+
+## Integridad financiera
+
+- `amountCents`, `receivedAmountCents`, importes reservados y reembolsados se
+  contabilizan como enteros. Los decimales del PSP nunca se suman como `number`.
+- Los recibos se deduplican por `endToEndId` y se conservan con valor y horario.
+  Un pago parcial, excedente o inconsistente pasa a `under_review`; solo el total
+  exacto puede producir `paid` y habilitar fulfillment.
+- Antes de marcar `paid`, la reserva del pedido y sus cuotas se verifican dentro
+  de la transacción. Un Pix tardío sobre un pedido vencido/cancelado queda en
+  revisión y nunca toma cuotas que ya se reasignaron.
+- Las devoluciones usan `payment_refund_operations`: una clave idempotente única,
+  reserva atómica del saldo y asignaciones por cada `endToEndId`. Los estados
+  `pending`, `succeeded` y `failed` evitan que solicitudes concurrentes superen
+  el saldo aunque usen claves diferentes.
 
 Para evitar que Efí agregue `/pix`, registrar la URL con `?ignorar=`. El
 controller acepta tanto `/webhooks/efi` como `/webhooks/efi/pix`.

@@ -190,6 +190,14 @@ describe('OrdersService reservations and lifecycle', () => {
   });
 
   it('reproduce una reserva idempotente sin abrir otra transacción', async () => {
+    const input = {
+      campaignSlug: 'titan-160',
+      quantity: 10,
+      buyer,
+      termsVersion: 'v1',
+      idempotencyKey: 'client-operation-1',
+    };
+    const replayToken = (service as any).createAccessToken(input);
     const previous = plainDocument({
       _id: new Types.ObjectId(),
       publicId: 'same-order',
@@ -198,24 +206,88 @@ describe('OrdersService reservations and lifecycle', () => {
       buyer,
       termsVersion: 'v1',
       status: OrderStatus.Reserved,
-      accessSecret: 'old-secret',
+      accessSecret: (service as any).hashSecret(replayToken),
     });
     orderModel.findOne = jest.fn().mockReturnValue(executable(previous));
 
-    const input = {
-      campaignSlug: 'titan-160',
-      quantity: 10,
-      buyer,
-      termsVersion: 'v1',
-      idempotencyKey: 'client-operation-1',
-    };
     const first = await service.createReservation(input);
     const second = await service.createReservation(input);
 
     expect(connection.startSession).not.toHaveBeenCalled();
-    expect(previous.save).toHaveBeenCalledTimes(2);
+    expect(previous.save).not.toHaveBeenCalled();
     expect(first.accessToken).toBe(second.accessToken);
     expect(first.id).toBe('same-order');
+  });
+
+  it('no restaura el token anterior después de una recuperación de pedido', async () => {
+    const previous = plainDocument({
+      _id: new Types.ObjectId(),
+      publicId: 'recovered-order',
+      campaign: { _id: new Types.ObjectId(), slug: 'titan-160' },
+      selectedQuantity: 10,
+      buyer,
+      termsVersion: 'v1',
+      status: OrderStatus.Paid,
+      accessSecret: 'a'.repeat(64),
+    });
+    orderModel.findOne = jest.fn().mockReturnValue(executable(previous));
+
+    await expect(
+      service.createReservation({
+        campaignSlug: 'titan-160',
+        quantity: 10,
+        buyer,
+        termsVersion: 'v1',
+        idempotencyKey: 'client-operation-1',
+      }),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({ code: 'ORDER_ACCESS_ROTATED' }),
+    });
+    expect(previous.save).not.toHaveBeenCalled();
+  });
+
+  it('no permite que otra cuenta reclame un replay idempotente', async () => {
+    const previous = plainDocument({
+      _id: new Types.ObjectId(),
+      publicId: 'owned-order',
+      user: new Types.ObjectId(),
+      campaign: { _id: new Types.ObjectId(), slug: 'titan-160' },
+      selectedQuantity: 10,
+      buyer,
+      termsVersion: 'v1',
+      status: OrderStatus.Paid,
+      accessSecret: 'a'.repeat(64),
+    });
+    orderModel.findOne = jest.fn().mockReturnValue(executable(previous));
+
+    await expect(
+      service.createReservation(
+        {
+          campaignSlug: 'titan-160',
+          quantity: 10,
+          buyer,
+          termsVersion: 'v1',
+          idempotencyKey: 'client-operation-1',
+        },
+        new Types.ObjectId().toString(),
+      ),
+    ).rejects.toThrow(
+      'La clave idempotente ya pertenece a otro contexto de comprador',
+    );
+  });
+
+  it('limita la cantidad realmente asignada aunque existan bonos', () => {
+    const previous = process.env.ORDER_MAX_ALLOCATED_TITLES;
+    process.env.ORDER_MAX_ALLOCATED_TITLES = '2000';
+    try {
+      expect(() => (service as any).assertAllocationSize(2_001)).toThrow(
+        BadRequestException,
+      );
+      expect(() => (service as any).assertAllocationSize(2_000)).not.toThrow();
+    } finally {
+      if (previous === undefined) delete process.env.ORDER_MAX_ALLOCATED_TITLES;
+      else process.env.ORDER_MAX_ALLOCATED_TITLES = previous;
+    }
   });
 
   it('rechaza reutilizar una idempotency key con otra cantidad', async () => {
@@ -302,6 +374,7 @@ describe('OrdersService reservations and lifecycle', () => {
     expect(campaign.reservedCount).toBe(0);
     expect(campaign.soldCount).toBe(10);
     expect(campaign.status).toBe(CampaignStatus.SoldOut);
+    expect(campaign.salesClosedAt).toBe(paidAt);
     expect(order.status).toBe(OrderStatus.Paid);
     expect(order.paidAt).toBe(paidAt);
     expect(result).toBe(order);

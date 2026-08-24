@@ -7,6 +7,9 @@ describe('validateEnvironment', () => {
     EMAIL_CODE_SECRET: 'e'.repeat(32),
     PAYMENTS_PUBLIC_SECRET_KEY: 'p'.repeat(32),
     CHECKOUT_ACCESS_SECRET_KEY: 'c'.repeat(32),
+    ORDER_ACCESS_CODE_SECRET: 'o'.repeat(32),
+    ORDER_ACCESS_MAX_ORDERS: '20',
+    ORDER_ACCESS_REQUEST_COOLDOWN_SECONDS: '60',
     REFERRAL_IP_HASH_SECRET: 'r'.repeat(32),
     CORS_ORIGINS: 'https://rifa.example.com,https://admin.example.com',
     MONGODB_URI:
@@ -26,6 +29,7 @@ describe('validateEnvironment', () => {
     CAIXA_FEDERAL_API_BASE_URL:
       'https://servicebus3.caixa.gov.br/portaldeloterias/api/federal',
     CAIXA_FEDERAL_CONFIRMATION_DELAY_MS: '250',
+    DRAW_ENTROPY_BEACON_URL: 'https://beacon.nist.gov/beacon/2.0/pulse/last',
   });
 
   it('permite configuración mínima fuera de producción', () => {
@@ -44,6 +48,26 @@ describe('validateEnvironment', () => {
     environment.JWT_SECRET = 'short';
     expect(() => validateEnvironment(environment)).toThrow(
       'JWT_SECRET debe tener al menos 32 caracteres',
+    );
+  });
+
+  it('valida el secreto y los límites de recuperación de pedidos', () => {
+    const weakSecret = productionEnvironment();
+    weakSecret.ORDER_ACCESS_CODE_SECRET = 'short';
+    expect(() => validateEnvironment(weakSecret)).toThrow(
+      'ORDER_ACCESS_CODE_SECRET',
+    );
+
+    const excessiveLimit = productionEnvironment();
+    excessiveLimit.ORDER_ACCESS_MAX_ORDERS = '51';
+    expect(() => validateEnvironment(excessiveLimit)).toThrow(
+      'ORDER_ACCESS_MAX_ORDERS',
+    );
+
+    const weakCooldown = productionEnvironment();
+    weakCooldown.ORDER_ACCESS_REQUEST_COOLDOWN_SECONDS = '10';
+    expect(() => validateEnvironment(weakCooldown)).toThrow(
+      'ORDER_ACCESS_REQUEST_COOLDOWN_SECONDS',
     );
   });
 
@@ -91,6 +115,15 @@ describe('validateEnvironment', () => {
     environment.CAIXA_FEDERAL_CONFIRMATION_DELAY_MS = '6000';
     expect(() => validateEnvironment(environment)).toThrow(
       'CAIXA_FEDERAL_CONFIRMATION_DELAY_MS',
+    );
+  });
+
+  it('solo permite la baliza HTTPS oficial de NIST', () => {
+    const environment = productionEnvironment();
+    environment.DRAW_ENTROPY_BEACON_URL =
+      'https://evil.example/beacon/2.0/pulse/last';
+    expect(() => validateEnvironment(environment)).toThrow(
+      'endpoint HTTPS oficial de NIST',
     );
   });
 });

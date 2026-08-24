@@ -25,9 +25,7 @@ describe('PaymentsWebhookGuard', () => {
     });
 
     expect(() =>
-      instance.canActivate(
-        context({}, { hmac: 'header-only-secret' }),
-      ),
+      instance.canActivate(context({}, { hmac: 'header-only-secret' })),
     ).toThrow(UnauthorizedException);
     expect(
       instance.canActivate(
@@ -48,8 +46,6 @@ describe('PaymentsWebhookGuard', () => {
       EFI_WEBHOOK_MTLS_SUCCESS_VALUE: 'OK',
     });
     expect(() => mtls.canActivate(context())).toThrow(UnauthorizedException);
-    expect(
-      mtls.canActivate(context({ 'x-client-verified': 'OK' })),
-    ).toBe(true);
+    expect(mtls.canActivate(context({ 'x-client-verified': 'OK' }))).toBe(true);
   });
 });

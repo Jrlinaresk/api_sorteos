@@ -1,15 +1,4 @@
-import { Type } from 'class-transformer';
-import {
-  ArrayMaxSize,
-  IsArray,
-  IsOptional,
-  IsString,
-  IsUrl,
-  Matches,
-  MaxLength,
-  ValidateNested,
-} from 'class-validator';
-import { AdditionalOutcomeDto } from './verify-federal-draw.dto';
+import { IsString, IsUrl, Matches, MaxLength } from 'class-validator';
 
 export class VerifyManualDrawDto {
   @IsString()
@@ -23,11 +12,4 @@ export class VerifyManualDrawDto {
   @IsString()
   @MaxLength(500)
   explanation: string;
-
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(100)
-  @ValidateNested({ each: true })
-  @Type(() => AdditionalOutcomeDto)
-  additionalOutcomes?: AdditionalOutcomeDto[];
 }

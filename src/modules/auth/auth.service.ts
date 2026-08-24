@@ -83,7 +83,11 @@ export class AuthService {
     try {
       const user = await this.usersService.findByPhone(dto.phone);
       if (normalizeEmail(user.email) === email) {
-        await this.emailVerificationService.createVerificationCode(email);
+        // El envío se desacopla de la respuesta genérica: esperar al SMTP solo
+        // cuando la cuenta existe permitiría enumerarla midiendo la latencia.
+        void this.emailVerificationService
+          .createVerificationCode(email)
+          .catch(() => undefined);
       }
     } catch {
       // Respuesta deliberadamente idéntica para impedir enumerar cuentas.
@@ -119,7 +123,10 @@ export class AuthService {
       dto.newPassword,
       true,
     );
-    await this.refreshTokens?.revokeAllForUser(String(user._id), 'Contraseña restablecida');
+    await this.refreshTokens?.revokeAllForUser(
+      String(user._id),
+      'Contraseña restablecida',
+    );
     return this.createSession(updated);
   }
 
@@ -127,7 +134,16 @@ export class AuthService {
     if (!this.refreshTokens) throw this.invalidCredentials();
     const rotated = await this.refreshTokens.rotate(refreshToken);
     const user = await this.usersService.findOne(rotated.userId);
-    if (user.isActive === false) throw this.invalidCredentials();
+    if (
+      user.isActive === false ||
+      (user.authVersion ?? 0) !== rotated.authVersion
+    ) {
+      await this.refreshTokens.revokeAllForUser(
+        rotated.userId,
+        'Versión de seguridad de la cuenta modificada',
+      );
+      throw this.invalidCredentials();
+    }
     return this.createSession(user, rotated);
   }
 
@@ -207,7 +223,11 @@ export class AuthService {
     const refresh =
       existingRefresh ||
       (this.refreshTokens
-        ? await this.refreshTokens.issue(String(user._id))
+        ? await this.refreshTokens.issue(
+            String(user._id),
+            undefined,
+            user.authVersion ?? 0,
+          )
         : { token: '', expiresAt: new Date(0) });
     return {
       accessToken: await this.jwtService.signAsync(payload),

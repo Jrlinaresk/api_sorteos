@@ -72,8 +72,8 @@ export class OrdersService {
         .exec();
       if (previous) {
         this.assertIdempotentReservation(previous, normalized);
-        previous.accessSecret = this.hashSecret(accessToken);
-        await previous.save();
+        this.assertIdempotentOwner(previous, ownerId);
+        this.assertReplayCredential(previous, accessToken);
         return this.toOwnerView(previous, accessToken, true);
       }
     }
@@ -106,6 +106,7 @@ export class OrdersService {
           campaign,
           normalized.quantity,
         );
+        this.assertAllocationSize(quote.allocatedQuantity);
         const activeCount = campaign.soldCount + campaign.reservedCount;
         if (activeCount + quote.allocatedQuantity > campaign.totalTitles) {
           throw new ConflictException(
@@ -252,8 +253,8 @@ export class OrdersService {
           .exec();
         if (replay) {
           this.assertIdempotentReservation(replay, normalized);
-          replay.accessSecret = this.hashSecret(accessToken);
-          await replay.save();
+          this.assertIdempotentOwner(replay, ownerId);
+          this.assertReplayCredential(replay, accessToken);
           return this.toOwnerView(replay, accessToken, true);
         }
       }
@@ -508,8 +509,10 @@ export class OrdersService {
           campaign.reservedCount - order.allocatedQuantity,
         );
         campaign.soldCount += order.allocatedQuantity;
-        if (campaign.soldCount >= campaign.totalTitles)
+        if (campaign.soldCount >= campaign.totalTitles) {
           campaign.status = CampaignStatus.SoldOut;
+          campaign.salesClosedAt ??= paidAt;
+        }
         await campaign.save({ session });
 
         order.status = OrderStatus.Paid;
@@ -617,6 +620,7 @@ export class OrdersService {
             campaign.soldCount + campaign.reservedCount < campaign.totalTitles
           ) {
             campaign.status = CampaignStatus.Active;
+            campaign.salesClosedAt = undefined;
           }
           await campaign.save({ session });
         }
@@ -953,6 +957,9 @@ export class OrdersService {
     if (campaign.closesAt && campaign.closesAt <= now) {
       throw new ConflictException('La campaña ha cerrado');
     }
+    if (campaign.soldCount + campaign.reservedCount >= campaign.totalTitles) {
+      throw new ConflictException('La campaña no tiene títulos disponibles');
+    }
   }
 
   private numberForIndex(campaign: Raffle, index: number): string {
@@ -1003,6 +1010,22 @@ export class OrdersService {
       : 15;
   }
 
+  private assertAllocationSize(allocatedQuantity: number): void {
+    const configured = Number(process.env.ORDER_MAX_ALLOCATED_TITLES || 2_000);
+    const hardLimit = Number.isSafeInteger(configured)
+      ? Math.min(10_000, Math.max(1, configured))
+      : 2_000;
+    if (
+      !Number.isSafeInteger(allocatedQuantity) ||
+      allocatedQuantity < 1 ||
+      allocatedQuantity > hardLimit
+    ) {
+      throw new BadRequestException(
+        `La compra no puede asignar más de ${hardLimit} títulos`,
+      );
+    }
+  }
+
   private createAccessToken(dto: CreateOrderDto): string {
     if (!dto.idempotencyKey) return randomBytes(24).toString('hex');
     let secret =
@@ -1041,6 +1064,37 @@ export class OrdersService {
       throw new ConflictException(
         'La clave idempotente ya se utilizó con otros datos de checkout',
       );
+    }
+  }
+
+  private assertIdempotentOwner(
+    order: OrderDocument,
+    ownerId?: Types.ObjectId,
+  ): void {
+    const existingOwner = order.user?.toString();
+    const requestedOwner = ownerId?.toString();
+    if (existingOwner !== requestedOwner) {
+      throw new ConflictException(
+        'La clave idempotente ya pertenece a otro contexto de comprador',
+      );
+    }
+  }
+
+  private assertReplayCredential(
+    order: OrderDocument,
+    accessToken: string,
+  ): void {
+    const expected = Buffer.from(order.accessSecret || '', 'hex');
+    const received = Buffer.from(this.hashSecret(accessToken), 'hex');
+    if (
+      expected.length !== received.length ||
+      !timingSafeEqual(expected, received)
+    ) {
+      throw new ConflictException({
+        message:
+          'El acceso de este pedido fue renovado; use recuperación de pedido o su cuenta',
+        code: 'ORDER_ACCESS_ROTATED',
+      });
     }
   }
 
@@ -1085,6 +1139,7 @@ export class OrdersService {
       : { ...(order as any) };
     const internalId = raw._id?.toString?.() || raw._id;
     delete raw.accessSecret;
+    delete raw.prizeLifecycleVersion;
     delete raw.__v;
     delete raw._id;
     if (

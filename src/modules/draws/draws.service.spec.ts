@@ -44,6 +44,8 @@ describe('DrawsService verifiable draw workflow', () => {
   let session: Record<string, jest.Mock>;
   let notifications: Record<string, jest.Mock>;
   let caixaFederal: Record<string, jest.Mock>;
+  let entropyBeacon: Record<string, jest.Mock>;
+  let config: Record<string, jest.Mock>;
   let service: DrawsService;
 
   beforeEach(() => {
@@ -62,6 +64,19 @@ describe('DrawsService verifiable draw workflow', () => {
     connection = { startSession: jest.fn().mockResolvedValue(session) };
     notifications = { create: jest.fn().mockResolvedValue(undefined) };
     caixaFederal = { reconcile: jest.fn() };
+    entropyBeacon = {
+      readAt: jest.fn().mockResolvedValue({
+        sourceUrl: 'https://beacon.nist.gov/beacon/2.0/pulse/last',
+        pulseUri: 'https://beacon.nist.gov/beacon/2.0/chain/2/pulse/1916340',
+        publishedAt: new Date('2026-08-24T18:55:00.000Z'),
+        outputValue: 'a'.repeat(128),
+        signatureValue: 'b'.repeat(1024),
+        certificateId: 'c'.repeat(128),
+        bodySha256: 'd'.repeat(64),
+        fetchedAt: new Date('2026-08-24T18:55:05.000Z'),
+      }),
+    };
+    config = { get: jest.fn().mockReturnValue(undefined) };
     service = new DrawsService(
       resultModel as any,
       campaignModel as any,
@@ -70,6 +85,8 @@ describe('DrawsService verifiable draw workflow', () => {
       connection as any,
       notifications as any,
       caixaFederal as any,
+      entropyBeacon as any,
+      config as any,
     );
   });
 
@@ -136,7 +153,7 @@ describe('DrawsService verifiable draw workflow', () => {
     const campaignId = new Types.ObjectId();
     const actorId = new Types.ObjectId().toString();
     const reveal = 'secret-material-at-least-16';
-    const externalEntropy = 'federal-contest-6020';
+    const externalEntropy = 'a'.repeat(128);
     const commitment = createHash('sha256')
       .update(`${campaignId}:${reveal}`)
       .digest('hex');
@@ -149,6 +166,8 @@ describe('DrawsService verifiable draw workflow', () => {
       quotaDigits: 4,
       prizeTitle: 'Titan 160',
       drawCommitment: commitment,
+      salesClosedAt: new Date('2026-08-24T18:00:00.000Z'),
+      drawDate: new Date('2026-08-24T18:30:00.000Z'),
     });
     campaignModel.findById.mockReturnValue(queryResult(campaign));
     const store = jest
@@ -159,10 +178,12 @@ describe('DrawsService verifiable draw workflow', () => {
       campaignId.toString(),
       {
         reveal,
-        externalEntropy,
-        sourceUrl: 'https://example.com/evidence',
       },
       actorId,
+    );
+    expect(entropyBeacon.readAt).toHaveBeenCalledWith(
+      campaign.drawDate,
+      campaign.salesClosedAt,
     );
 
     const digest = createHash('sha256')
@@ -181,7 +202,6 @@ describe('DrawsService verifiable draw workflow', () => {
         evidenceHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       }),
       expected,
-      [],
       actorId,
     );
   });
@@ -208,8 +228,6 @@ describe('DrawsService verifiable draw workflow', () => {
         campaignId.toString(),
         {
           reveal: 'a-different-secret-value',
-          externalEntropy: 'entropy-123',
-          sourceUrl: 'https://example.com/evidence',
         },
         new Types.ObjectId().toString(),
       ),
@@ -260,6 +278,8 @@ describe('DrawsService verifiable draw workflow', () => {
           combination,
           contest: '6020',
         },
+        drawDate: new Date('2025-11-22T20:00:00.000Z'),
+        salesClosedAt: new Date('2025-11-21T20:00:00.000Z'),
       });
       campaignModel.findById.mockReturnValue(queryResult(campaign));
       caixaFederal.reconcile.mockResolvedValue({
@@ -315,7 +335,6 @@ describe('DrawsService verifiable draw workflow', () => {
           }),
         }),
         expected,
-        [],
         actorId,
       );
     },
@@ -383,6 +402,44 @@ describe('DrawsService verifiable draw workflow', () => {
     expect(caixaFederal.reconcile).not.toHaveBeenCalled();
   });
 
+  it('rechaza un resultado Federal conocido antes del cierre efectivo', async () => {
+    const campaignId = new Types.ObjectId();
+    campaignModel.findById.mockReturnValue(
+      queryResult(
+        document({
+          _id: campaignId,
+          drawMethod: DrawMethod.FederalLottery,
+          status: CampaignStatus.SoldOut,
+          soldCount: 100,
+          reservedCount: 0,
+          totalTitles: 100,
+          quotaDigits: 2,
+          prizeTitle: 'Premio',
+          drawDate: new Date('2026-08-24T20:00:00.000Z'),
+          salesClosedAt: new Date('2026-08-24T12:00:00.000Z'),
+          federalLottery: {
+            contest: '6020',
+            firstPrizeDigits: 1,
+            secondPrizeDigits: 1,
+            combination: 'sum',
+          },
+        }),
+      ),
+    );
+    caixaFederal.reconcile.mockResolvedValue({
+      contest: '6020',
+      sourceDrawAt: new Date('2026-08-24T00:00:00.000Z'),
+    });
+
+    await expect(
+      service.verifyFederal(
+        campaignId.toString(),
+        {},
+        new Types.ObjectId().toString(),
+      ),
+    ).rejects.toThrow('posterior al cierre efectivo de ventas');
+  });
+
   it('hace el hash de evidencia estable ante distinto orden de claves', () => {
     const left = (service as any).evidenceHash({
       nested: { z: 3, a: 1 },
@@ -412,10 +469,32 @@ describe('DrawsService verifiable draw workflow', () => {
         campaign,
         {},
         '123',
-        [],
         new Types.ObjectId().toString(),
       ),
     ).rejects.toThrow('Un resultado publicado es inmutable');
+    expect(quotaModel.findOne).not.toHaveBeenCalled();
+  });
+
+  it('no permite reintentar una verificación para buscar otro ganador', async () => {
+    const campaign = document({
+      _id: new Types.ObjectId(),
+      drawMethod: DrawMethod.Cryptographic,
+      quotaDigits: 3,
+      totalTitles: 1_000,
+      prizeTitle: 'Premio',
+    });
+    resultModel.findOne.mockReturnValue(
+      queryResult({ status: DrawResultStatus.Verified }),
+    );
+
+    await expect(
+      (service as any).storeVerifiedResult(
+        campaign,
+        {},
+        '123',
+        new Types.ObjectId().toString(),
+      ),
+    ).rejects.toThrow('ya fue verificado y no puede sustituirse');
     expect(quotaModel.findOne).not.toHaveBeenCalled();
   });
 
@@ -488,6 +567,7 @@ describe('DrawsService verifiable draw workflow', () => {
       ],
       contest: '6020',
       sourceUrl: 'https://example.com/evidence',
+      verifiedBy: new Types.ObjectId(),
     });
     const campaign = document({
       _id: campaignId,
@@ -514,6 +594,31 @@ describe('DrawsService verifiable draw workflow', () => {
     );
     expect(response).not.toHaveProperty('publishedBy');
     expect(response.outcomes[0].winner.name).toBe('Maria d. S.');
+  });
+
+  it('impide que la misma persona verifique y publique el resultado', async () => {
+    const campaignId = new Types.ObjectId();
+    const actorId = new Types.ObjectId();
+    const result = document({
+      campaign: campaignId,
+      status: DrawResultStatus.Verified,
+      verifiedBy: actorId,
+      outcomes: [
+        {
+          position: 1,
+          prizeTitle: 'Titan',
+          winningNumber: '001234',
+          quota: new Types.ObjectId(),
+        },
+      ],
+    });
+    resultModel.findOne.mockReturnValue(queryResult(result));
+
+    await expect(
+      service.publish(campaignId.toString(), actorId.toString()),
+    ).rejects.toThrow('verificó el resultado no puede publicarlo');
+    expect(result.save).not.toHaveBeenCalled();
+    expect(campaignModel.findById).not.toHaveBeenCalled();
   });
 
   it('valida identificadores antes de consultar modelos', async () => {

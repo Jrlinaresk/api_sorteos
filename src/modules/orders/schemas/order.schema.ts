@@ -164,6 +164,13 @@ export class Order {
   @Prop({ type: [Types.ObjectId], ref: 'PrizeAward', default: [] })
   instantPrizes: Types.ObjectId[];
 
+  /**
+   * Cerrojo optimista para serializar juego/reclamación de premios con
+   * reembolsos que cambian el estado del mismo pedido.
+   */
+  @Prop({ required: true, min: 0, default: 0, select: false })
+  prizeLifecycleVersion: number;
+
   @Prop({
     type: [{ status: String, at: Date, reason: String, actor: String }],
     default: [],

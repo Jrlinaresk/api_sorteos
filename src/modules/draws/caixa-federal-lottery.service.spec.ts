@@ -40,6 +40,14 @@ function validPayload() {
   };
 }
 
+function upcomingPayload() {
+  return {
+    ...validPayload(),
+    numeroConcursoProximo: 6021,
+    dataProximoConcurso: '30/08/2026',
+  };
+}
+
 function config(overrides: Record<string, string> = {}) {
   const values = {
     CAIXA_FEDERAL_API_BASE_URL: OFFICIAL_BASE,
@@ -129,6 +137,72 @@ describe('CaixaFederalLotteryService', () => {
       { tier: 1, winners: 1, prizeAmount: 500000 },
       { tier: 2, winners: 1, prizeAmount: 35000 },
     ]);
+  });
+
+  it('confirma dos veces concurso y fecha futura antes de abrir ventas', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(upcomingPayload()))
+      .mockResolvedValueOnce(jsonResponse(upcomingPayload()));
+    const service = new CaixaFederalLotteryService(config());
+
+    const result = await service.assertContestUpcoming(
+      '6021',
+      new Date('2026-08-30T20:00:00.000Z'),
+      new Date('2026-08-24T12:00:00.000Z'),
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        contest: '6021',
+        latestContest: '6020',
+        drawDate: new Date('2026-08-30T00:00:00.000Z'),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      OFFICIAL_BASE,
+      expect.objectContaining({ redirect: 'error' }),
+    );
+  });
+
+  it('rechaza un concurso ya publicado y una fecha distinta a la oficial', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(upcomingPayload()))
+      .mockResolvedValueOnce(jsonResponse(upcomingPayload()));
+    const service = new CaixaFederalLotteryService(config());
+    await expect(
+      service.assertContestUpcoming(
+        '6020',
+        new Date('2026-08-30T20:00:00.000Z'),
+        new Date('2026-08-24T12:00:00.000Z'),
+      ),
+    ).rejects.toThrow('ya fue publicado');
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(upcomingPayload()))
+      .mockResolvedValueOnce(jsonResponse(upcomingPayload()));
+    await expect(
+      service.assertContestUpcoming(
+        '6021',
+        new Date('2026-08-31T20:00:00.000Z'),
+        new Date('2026-08-24T12:00:00.000Z'),
+      ),
+    ).rejects.toThrow('no coincide con la fecha oficial');
+  });
+
+  it('falla cerrado si CAIXA no publica la fecha del próximo concurso', async () => {
+    const payload = { ...upcomingPayload(), dataProximoConcurso: '' };
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(payload))
+      .mockResolvedValueOnce(jsonResponse(payload));
+
+    await expect(
+      new CaixaFederalLotteryService(config()).assertContestUpcoming(
+        '6021',
+        new Date('2026-08-30T20:00:00.000Z'),
+        new Date('2026-08-24T12:00:00.000Z'),
+      ),
+    ).rejects.toThrow('no publicó una fecha');
   });
 
   it('admite exclusivamente los dos hosts oficiales conocidos de CAIXA', () => {

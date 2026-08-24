@@ -29,26 +29,43 @@ export class EmailVerificationService {
 
   async createVerificationCode(rawEmail: string): Promise<void> {
     const email = rawEmail.trim().toLowerCase();
-    const previous = await this.verificationModel.findOne({ email }).lean();
-    if (previous && previous.createdAt.getTime() > Date.now() - 60_000) {
-      throw new HttpException('Espere antes de solicitar otro código', HttpStatus.TOO_MANY_REQUESTS);
-    }
-
+    const now = new Date();
     const code = String(randomInt(100_000, 1_000_000));
     const codeHash = this.hash(email, code);
-    const document = await this.verificationModel.findOneAndUpdate(
-      { email },
-      { $set: { email, codeHash, attempts: 0, createdAt: new Date() }, $unset: { code: 1 } },
-      { new: true, upsert: true, setDefaultsOnInsert: true },
-    );
+    let document: EmailVerificationDocument | null;
+    try {
+      document = await this.verificationModel
+        .findOneAndUpdate(
+          {
+            email,
+            $or: [
+              { createdAt: { $lte: new Date(now.getTime() - 60_000) } },
+              { createdAt: { $exists: false } },
+            ],
+          },
+          {
+            $set: { email, codeHash, attempts: 0, createdAt: now },
+            $unset: { code: 1 },
+          },
+          { new: true, upsert: true, setDefaultsOnInsert: true },
+        )
+        .exec();
+    } catch (error) {
+      if (this.isDuplicateKeyError(error)) throw this.tooManyRequests();
+      throw error;
+    }
     if (!document) {
-      throw new InternalServerErrorException('No se pudo generar el código de verificación');
+      throw new InternalServerErrorException(
+        'No se pudo generar el código de verificación',
+      );
     }
 
     try {
       await this.emailService.sendVerificationEmail(email, code);
     } catch (error) {
-      await this.verificationModel.deleteOne({ _id: document._id }).catch(() => undefined);
+      await this.verificationModel
+        .deleteOne({ _id: document._id, codeHash })
+        .catch(() => undefined);
       throw error;
     }
   }
@@ -57,25 +74,37 @@ export class EmailVerificationService {
     const email = rawEmail.trim().toLowerCase();
     const code = rawCode.trim().toUpperCase();
     const record = await this.verificationModel
-      .findOne({ email })
+      .findOneAndUpdate(
+        { email, attempts: { $lt: 5 } },
+        { $inc: { attempts: 1 } },
+        { new: true },
+      )
       .select('+codeHash +code')
       .exec();
-    if (!record || record.attempts >= 5) {
-      if (record) await record.deleteOne();
-      throw this.invalidCode();
-    }
+    if (!record) throw this.invalidCode();
 
     const candidate = this.hash(email, code);
     const expected = record.codeHash || '';
     const hashMatches = this.safeEqual(candidate, expected);
     const legacyMatches = Boolean(record.code && this.safeEqual(code, record.code));
     if (!hashMatches && !legacyMatches) {
-      record.attempts += 1;
-      if (record.attempts >= 5) await record.deleteOne();
-      else await record.save();
+      if (record.attempts >= 5) {
+        await this.verificationModel.deleteOne({
+          _id: record._id,
+          createdAt: record.createdAt,
+        });
+      }
       throw this.invalidCode();
     }
-    await record.deleteOne();
+    const secretFilter = hashMatches
+      ? { codeHash: record.codeHash }
+      : { code: record.code };
+    const consumed = await this.verificationModel.findOneAndDelete({
+      _id: record._id,
+      createdAt: record.createdAt,
+      ...secretFilter,
+    });
+    if (!consumed) throw this.invalidCode();
   }
 
   async invalidateEmail(rawEmail: string): Promise<void> {
@@ -108,5 +137,21 @@ export class EmailVerificationService {
 
   private invalidCode() {
     return new BadRequestException('Código de verificación inválido o expirado');
+  }
+
+  private tooManyRequests() {
+    return new HttpException(
+      'Espere antes de solicitar otro código',
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+
+  private isDuplicateKeyError(error: unknown): boolean {
+    return Boolean(
+      error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        (error as { code?: number }).code === 11000,
+    );
   }
 }

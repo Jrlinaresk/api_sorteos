@@ -98,6 +98,7 @@ set_value MONGODB_URI "mongodb://sorteos_app:${mongo_app_password}@mongodb:27017
 set_value JWT_SECRET "$(random_secret)"
 set_value EMAIL_CODE_SECRET "$(random_secret)"
 set_value CHECKOUT_ACCESS_SECRET_KEY "$(random_secret)"
+set_value ORDER_ACCESS_CODE_SECRET "$(random_secret)"
 set_value PAYMENTS_PUBLIC_SECRET_KEY "$(random_secret)"
 set_value EFI_WEBHOOK_HMAC "$(random_secret)"
 set_value REFERRAL_IP_HASH_SECRET "$(random_secret)"

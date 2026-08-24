@@ -8,6 +8,7 @@ import {
   EFI_SANDBOX_BASE_URL,
 } from '../payment.constants';
 import { PaymentProviderName } from '../payment.enums';
+import { summarizeEfiPixEntries } from '../payment-finance';
 import {
   mapEfiChargeStatus,
   mapEfiRefundStatus,
@@ -156,17 +157,31 @@ export class EfiPaymentProvider implements PaymentProvider {
         `/v2/loc/${charge.loc.id}/qrcode`,
       );
     }
-    const receivedPix = charge.pix?.[0];
+    const receiptSummary = summarizeEfiPixEntries(charge.pix ?? []);
+    const paidAt = receiptSummary.receipts.length
+      ? new Date(
+          Math.max(
+            ...receiptSummary.receipts.map((receipt) =>
+              receipt.paidAt.getTime(),
+            ),
+          ),
+        )
+      : undefined;
     return {
       externalId: charge.loc?.id?.toString() ?? charge.txid,
       txid: charge.txid ?? '',
-      endToEndId: receivedPix?.endToEndId,
+      endToEndId: receiptSummary.receipts[0]?.endToEndId,
       status: mapEfiChargeStatus(charge.status),
       qrCode: charge.location ?? charge.loc?.location,
       qrCodeImage: qr?.imagemQrcode,
       pixCopyPaste: qr?.qrcode ?? charge.pixCopiaECola,
       checkoutUrl: qr?.linkVisualizacao,
-      paidAt: receivedPix?.horario ? new Date(receivedPix.horario) : undefined,
+      paidAt,
+      receipts: receiptSummary.receipts,
+      refunds: receiptSummary.refunds,
+      receivedAmountCents: receiptSummary.receivedAmountCents,
+      refundedAmountCents: receiptSummary.refundedAmountCents,
+      receiptIntegrityError: receiptSummary.integrityError,
       raw: { charge, qr },
     };
   }

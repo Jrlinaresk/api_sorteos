@@ -7,6 +7,7 @@ import { UsersService } from '../users/users.service';
 import { UserRole } from '../users/enums/user-role.enum';
 import { UserDocument } from '../users/schemas/user.schema';
 import { EmailVerificationService } from '../email/email-verification.service';
+import { RefreshTokensService } from './refresh-tokens.service';
 
 describe('AuthService', () => {
   const publicUser = {
@@ -26,6 +27,7 @@ describe('AuthService', () => {
     recordFailedLogin: jest.fn(),
     clearFailedLogins: jest.fn(),
     findByPhone: jest.fn(),
+    findOne: jest.fn(),
     setPassword: jest.fn(),
     toPublicUser: jest.fn().mockReturnValue(publicUser),
   } as unknown as UsersService;
@@ -45,6 +47,9 @@ describe('AuthService', () => {
     jest.clearAllMocks();
     (usersService.toPublicUser as jest.Mock).mockReturnValue(publicUser);
     (jwtService.signAsync as jest.Mock).mockResolvedValue('signed.jwt.token');
+    (
+      emailVerificationService.createVerificationCode as jest.Mock
+    ).mockResolvedValue(undefined);
     service = new AuthService(
       usersService,
       jwtService,
@@ -161,6 +166,31 @@ describe('AuthService', () => {
     ).toHaveBeenCalledWith('joao@example.com');
   });
 
+  it('no espera al SMTP al responder una solicitud de recuperación', async () => {
+    const user = {
+      _id: '507f1f77bcf86cd799439011',
+      phone: '+5511999999999',
+      email: 'joao@example.com',
+    } as unknown as UserDocument;
+    let finishDelivery: (() => void) | undefined;
+    (usersService.findByPhone as jest.Mock).mockResolvedValue(user);
+    (
+      emailVerificationService.createVerificationCode as jest.Mock
+    ).mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishDelivery = resolve;
+      }),
+    );
+
+    await expect(
+      service.requestPasswordReset({
+        phone: user.phone,
+        email: user.email!,
+      }),
+    ).resolves.toBeUndefined();
+    finishDelivery?.();
+  });
+
   it('consume el código, cambia el hash y entrega una sesión nueva', async () => {
     const user = {
       _id: '507f1f77bcf86cd799439011',
@@ -189,5 +219,40 @@ describe('AuthService', () => {
       true,
     );
     expect(result.accessToken).toBe('signed.jwt.token');
+  });
+
+  it('rechaza un refresh emitido antes de cambiar la versión de seguridad', async () => {
+    const refreshTokens = {
+      rotate: jest.fn().mockResolvedValue({
+        token: 'rotated-refresh',
+        userId: '507f1f77bcf86cd799439011',
+        expiresAt: new Date('2026-09-24T00:00:00.000Z'),
+        authVersion: 2,
+      }),
+      revokeAllForUser: jest.fn().mockResolvedValue(undefined),
+    } as unknown as RefreshTokensService;
+    const refreshService = new AuthService(
+      usersService,
+      jwtService,
+      configService,
+      emailVerificationService,
+      refreshTokens,
+    );
+    (usersService.findOne as jest.Mock).mockResolvedValue({
+      _id: '507f1f77bcf86cd799439011',
+      phone: '+5511999999999',
+      role: UserRole.CUSTOMER,
+      isActive: true,
+      authVersion: 3,
+    });
+
+    await expect(refreshService.refresh('old-refresh')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(refreshTokens.revokeAllForUser).toHaveBeenCalledWith(
+      '507f1f77bcf86cd799439011',
+      'Versión de seguridad de la cuenta modificada',
+    );
+    expect(jwtService.signAsync).not.toHaveBeenCalled();
   });
 });

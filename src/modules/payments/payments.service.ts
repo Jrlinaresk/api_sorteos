@@ -8,10 +8,11 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
-import { InjectModel } from '@nestjs/mongoose';
-import { createHash, createHmac, timingSafeEqual } from 'crypto';
-import { Model, Types } from 'mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import { ClientSession, Connection, Model, Types } from 'mongoose';
 import {
   DEFAULT_PAYMENT_EXPIRATION_SECONDS,
   MAX_PAYMENT_EXPIRATION_SECONDS,
@@ -34,14 +35,30 @@ import {
 import {
   Payment,
   PaymentDocument,
+  PaymentProviderRefund,
   PaymentRefund,
+  PaymentReceipt,
   PaymentStatusHistoryEntry,
 } from './schemas/payment.schema';
-import { mapEfiRefundStatus } from './utils/payment-status.mapper';
 import {
-  Order,
-  OrderDocument,
-} from '../orders/schemas/order.schema';
+  PaymentOutboxDocument,
+  PaymentOutboxEvent,
+  PaymentOutboxStatus,
+} from './schemas/payment-outbox.schema';
+import {
+  RefundAllocation,
+  RefundOperation,
+  RefundOperationDocument,
+  RefundOperationStatus,
+} from './schemas/refund-operation.schema';
+import {
+  centsToAmount,
+  mergePixReceipts,
+  PixReceiptSnapshot,
+  PixRefundSnapshot,
+  summarizeEfiPixEntries,
+} from './payment-finance';
+import { Order, OrderDocument } from '../orders/schemas/order.schema';
 import {
   CampaignStatus,
   Raffle,
@@ -52,6 +69,12 @@ import {
   PrizeAwardDocument,
   PrizeAwardStatus,
 } from '../prizes/schemas/prize-award.schema';
+import {
+  Quota,
+  QuotaDocument,
+  QuotaStatus,
+} from '../orders/schemas/quota.schema';
+import { OrderStatus } from '../orders/schemas/order.schema';
 
 export interface PaymentLifecycleEvent {
   paymentId: string;
@@ -101,8 +124,27 @@ export interface PublicPaymentView {
   cancelledAt?: Date;
   refundedAt?: Date;
   refundedAmount: number;
+  receivedAmount: number;
   createdAt?: Date;
   updatedAt?: Date;
+}
+
+interface PaymentMutationPatch {
+  externalId?: string;
+  txid?: string;
+  qrCode?: string;
+  qrCodeImage?: string;
+  pixCopyPaste?: string;
+  checkoutUrl?: string;
+  providerPayload?: Record<string, unknown>;
+  providerError?: string;
+  legacyEndToEndId?: string;
+  paidAt?: Date;
+  receipts?: PixReceiptSnapshot[];
+  refunds?: PixRefundSnapshot[];
+  receiptIntegrityError?: string;
+  enforceExactReceiptAmount?: boolean;
+  authoritativeRefundedAmountCents?: number;
 }
 
 export interface WebhookProcessingResult {
@@ -149,8 +191,14 @@ const ALLOWED_TRANSITIONS: Record<PaymentStatus, ReadonlySet<PaymentStatus>> = {
     PaymentStatus.Disputed,
     PaymentStatus.Chargeback,
   ]),
-  [PaymentStatus.Expired]: new Set([PaymentStatus.Paid]),
-  [PaymentStatus.Cancelled]: new Set([PaymentStatus.Paid]),
+  [PaymentStatus.Expired]: new Set([
+    PaymentStatus.Paid,
+    PaymentStatus.UnderReview,
+  ]),
+  [PaymentStatus.Cancelled]: new Set([
+    PaymentStatus.Paid,
+    PaymentStatus.UnderReview,
+  ]),
   [PaymentStatus.Rejected]: new Set([PaymentStatus.Active, PaymentStatus.Paid]),
   [PaymentStatus.Failed]: new Set([
     PaymentStatus.Pending,
@@ -200,7 +248,7 @@ const ALLOWED_TRANSITIONS: Record<PaymentStatus, ReadonlySet<PaymentStatus>> = {
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
-  private readonly lifecycleHooks = new Set<PaymentLifecycleHooks>();
+  private readonly lifecycleHooks = new Map<string, PaymentLifecycleHooks>();
 
   constructor(
     @InjectModel(Payment.name)
@@ -216,11 +264,30 @@ export class PaymentsService {
     @Optional()
     @InjectModel(PrizeAward.name)
     private readonly awardModel?: Model<PrizeAwardDocument>,
+    @Optional()
+    @InjectConnection()
+    private readonly connection?: Connection,
+    @Optional()
+    @InjectModel(PaymentOutboxEvent.name)
+    private readonly outboxModel?: Model<PaymentOutboxEvent>,
+    @Optional()
+    @InjectModel(RefundOperation.name)
+    private readonly refundOperationModel?: Model<RefundOperation>,
+    @Optional()
+    @InjectModel(Quota.name)
+    private readonly quotaModel?: Model<QuotaDocument>,
   ) {}
 
   registerLifecycleHooks(hooks: PaymentLifecycleHooks): () => void {
-    this.lifecycleHooks.add(hooks);
-    return () => this.lifecycleHooks.delete(hooks);
+    const baseName = hooks.constructor?.name || 'PaymentLifecycleHooks';
+    let hookId = baseName;
+    let suffix = 2;
+    while (this.lifecycleHooks.has(hookId)) {
+      hookId = `${baseName}#${suffix}`;
+      suffix += 1;
+    }
+    this.lifecycleHooks.set(hookId, hooks);
+    return () => this.lifecycleHooks.delete(hookId);
   }
 
   async create(dto: CreatePaymentDto): Promise<CreatePaymentResult> {
@@ -252,6 +319,10 @@ export class PaymentsService {
         campaign: new Types.ObjectId(dto.campaignId),
         ...(dto.userId ? { user: new Types.ObjectId(dto.userId) } : {}),
         amount,
+        amountCents: this.toCents(amount),
+        receivedAmountCents: 0,
+        refundedAmountCents: 0,
+        refundReservedAmountCents: 0,
         currency: dto.currency ?? PaymentCurrency.BRL,
         provider: provider.name,
         txid,
@@ -259,6 +330,10 @@ export class PaymentsService {
         publicSecretHash: this.hashSecret(accessSecret),
         expiresAt: new Date(Date.now() + expiresInSeconds * 1000),
         status: PaymentStatus.Created,
+        transitionSequence: 0,
+        receipts: [],
+        providerRefunds: [],
+        endToEndIds: [],
         statusHistory: [
           {
             status: PaymentStatus.Created,
@@ -348,11 +423,58 @@ export class PaymentsService {
         'OrdersService todavía no registró callbacks de ciclo de vida',
       );
     }
-    await this.notifyLifecycle(
-      payment,
-      payment.status,
-      PaymentEventSource.Reconciliation,
-    );
+    if (!this.outboxModel) {
+      await this.notifyLifecycleDirect(
+        payment,
+        payment.status,
+        PaymentEventSource.Reconciliation,
+      );
+      return this.findById(id);
+    }
+    const latest = await this.outboxModel
+      .findOne({ payment: payment._id, status: payment.status })
+      .sort({ sequence: -1, createdAt: -1 })
+      .exec();
+    if (latest) {
+      if (
+        latest.outboxStatus === PaymentOutboxStatus.Processing &&
+        latest.lockedAt &&
+        latest.lockedAt.getTime() >
+          Date.now() - this.outboxLockTimeoutSeconds() * 1000
+      ) {
+        throw new ConflictException(
+          'El evento de lifecycle ya está siendo procesado',
+        );
+      }
+      latest.outboxStatus = PaymentOutboxStatus.Pending;
+      latest.completedSteps = [];
+      latest.attempts = 0;
+      latest.nextAttemptAt = new Date();
+      latest.lockedAt = undefined;
+      latest.completedAt = undefined;
+      latest.lastError = undefined;
+      await latest.save();
+    } else {
+      await this.outboxModel.create({
+        eventKey: `${payment._id.toString()}:replay:${randomUUID()}`,
+        payment: payment._id,
+        sequence: Math.max(1, payment.transitionSequence ?? 1),
+        orderId: payment.order.toString(),
+        campaignId: payment.campaign.toString(),
+        userId: payment.user?.toString(),
+        provider: payment.provider,
+        previousStatus: payment.status,
+        status: payment.status,
+        source: PaymentEventSource.Reconciliation,
+        amountCents: this.paymentAmountCents(payment),
+        currency: payment.currency,
+        txid: payment.txid,
+        endToEndId: payment.endToEndId,
+        outboxStatus: PaymentOutboxStatus.Pending,
+        nextAttemptAt: new Date(),
+      });
+    }
+    await this.processOutboxForPayment(id);
     return this.findById(id);
   }
 
@@ -361,6 +483,18 @@ export class PaymentsService {
     status: PaymentStatus,
     reason?: string,
   ): Promise<PaymentDocument> {
+    if (
+      [
+        PaymentStatus.Paid,
+        PaymentStatus.RefundPending,
+        PaymentStatus.PartiallyRefunded,
+        PaymentStatus.Refunded,
+      ].includes(status)
+    ) {
+      throw new BadRequestException(
+        'Los estados con movimiento de dinero solo pueden provenir del PSP, webhook o conciliación',
+      );
+    }
     const payment = await this.findById(id);
     await this.transition(payment, status, PaymentEventSource.Admin, reason);
     return payment;
@@ -421,18 +555,21 @@ export class PaymentsService {
       throw new BadRequestException('Clave idempotente de devolución inválida');
     }
     const payment = await this.findById(id);
-    await this.assertRefundAllowed(payment);
-    if (
-      ![
-        PaymentStatus.Paid,
-        PaymentStatus.PartiallyRefunded,
-        PaymentStatus.RefundPending,
-      ].includes(payment.status)
-    ) {
-      throw new ConflictException(
-        `No se puede devolver un pago en estado ${payment.status}`,
-      );
+    if (!this.connection || !this.refundOperationModel || !this.outboxModel) {
+      return this.refundLegacy(payment, dto);
     }
+    const reservation = await this.reserveRefundOperation(payment, dto);
+    if (!reservation.created) return this.findById(id);
+    await this.processReservedRefund(payment, reservation.operation);
+    return this.findById(id);
+  }
+
+  private async refundLegacy(
+    payment: PaymentDocument,
+    dto: RefundPaymentDto,
+  ): Promise<PaymentDocument> {
+    await this.assertRefundAllowed(payment);
+    this.assertRefundableStatus(payment);
     const previousRefund = payment.refunds.find(
       (refund) => refund.idempotencyKey === dto.idempotencyKey,
     );
@@ -459,7 +596,7 @@ export class PaymentsService {
       amount,
       idempotencyKey: dto.idempotencyKey,
     });
-    const refund: PaymentRefund = {
+    payment.refunds.push({
       idempotencyKey: dto.idempotencyKey,
       providerRefundId: result.providerRefundId,
       amount,
@@ -470,8 +607,7 @@ export class PaymentsService {
       requestedAt: new Date(),
       completedAt:
         result.status === PaymentStatus.Refunded ? new Date() : undefined,
-    };
-    payment.refunds.push(refund);
+    } as PaymentRefund);
     if (result.status === PaymentStatus.Refunded) {
       payment.refundedAmount = this.normalizeAmount(
         (payment.refundedAmount ?? 0) + amount,
@@ -492,6 +628,577 @@ export class PaymentsService {
     return payment;
   }
 
+  private async reserveRefundOperation(
+    observedPayment: PaymentDocument,
+    dto: RefundPaymentDto,
+  ): Promise<{ operation: RefundOperationDocument; created: boolean }> {
+    if (!this.connection || !this.refundOperationModel || !this.outboxModel) {
+      throw new ServiceUnavailableException(
+        'Ledger de devoluciones no disponible',
+      );
+    }
+    let reserved:
+      | { operation: RefundOperationDocument; created: boolean }
+      | undefined;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const session = await this.connection.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const payment = await this.paymentModel
+            .findById(observedPayment._id)
+            .session(session)
+            .exec();
+          if (!payment) throw new NotFoundException('Pago no encontrado');
+          const previous = await this.refundOperationModel!.findOne({
+            payment: payment._id,
+            idempotencyKey: dto.idempotencyKey,
+          })
+            .session(session)
+            .exec();
+          if (previous) {
+            if (
+              dto.amount !== undefined &&
+              previous.requestedAmountCents !== this.toCents(dto.amount)
+            ) {
+              throw new ConflictException(
+                'La clave idempotente ya se usó con otro importe',
+              );
+            }
+            reserved = { operation: previous, created: false };
+            return;
+          }
+          if (
+            payment.refunds?.some(
+              (refund) => refund.idempotencyKey === dto.idempotencyKey,
+            )
+          ) {
+            throw new ConflictException(
+              'La clave corresponde a una devolución histórica; use una clave nueva solo si queda saldo',
+            );
+          }
+          await this.assertRefundAllowed(payment, session);
+          this.assertRefundableStatus(payment);
+          await this.lockOrderForRefund(payment, session);
+          const amountCents = this.paymentAmountCents(payment);
+          const refundedCents =
+            payment.refundedAmountCents ??
+            this.toCents(payment.refundedAmount ?? 0);
+          const reservedCents = payment.refundReservedAmountCents ?? 0;
+          const refundableCents = amountCents - refundedCents - reservedCents;
+          const requestedCents =
+            dto.amount === undefined
+              ? refundableCents
+              : this.toCents(dto.amount);
+          if (requestedCents <= 0 || requestedCents > refundableCents) {
+            throw new BadRequestException(
+              `El máximo reembolsable no reservado es ${centsToAmount(
+                Math.max(0, refundableCents),
+              ).toFixed(2)} ${payment.currency}`,
+            );
+          }
+
+          const activeOperations = await this.refundOperationModel!.find({
+            payment: payment._id,
+            $or: [
+              {
+                status: {
+                  $in: [
+                    RefundOperationStatus.Pending,
+                    RefundOperationStatus.Succeeded,
+                  ],
+                },
+              },
+              { succeededAmountCents: { $gt: 0 } },
+            ],
+          })
+            .session(session)
+            .lean()
+            .exec();
+          const allocations = this.allocateRefundAcrossReceipts(
+            payment,
+            requestedCents,
+            activeOperations,
+          );
+          const [operation] = await this.refundOperationModel!.create(
+            [
+              {
+                payment: payment._id,
+                idempotencyKey: dto.idempotencyKey,
+                requestedAmountCents: requestedCents,
+                reservedAmountCents: requestedCents,
+                succeededAmountCents: 0,
+                status: RefundOperationStatus.Pending,
+                allocations,
+                reason: dto.reason,
+              },
+            ],
+            { session },
+          );
+          payment.refundReservedAmountCents = reservedCents + requestedCents;
+          payment.amountCents = amountCents;
+          payment.refundedAmountCents = refundedCents;
+          const previousStatus = payment.status;
+          this.applyStatusTransition(
+            payment,
+            PaymentStatus.RefundPending,
+            PaymentEventSource.Application,
+            dto.reason || 'Saldo reservado para devolución Pix',
+          );
+          if (previousStatus !== payment.status) {
+            payment.transitionSequence = (payment.transitionSequence ?? 0) + 1;
+          }
+          await payment.save({ session });
+          if (previousStatus !== payment.status) {
+            await this.createOutboxEvent(
+              payment,
+              previousStatus,
+              PaymentEventSource.Application,
+              session,
+            );
+          }
+          reserved = { operation, created: true };
+        });
+        break;
+      } catch (error) {
+        if (attempt >= 4 || !this.isRetryableTransactionError(error))
+          throw error;
+      } finally {
+        await session.endSession();
+      }
+    }
+    if (!reserved) {
+      throw new ServiceUnavailableException(
+        'No se pudo reservar el saldo de devolución',
+      );
+    }
+    await this.processOutboxForPayment(observedPayment._id.toString());
+    return reserved;
+  }
+
+  private allocateRefundAcrossReceipts(
+    payment: PaymentDocument,
+    requestedCents: number,
+    operations: Array<{
+      allocations?: Array<{
+        endToEndId: string;
+        amountCents: number;
+        status?: RefundOperationStatus;
+        providerRefundId?: string;
+      }>;
+    }>,
+  ): RefundAllocation[] {
+    const receipts = payment.receipts?.length
+      ? payment.receipts.map((receipt) => ({
+          endToEndId: receipt.endToEndId,
+          amountCents: receipt.amountCents,
+        }))
+      : payment.endToEndId
+        ? [
+            {
+              endToEndId: payment.endToEndId,
+              amountCents: this.paymentAmountCents(payment),
+            },
+          ]
+        : [];
+    if (!receipts.length) {
+      throw new ConflictException(
+        'El pago no tiene recibos/endToEndId conciliados para devolver',
+      );
+    }
+    const alreadyAllocated = new Map<string, number>();
+    let trackedSucceededCents = 0;
+    const trackedProviderRefundIds = new Set<string>();
+    for (const operation of operations) {
+      for (const allocation of operation.allocations ?? []) {
+        if (
+          allocation.status &&
+          ![
+            RefundOperationStatus.Pending,
+            RefundOperationStatus.Succeeded,
+          ].includes(allocation.status)
+        ) {
+          continue;
+        }
+        alreadyAllocated.set(
+          allocation.endToEndId,
+          (alreadyAllocated.get(allocation.endToEndId) ?? 0) +
+            allocation.amountCents,
+        );
+        if (allocation.status === RefundOperationStatus.Succeeded) {
+          trackedSucceededCents += allocation.amountCents;
+        }
+        if (allocation.providerRefundId) {
+          trackedProviderRefundIds.add(
+            `${allocation.endToEndId}:${allocation.providerRefundId}`,
+          );
+        }
+      }
+    }
+    const externalByEndToEndId = new Map<string, number>();
+    for (const refund of payment.providerRefunds ?? []) {
+      if (
+        refund.status !== PaymentStatus.Refunded ||
+        trackedProviderRefundIds.has(
+          `${refund.endToEndId}:${refund.providerRefundId}`,
+        )
+      ) {
+        continue;
+      }
+      externalByEndToEndId.set(
+        refund.endToEndId,
+        (externalByEndToEndId.get(refund.endToEndId) ?? 0) + refund.amountCents,
+      );
+    }
+    const externalSnapshotCents = [...externalByEndToEndId.values()].reduce(
+      (sum, value) => sum + value,
+      0,
+    );
+    let untrackedRefunded = Math.max(
+      0,
+      (payment.refundedAmountCents ??
+        this.toCents(payment.refundedAmount ?? 0)) -
+        trackedSucceededCents -
+        externalSnapshotCents,
+    );
+    let remaining = requestedCents;
+    const allocations: RefundAllocation[] = [];
+    for (const receipt of receipts) {
+      const knownExternal = externalByEndToEndId.get(receipt.endToEndId) ?? 0;
+      const fallbackExternal = Math.min(
+        Math.max(0, receipt.amountCents - knownExternal),
+        untrackedRefunded,
+      );
+      const externalConsumed = knownExternal + fallbackExternal;
+      untrackedRefunded -= fallbackExternal;
+      const available = Math.max(
+        0,
+        receipt.amountCents -
+          externalConsumed -
+          (alreadyAllocated.get(receipt.endToEndId) ?? 0),
+      );
+      const allocated = Math.min(available, remaining);
+      if (allocated > 0) {
+        allocations.push({
+          endToEndId: receipt.endToEndId,
+          amountCents: allocated,
+          status: RefundOperationStatus.Pending,
+        });
+        remaining -= allocated;
+      }
+      if (remaining === 0) break;
+    }
+    if (remaining !== 0) {
+      throw new ConflictException(
+        'El saldo contable no coincide con los recibos Pix; requiere conciliación',
+      );
+    }
+    return allocations;
+  }
+
+  private async lockOrderForRefund(
+    payment: PaymentDocument,
+    session: ClientSession,
+  ): Promise<void> {
+    if (!this.orderModel) return;
+    const order = await this.orderModel
+      .findById(payment.order)
+      .select('+prizeLifecycleVersion')
+      .session(session)
+      .exec();
+    if (!order) throw new NotFoundException('Pedido del pago no encontrado');
+    if (![OrderStatus.Paid, OrderStatus.InReview].includes(order.status)) {
+      throw new ConflictException(
+        `El pedido ${order.status} no admite una devolución voluntaria`,
+      );
+    }
+    if (order.status === OrderStatus.InReview && this.quotaModel) {
+      const paidQuotas = await this.quotaModel
+        .countDocuments({
+          order: order._id,
+          status: { $in: [QuotaStatus.Paid, QuotaStatus.Awarded] },
+        })
+        .session(session)
+        .exec();
+      if (paidQuotas !== order.allocatedQuantity) {
+        throw new ConflictException(
+          'La liquidación de cuotas del pago aún está pendiente; reintente el outbox antes de devolver',
+        );
+      }
+    }
+    order.status = OrderStatus.InReview;
+    order.prizeLifecycleVersion = (order.prizeLifecycleVersion ?? 0) + 1;
+    order.statusHistory.push({
+      status: OrderStatus.InReview,
+      at: new Date(),
+      reason: 'Saldo bloqueado para devolución Pix',
+    });
+    await order.save({ session });
+  }
+
+  private async processReservedRefund(
+    payment: PaymentDocument,
+    operation: RefundOperationDocument,
+  ): Promise<void> {
+    const provider = this.providerFactory.get(payment.provider);
+    const results: Array<{
+      index: number;
+      status: RefundOperationStatus;
+      providerRefundId?: string;
+      providerPayload?: Record<string, unknown>;
+      error?: string;
+      inconsistent?: boolean;
+    }> = [];
+    for (let index = 0; index < operation.allocations.length; index += 1) {
+      const allocation = operation.allocations[index];
+      try {
+        const result = await provider.refundPayment({
+          txid: payment.txid,
+          externalId: payment.externalId,
+          endToEndId: allocation.endToEndId,
+          amount: centsToAmount(allocation.amountCents),
+          idempotencyKey: this.refundAllocationKey(
+            operation.idempotencyKey,
+            index,
+          ),
+        });
+        const returnedCents = this.toCents(result.amount);
+        const inconsistent = returnedCents !== allocation.amountCents;
+        results.push({
+          index,
+          status:
+            !inconsistent && result.status === PaymentStatus.Refunded
+              ? RefundOperationStatus.Succeeded
+              : result.status === PaymentStatus.Paid
+                ? RefundOperationStatus.Failed
+                : RefundOperationStatus.Pending,
+          providerRefundId: result.providerRefundId,
+          providerPayload: result.raw
+            ? this.boundedProviderPayload(result.raw)
+            : undefined,
+          error: inconsistent
+            ? `El PSP informó ${returnedCents} centavos para una asignación de ${allocation.amountCents}`
+            : undefined,
+          inconsistent,
+        });
+      } catch (error) {
+        results.push({
+          index,
+          // Un timeout/error de red es ambiguo: Efí podría haber aceptado el
+          // PUT idempotente. Se conserva la reserva hasta conciliarlo.
+          status: RefundOperationStatus.Pending,
+          error:
+            `Resultado PSP desconocido: ${this.providerErrorMessage(error)}`.slice(
+              0,
+              1000,
+            ),
+        });
+      }
+    }
+    await this.finalizeRefundOperation(payment._id, operation._id, results);
+  }
+
+  private refundAllocationKey(idempotencyKey: string, index: number): string {
+    return createHash('sha256')
+      .update(`${idempotencyKey}:allocation:${index}`)
+      .digest('hex');
+  }
+
+  private async finalizeRefundOperation(
+    paymentId: Types.ObjectId,
+    operationId: Types.ObjectId,
+    results: Array<{
+      index: number;
+      status: RefundOperationStatus;
+      providerRefundId?: string;
+      providerPayload?: Record<string, unknown>;
+      error?: string;
+      inconsistent?: boolean;
+    }>,
+  ): Promise<void> {
+    if (!this.connection || !this.refundOperationModel || !this.outboxModel) {
+      throw new ServiceUnavailableException(
+        'Ledger de devoluciones no disponible',
+      );
+    }
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const session = await this.connection.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const [payment, operation] = await Promise.all([
+            this.paymentModel.findById(paymentId).session(session).exec(),
+            this.refundOperationModel!.findById(operationId)
+              .session(session)
+              .exec(),
+          ]);
+          if (!payment || !operation) {
+            throw new NotFoundException(
+              'Pago u operación de devolución no encontrada',
+            );
+          }
+          if (operation.status === RefundOperationStatus.Succeeded) return;
+
+          let newlySucceededCents = 0;
+          let inconsistent = false;
+          for (const result of results) {
+            const allocation = operation.allocations[result.index];
+            if (
+              !allocation ||
+              allocation.status !== RefundOperationStatus.Pending
+            ) {
+              continue;
+            }
+            allocation.status = result.status;
+            allocation.providerRefundId = result.providerRefundId;
+            allocation.providerPayload = result.providerPayload;
+            allocation.error = result.error;
+            if (result.status === RefundOperationStatus.Succeeded) {
+              newlySucceededCents += allocation.amountCents;
+            }
+            inconsistent ||= Boolean(result.inconsistent);
+          }
+          const pendingCents = operation.allocations
+            .filter(
+              (allocation) =>
+                allocation.status === RefundOperationStatus.Pending,
+            )
+            .reduce((sum, allocation) => sum + allocation.amountCents, 0);
+          const previousReserved = operation.reservedAmountCents;
+          operation.reservedAmountCents = pendingCents;
+          operation.succeededAmountCents =
+            (operation.succeededAmountCents ?? 0) + newlySucceededCents;
+          if (pendingCents > 0) {
+            operation.status = RefundOperationStatus.Pending;
+          } else if (
+            operation.succeededAmountCents === operation.requestedAmountCents
+          ) {
+            operation.status = RefundOperationStatus.Succeeded;
+            operation.completedAt = new Date();
+          } else {
+            operation.status = RefundOperationStatus.Failed;
+            operation.completedAt = new Date();
+          }
+          operation.lastError = operation.allocations
+            .map((allocation) => allocation.error)
+            .filter(Boolean)
+            .join(' | ')
+            .slice(0, 2000);
+
+          payment.amountCents = this.paymentAmountCents(payment);
+          payment.refundReservedAmountCents = Math.max(
+            0,
+            (payment.refundReservedAmountCents ?? 0) -
+              previousReserved +
+              pendingCents,
+          );
+          payment.refundedAmountCents = Math.min(
+            payment.amountCents,
+            (payment.refundedAmountCents ??
+              this.toCents(payment.refundedAmount ?? 0)) + newlySucceededCents,
+          );
+          payment.refundedAmount = centsToAmount(payment.refundedAmountCents);
+
+          const providerIds = operation.allocations
+            .map((allocation) => allocation.providerRefundId)
+            .filter((value): value is string => Boolean(value));
+          const embeddedStatus =
+            operation.status === RefundOperationStatus.Succeeded
+              ? PaymentStatus.Refunded
+              : operation.status === RefundOperationStatus.Pending
+                ? PaymentStatus.RefundPending
+                : payment.refundedAmountCents > 0
+                  ? PaymentStatus.PartiallyRefunded
+                  : PaymentStatus.Paid;
+          const refundEntry = payment.refunds.find(
+            (refund) => refund.idempotencyKey === operation.idempotencyKey,
+          );
+          const embedded: PaymentRefund = {
+            idempotencyKey: operation.idempotencyKey,
+            providerRefundId: providerIds.join(',') || undefined,
+            amount: centsToAmount(operation.requestedAmountCents),
+            status: embeddedStatus,
+            providerPayload: {
+              operationId: operation._id.toString(),
+              allocations: operation.allocations.map((allocation) => ({
+                endToEndId: allocation.endToEndId,
+                amountCents: allocation.amountCents,
+                providerRefundId: allocation.providerRefundId,
+                status: allocation.status,
+              })),
+            },
+            requestedAt:
+              (operation as RefundOperationDocument & { createdAt?: Date })
+                .createdAt ?? new Date(),
+            completedAt:
+              operation.status === RefundOperationStatus.Succeeded
+                ? operation.completedAt
+                : undefined,
+          };
+          if (refundEntry) Object.assign(refundEntry, embedded);
+          else payment.refunds.push(embedded);
+
+          let nextStatus: PaymentStatus;
+          if (inconsistent) nextStatus = PaymentStatus.UnderReview;
+          else if (pendingCents > 0) nextStatus = PaymentStatus.RefundPending;
+          else if (payment.refundedAmountCents >= payment.amountCents)
+            nextStatus = PaymentStatus.Refunded;
+          else if (payment.refundedAmountCents > 0)
+            nextStatus = PaymentStatus.PartiallyRefunded;
+          else nextStatus = PaymentStatus.Paid;
+
+          const previousStatus = payment.status;
+          this.applyStatusTransition(
+            payment,
+            nextStatus,
+            PaymentEventSource.Provider,
+            operation.lastError || operation.reason,
+            {
+              refundOperationId: operation._id.toString(),
+              requestedAmountCents: operation.requestedAmountCents,
+              succeededAmountCents: operation.succeededAmountCents,
+              reservedAmountCents: operation.reservedAmountCents,
+            },
+          );
+          if (previousStatus !== payment.status) {
+            payment.transitionSequence = (payment.transitionSequence ?? 0) + 1;
+          }
+          await Promise.all([
+            operation.save({ session }),
+            payment.save({ session }),
+          ]);
+          if (previousStatus !== payment.status) {
+            await this.createOutboxEvent(
+              payment,
+              previousStatus,
+              PaymentEventSource.Provider,
+              session,
+            );
+          }
+        });
+        await this.processOutboxForPayment(paymentId.toString());
+        return;
+      } catch (error) {
+        if (attempt >= 4 || !this.isRetryableTransactionError(error))
+          throw error;
+      } finally {
+        await session.endSession();
+      }
+    }
+  }
+
+  private assertRefundableStatus(payment: PaymentDocument): void {
+    if (
+      ![
+        PaymentStatus.Paid,
+        PaymentStatus.PartiallyRefunded,
+        PaymentStatus.RefundPending,
+      ].includes(payment.status)
+    ) {
+      throw new ConflictException(
+        `No se puede devolver un pago en estado ${payment.status}`,
+      );
+    }
+  }
+
   async expireDuePayments(): Promise<number> {
     const due = await this.paymentModel
       .find({
@@ -505,15 +1212,21 @@ export class PaymentsService {
         expiresAt: { $lte: new Date() },
       })
       .exec();
+    let expired = 0;
     for (const payment of due) {
-      await this.transition(
-        payment,
-        PaymentStatus.Expired,
-        PaymentEventSource.Application,
-        'La ventana de pago venció',
-      );
+      try {
+        await this.transition(
+          payment,
+          PaymentStatus.Expired,
+          PaymentEventSource.Application,
+          'La ventana de pago venció',
+        );
+        if (payment.status === PaymentStatus.Expired) expired += 1;
+      } catch (error) {
+        if (!(error instanceof ConflictException)) throw error;
+      }
     }
-    return due.length;
+    return expired;
   }
 
   async processWebhook(
@@ -574,20 +1287,23 @@ export class PaymentsService {
       }
 
       try {
-        const fresh = await this.findById(payment._id.toString());
-        if (event.endToEndId) fresh.endToEndId = event.endToEndId;
-        if (event.refundedAmount !== undefined) {
-          fresh.refundedAmount = Math.min(
-            fresh.amount,
-            this.normalizeAmount(event.refundedAmount),
-          );
-        }
-        fresh.providerPayload = persistedPayload;
-        const webhookStatus =
-          event.status === PaymentStatus.PartiallyRefunded &&
-          fresh.refundedAmount >= fresh.amount
-            ? PaymentStatus.Refunded
-            : event.status;
+        let fresh = await this.findById(payment._id.toString());
+        const financialPatch: PaymentMutationPatch = {
+          providerPayload: persistedPayload,
+          legacyEndToEndId: event.endToEndId,
+          paidAt: event.paidAt,
+          receipts: event.receipts,
+          refunds: event.refunds,
+          receiptIntegrityError: event.receiptIntegrityError,
+          enforceExactReceiptAmount:
+            providerName === PaymentProviderName.Efi &&
+            (event.status === PaymentStatus.Paid ||
+              event.status === PaymentStatus.RefundPending ||
+              event.status === PaymentStatus.PartiallyRefunded ||
+              event.status === PaymentStatus.Refunded),
+          authoritativeRefundedAmountCents: event.refundedAmountCents,
+        };
+        const webhookStatus = event.status;
         if (
           [
             PaymentStatus.RefundPending,
@@ -607,15 +1323,32 @@ export class PaymentsService {
             PaymentEventSource.Webhook,
             'Pix recibido antes de la notificación de devolución',
             persistedPayload,
+            financialPatch,
+          );
+          fresh = await this.findById(payment._id.toString());
+        }
+        if (
+          ![
+            PaymentStatus.RefundPending,
+            PaymentStatus.PartiallyRefunded,
+            PaymentStatus.Refunded,
+          ].includes(webhookStatus) ||
+          [
+            PaymentStatus.Paid,
+            PaymentStatus.RefundPending,
+            PaymentStatus.PartiallyRefunded,
+            PaymentStatus.Refunded,
+          ].includes(fresh.status)
+        ) {
+          await this.transition(
+            fresh,
+            webhookStatus,
+            PaymentEventSource.Webhook,
+            undefined,
+            persistedPayload,
+            financialPatch,
           );
         }
-        await this.transition(
-          fresh,
-          webhookStatus,
-          PaymentEventSource.Webhook,
-          undefined,
-          persistedPayload,
-        );
         await this.paymentModel.updateOne(
           { _id: payment._id },
           {
@@ -656,6 +1389,7 @@ export class PaymentsService {
       cancelledAt: payment.cancelledAt,
       refundedAt: payment.refundedAt,
       refundedAmount: payment.refundedAmount ?? 0,
+      receivedAmount: centsToAmount(payment.receivedAmountCents ?? 0),
       createdAt: payment.createdAt,
       updatedAt: payment.updatedAt,
     };
@@ -739,6 +1473,8 @@ export class PaymentsService {
           PaymentStatus.Failed,
           PaymentEventSource.Provider,
           payment.providerError,
+          undefined,
+          { providerError: payment.providerError },
         );
       } else {
         await payment.save();
@@ -766,33 +1502,86 @@ export class PaymentsService {
     source: PaymentEventSource,
     reason?: string,
   ): Promise<void> {
-    payment.externalId = result.externalId ?? payment.externalId;
-    payment.txid = result.txid || payment.txid;
-    payment.endToEndId = result.endToEndId ?? payment.endToEndId;
-    payment.qrCode = result.qrCode ?? payment.qrCode;
-    payment.qrCodeImage = result.qrCodeImage ?? payment.qrCodeImage;
-    payment.pixCopyPaste = result.pixCopyPaste ?? payment.pixCopyPaste;
-    payment.checkoutUrl = result.checkoutUrl ?? payment.checkoutUrl;
-    payment.providerPayload = result.raw
+    const providerPayload = result.raw
       ? this.boundedProviderPayload(result.raw)
       : undefined;
-    payment.providerError = undefined;
+    let providerStatus = result.status;
+    if ((result.receipts?.length ?? 0) > 0) {
+      providerStatus = PaymentStatus.Paid;
+    }
+    const pendingRefund = result.refunds?.some(
+      (refund) => refund.status === PaymentStatus.RefundPending,
+    );
+    if (pendingRefund) providerStatus = PaymentStatus.RefundPending;
+    else if ((result.refundedAmountCents ?? 0) > 0) {
+      providerStatus =
+        (result.refundedAmountCents ?? 0) >=
+        (payment.amountCents ?? this.toCents(payment.amount))
+          ? PaymentStatus.Refunded
+          : PaymentStatus.PartiallyRefunded;
+    }
 
     if (
       [PaymentStatus.Paid, PaymentStatus.PartiallyRefunded].includes(
         payment.status,
       ) &&
-      [PaymentStatus.Pending, PaymentStatus.Active].includes(result.status)
+      [PaymentStatus.Pending, PaymentStatus.Active].includes(providerStatus)
     ) {
-      await payment.save();
+      await this.transition(
+        payment,
+        payment.status,
+        source,
+        reason,
+        providerPayload,
+        {
+          externalId: result.externalId,
+          txid: result.txid,
+          qrCode: result.qrCode,
+          qrCodeImage: result.qrCodeImage,
+          pixCopyPaste: result.pixCopyPaste,
+          checkoutUrl: result.checkoutUrl,
+          legacyEndToEndId: result.endToEndId,
+          paidAt: result.paidAt,
+          providerPayload,
+          providerError: undefined,
+          receipts: result.receipts,
+          refunds: result.refunds,
+          receiptIntegrityError: result.receiptIntegrityError,
+          enforceExactReceiptAmount:
+            payment.provider === PaymentProviderName.Efi &&
+            (result.status === PaymentStatus.Paid ||
+              Boolean(result.receipts?.length)),
+          authoritativeRefundedAmountCents: result.refundedAmountCents,
+        },
+      );
       return;
     }
     await this.transition(
       payment,
-      result.status,
+      providerStatus,
       source,
       reason,
-      payment.providerPayload,
+      providerPayload,
+      {
+        externalId: result.externalId,
+        txid: result.txid,
+        qrCode: result.qrCode,
+        qrCodeImage: result.qrCodeImage,
+        pixCopyPaste: result.pixCopyPaste,
+        checkoutUrl: result.checkoutUrl,
+        legacyEndToEndId: result.endToEndId,
+        paidAt: result.paidAt,
+        providerPayload,
+        providerError: undefined,
+        receipts: result.receipts,
+        refunds: result.refunds,
+        receiptIntegrityError: result.receiptIntegrityError,
+        enforceExactReceiptAmount:
+          payment.provider === PaymentProviderName.Efi &&
+          (result.status === PaymentStatus.Paid ||
+            Boolean(result.receipts?.length)),
+        authoritativeRefundedAmountCents: result.refundedAmountCents,
+      },
     );
   }
 
@@ -802,12 +1591,361 @@ export class PaymentsService {
     source: PaymentEventSource,
     reason?: string,
     metadata?: Record<string, unknown>,
+    patch: PaymentMutationPatch = {},
   ): Promise<void> {
-    const previousStatus = payment.status;
-    if (previousStatus === status) {
+    if (!this.connection || !this.outboxModel) {
+      const resolved = await this.prepareTransition(
+        payment,
+        status,
+        reason,
+        patch,
+      );
+      const previousStatus = payment.status;
+      this.applyStatusTransition(
+        payment,
+        resolved.status,
+        source,
+        resolved.reason,
+        metadata,
+      );
       await payment.save();
+      if (previousStatus !== payment.status) {
+        await this.notifyLifecycleDirect(payment, previousStatus, source);
+      }
       return;
     }
+
+    let persisted: PaymentDocument | undefined;
+    let changed = false;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const session = await this.connection.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const fresh = await this.paymentModel
+            .findById(payment._id)
+            .session(session)
+            .exec();
+          if (!fresh) throw new NotFoundException('Pago no encontrado');
+          const previousStatus = fresh.status;
+          const resolved = await this.prepareTransition(
+            fresh,
+            status,
+            reason,
+            patch,
+            session,
+          );
+          this.applyStatusTransition(
+            fresh,
+            resolved.status,
+            source,
+            resolved.reason,
+            metadata,
+          );
+          changed = previousStatus !== fresh.status;
+          if (changed)
+            fresh.transitionSequence = (fresh.transitionSequence ?? 0) + 1;
+          await fresh.save({ session });
+          if (changed) {
+            await this.createOutboxEvent(
+              fresh,
+              previousStatus,
+              source,
+              session,
+            );
+          }
+          persisted = fresh;
+        });
+        break;
+      } catch (error) {
+        if (attempt >= 4 || !this.isRetryableTransactionError(error))
+          throw error;
+      } finally {
+        await session.endSession();
+      }
+    }
+    if (!persisted) {
+      throw new ServiceUnavailableException(
+        'No se pudo serializar la transición financiera',
+      );
+    }
+    this.copyPaymentState(payment, persisted);
+    if (changed) await this.processOutboxForPayment(payment._id.toString());
+  }
+
+  private async prepareTransition(
+    payment: PaymentDocument,
+    requestedStatus: PaymentStatus,
+    reason: string | undefined,
+    patch: PaymentMutationPatch,
+    session?: ClientSession,
+  ): Promise<{ status: PaymentStatus; reason?: string }> {
+    this.applyPaymentPatch(payment, patch);
+    let status = requestedStatus;
+    let resolvedReason = reason;
+    const enforceExactReceiptAmount =
+      patch.enforceExactReceiptAmount ||
+      (payment.provider === PaymentProviderName.Efi &&
+        requestedStatus === PaymentStatus.Paid);
+    if (patch.receipts || enforceExactReceiptAmount) {
+      const merge = mergePixReceipts(
+        (payment.receipts ?? []).map((receipt) => ({
+          endToEndId: receipt.endToEndId,
+          amountCents: receipt.amountCents,
+          paidAt: receipt.paidAt,
+        })),
+        patch.receipts ?? [],
+      );
+      payment.receipts = merge.receipts as PaymentReceipt[];
+      payment.endToEndIds = merge.receipts.map((receipt) => receipt.endToEndId);
+      payment.endToEndId = payment.endToEndIds[0] ?? payment.endToEndId;
+      payment.receivedAmountCents = merge.receipts.reduce(
+        (sum, receipt) => sum + receipt.amountCents,
+        0,
+      );
+      if (merge.receipts.length) {
+        payment.paidAt = new Date(
+          Math.max(
+            ...merge.receipts.map((receipt) => receipt.paidAt.getTime()),
+          ),
+        );
+      }
+      const integrityError = [patch.receiptIntegrityError, merge.integrityError]
+        .filter(Boolean)
+        .join(' | ');
+      if (
+        enforceExactReceiptAmount &&
+        (integrityError ||
+          payment.receivedAmountCents !== this.paymentAmountCents(payment))
+      ) {
+        status = PaymentStatus.UnderReview;
+        resolvedReason = integrityError
+          ? `Pix inconsistente: ${integrityError}`
+          : `Importe Pix recibido ${centsToAmount(
+              payment.receivedAmountCents,
+            ).toFixed(2)}; esperado ${payment.amount.toFixed(2)}`;
+      }
+    }
+    let authoritativeRefundedAmountCents =
+      patch.authoritativeRefundedAmountCents;
+    if (patch.refunds?.length) {
+      const mergedRefunds = this.mergeProviderRefunds(
+        payment.providerRefunds ?? [],
+        patch.refunds,
+      );
+      payment.providerRefunds = mergedRefunds.refunds;
+      if (mergedRefunds.integrityError) {
+        status = PaymentStatus.UnderReview;
+        resolvedReason = `Devolución Pix inconsistente: ${mergedRefunds.integrityError}`;
+      }
+      authoritativeRefundedAmountCents = mergedRefunds.refunds
+        .filter((refund) => refund.status === PaymentStatus.Refunded)
+        .reduce((sum, refund) => sum + refund.amountCents, 0);
+    }
+    if (authoritativeRefundedAmountCents !== undefined) {
+      if (patch.refunds?.length && session) {
+        await this.synchronizeRefundLedger(payment, patch.refunds, session);
+      }
+      const authoritative = Math.min(
+        this.paymentAmountCents(payment),
+        Math.max(0, authoritativeRefundedAmountCents),
+      );
+      payment.refundedAmountCents = Math.max(
+        payment.refundedAmountCents ??
+          this.toCents(payment.refundedAmount ?? 0),
+        authoritative,
+      );
+      payment.refundedAmount = centsToAmount(payment.refundedAmountCents);
+      if (
+        status === PaymentStatus.PartiallyRefunded &&
+        payment.refundedAmountCents >= this.paymentAmountCents(payment)
+      ) {
+        status = PaymentStatus.Refunded;
+      }
+    }
+
+    if (
+      status === PaymentStatus.Paid &&
+      payment.status !== PaymentStatus.Paid
+    ) {
+      const orderReserved = await this.reserveOrderForSettlement(
+        payment,
+        session,
+      );
+      if (!orderReserved) {
+        status = PaymentStatus.UnderReview;
+        resolvedReason =
+          'Pix recibido cuando el pedido ya no conservaba su reserva; requiere revisión y eventual devolución';
+      }
+    }
+    return { status, reason: resolvedReason };
+  }
+
+  private async synchronizeRefundLedger(
+    payment: PaymentDocument,
+    refunds: PixRefundSnapshot[],
+    session: ClientSession,
+  ): Promise<void> {
+    if (!this.refundOperationModel) return;
+    const operations = await this.refundOperationModel
+      .find({ payment: payment._id, status: RefundOperationStatus.Pending })
+      .session(session)
+      .exec();
+    let releasedCents = 0;
+    for (const operation of operations) {
+      let changed = false;
+      for (const allocation of operation.allocations) {
+        if (
+          allocation.status !== RefundOperationStatus.Pending ||
+          !allocation.providerRefundId
+        ) {
+          continue;
+        }
+        const snapshot = refunds.find(
+          (refund) =>
+            refund.providerRefundId === allocation.providerRefundId &&
+            refund.endToEndId === allocation.endToEndId,
+        );
+        if (!snapshot || snapshot.status === PaymentStatus.RefundPending)
+          continue;
+        if (snapshot.amountCents !== allocation.amountCents) {
+          allocation.error =
+            'El importe confirmado por Efí no coincide con la asignación reservada';
+          continue;
+        }
+        allocation.status =
+          snapshot.status === PaymentStatus.Refunded
+            ? RefundOperationStatus.Succeeded
+            : RefundOperationStatus.Failed;
+        if (allocation.status === RefundOperationStatus.Succeeded) {
+          operation.succeededAmountCents += allocation.amountCents;
+        }
+        releasedCents += allocation.amountCents;
+        changed = true;
+      }
+      if (!changed) continue;
+      operation.reservedAmountCents = operation.allocations
+        .filter(
+          (allocation) => allocation.status === RefundOperationStatus.Pending,
+        )
+        .reduce((sum, allocation) => sum + allocation.amountCents, 0);
+      if (operation.reservedAmountCents > 0) {
+        operation.status = RefundOperationStatus.Pending;
+      } else if (
+        operation.succeededAmountCents === operation.requestedAmountCents
+      ) {
+        operation.status = RefundOperationStatus.Succeeded;
+        operation.completedAt = new Date();
+      } else {
+        operation.status = RefundOperationStatus.Failed;
+        operation.completedAt = new Date();
+      }
+      const embedded = payment.refunds.find(
+        (refund) => refund.idempotencyKey === operation.idempotencyKey,
+      );
+      if (embedded) {
+        embedded.status =
+          operation.status === RefundOperationStatus.Succeeded
+            ? PaymentStatus.Refunded
+            : operation.status === RefundOperationStatus.Pending
+              ? PaymentStatus.RefundPending
+              : operation.succeededAmountCents > 0
+                ? PaymentStatus.PartiallyRefunded
+                : PaymentStatus.Paid;
+        embedded.completedAt =
+          operation.status === RefundOperationStatus.Pending
+            ? undefined
+            : operation.completedAt;
+      }
+      await operation.save({ session });
+    }
+    payment.refundReservedAmountCents = Math.max(
+      0,
+      (payment.refundReservedAmountCents ?? 0) - releasedCents,
+    );
+  }
+
+  private applyPaymentPatch(
+    payment: PaymentDocument,
+    patch: PaymentMutationPatch,
+  ): void {
+    if (patch.externalId) payment.externalId = patch.externalId;
+    if (patch.txid) payment.txid = patch.txid;
+    if (patch.qrCode) payment.qrCode = patch.qrCode;
+    if (patch.qrCodeImage) payment.qrCodeImage = patch.qrCodeImage;
+    if (patch.pixCopyPaste) payment.pixCopyPaste = patch.pixCopyPaste;
+    if (patch.checkoutUrl) payment.checkoutUrl = patch.checkoutUrl;
+    if (patch.legacyEndToEndId) {
+      payment.endToEndId = patch.legacyEndToEndId;
+      if (!payment.endToEndIds?.includes(patch.legacyEndToEndId)) {
+        payment.endToEndIds = [
+          ...(payment.endToEndIds ?? []),
+          patch.legacyEndToEndId,
+        ];
+      }
+    }
+    if (patch.paidAt && Number.isFinite(patch.paidAt.getTime())) {
+      payment.paidAt = patch.paidAt;
+    }
+    if (patch.providerPayload) payment.providerPayload = patch.providerPayload;
+    if (Object.prototype.hasOwnProperty.call(patch, 'providerError')) {
+      payment.providerError = patch.providerError;
+    }
+    payment.amountCents = this.paymentAmountCents(payment);
+    payment.receivedAmountCents = payment.receivedAmountCents ?? 0;
+    payment.refundedAmountCents =
+      payment.refundedAmountCents ?? this.toCents(payment.refundedAmount ?? 0);
+    payment.refundReservedAmountCents = payment.refundReservedAmountCents ?? 0;
+    payment.receipts = payment.receipts ?? [];
+    payment.providerRefunds = payment.providerRefunds ?? [];
+    payment.endToEndIds = payment.endToEndIds ?? [];
+    payment.transitionSequence = payment.transitionSequence ?? 0;
+  }
+
+  private mergeProviderRefunds(
+    stored: PaymentProviderRefund[],
+    incoming: PixRefundSnapshot[],
+  ): { refunds: PaymentProviderRefund[]; integrityError?: string } {
+    const refunds = new Map<string, PaymentProviderRefund>();
+    const errors = new Set<string>();
+    for (const refund of [...stored, ...incoming]) {
+      const key = `${refund.endToEndId}:${refund.providerRefundId}`;
+      const normalized: PaymentProviderRefund = {
+        providerRefundId: refund.providerRefundId,
+        endToEndId: refund.endToEndId,
+        amountCents: refund.amountCents,
+        status: refund.status,
+      };
+      const previous = refunds.get(key);
+      if (previous && previous.amountCents !== normalized.amountCents) {
+        errors.add(
+          `la devolución ${refund.providerRefundId} cambió de importe`,
+        );
+        continue;
+      }
+      if (
+        previous?.status === PaymentStatus.Refunded ||
+        (previous?.status === PaymentStatus.Paid &&
+          normalized.status === PaymentStatus.RefundPending)
+      ) {
+        continue;
+      }
+      refunds.set(key, normalized);
+    }
+    return {
+      refunds: [...refunds.values()],
+      integrityError: errors.size ? [...errors].join(' | ') : undefined,
+    };
+  }
+
+  private applyStatusTransition(
+    payment: PaymentDocument,
+    status: PaymentStatus,
+    source: PaymentEventSource,
+    reason?: string,
+    metadata?: Record<string, unknown>,
+  ): void {
+    const previousStatus = payment.status;
+    if (previousStatus === status) return;
     if (!ALLOWED_TRANSITIONS[previousStatus]?.has(status)) {
       throw new ConflictException(
         `Transición de pago inválida: ${previousStatus} -> ${status}`,
@@ -825,16 +1963,306 @@ export class PaymentsService {
     if (status === PaymentStatus.Paid) payment.paidAt = payment.paidAt ?? now;
     if (status === PaymentStatus.Cancelled) payment.cancelledAt = now;
     if (status === PaymentStatus.Refunded) payment.refundedAt = now;
-    await payment.save();
-    await this.notifyLifecycle(payment, previousStatus, source);
   }
 
-  private async notifyLifecycle(
+  private async reserveOrderForSettlement(
+    payment: PaymentDocument,
+    session?: ClientSession,
+  ): Promise<boolean> {
+    if (!this.orderModel) return true;
+    if (
+      [PaymentStatus.Expired, PaymentStatus.Cancelled].includes(payment.status)
+    ) {
+      return false;
+    }
+    const query = this.orderModel.findById(payment.order);
+    if (session) query.session(session);
+    const order = await query.exec();
+    if (!order) return false;
+    if (order.payment && order.payment.toString() !== payment._id.toString()) {
+      return false;
+    }
+    if (order.status === OrderStatus.Paid) return true;
+    if (
+      ![
+        OrderStatus.Reserved,
+        OrderStatus.PendingPayment,
+        OrderStatus.InReview,
+      ].includes(order.status)
+    ) {
+      return false;
+    }
+    const paidAt = payment.paidAt ?? new Date();
+    if (paidAt.getTime() > order.expiresAt.getTime()) return false;
+    if (!this.quotaModel) return true;
+    const quotaQuery = this.quotaModel.countDocuments({
+      order: order._id,
+      status: QuotaStatus.Reserved,
+    });
+    if (session) quotaQuery.session(session);
+    const reservedQuotas = await quotaQuery.exec();
+    if (reservedQuotas !== order.allocatedQuantity) {
+      const paidQuotaQuery = this.quotaModel.countDocuments({
+        order: order._id,
+        status: { $in: [QuotaStatus.Paid, QuotaStatus.Awarded] },
+      });
+      if (session) paidQuotaQuery.session(session);
+      const paidQuotas = await paidQuotaQuery.exec();
+      if (paidQuotas !== order.allocatedQuantity) return false;
+    }
+    order.payment = payment._id;
+    order.paidAt = order.paidAt ?? paidAt;
+    if (order.status !== OrderStatus.InReview) {
+      order.status = OrderStatus.InReview;
+      order.statusHistory.push({
+        status: OrderStatus.InReview,
+        at: new Date(),
+        reason: 'Importe Pix exacto; reserva bloqueada para liquidación',
+      });
+    }
+    await order.save(session ? { session } : undefined);
+    return true;
+  }
+
+  private async createOutboxEvent(
+    payment: PaymentDocument,
+    previousStatus: PaymentStatus,
+    source: PaymentEventSource,
+    session: ClientSession,
+  ): Promise<void> {
+    if (!this.outboxModel) return;
+    const event: PaymentLifecycleEvent = {
+      paymentId: payment._id.toString(),
+      orderId: payment.order.toString(),
+      campaignId: payment.campaign.toString(),
+      userId: payment.user?.toString(),
+      provider: payment.provider,
+      previousStatus,
+      status: payment.status,
+      source,
+      amount: payment.amount,
+      currency: payment.currency,
+      txid: payment.txid,
+      endToEndId: payment.endToEndId,
+    };
+    await this.outboxModel.create(
+      [
+        {
+          eventKey: `${payment._id.toString()}:${payment.transitionSequence}`,
+          payment: payment._id,
+          sequence: payment.transitionSequence,
+          orderId: event.orderId,
+          campaignId: event.campaignId,
+          userId: event.userId,
+          provider: event.provider,
+          previousStatus: event.previousStatus,
+          status: event.status,
+          source: event.source,
+          amountCents: this.paymentAmountCents(payment),
+          currency: event.currency,
+          txid: event.txid,
+          endToEndId: event.endToEndId,
+          outboxStatus: PaymentOutboxStatus.Pending,
+          nextAttemptAt: new Date(),
+        },
+      ],
+      { session },
+    );
+  }
+
+  @Cron('*/10 * * * * *')
+  async processLifecycleOutbox(): Promise<number> {
+    if (!this.outboxModel || this.lifecycleHooks.size === 0) return 0;
+    let processed = 0;
+    for (let index = 0; index < 25; index += 1) {
+      const event = await this.claimOutboxEvent();
+      if (!event) break;
+      await this.processClaimedOutboxEvent(event);
+      processed += 1;
+    }
+    return processed;
+  }
+
+  private async processOutboxForPayment(paymentId: string): Promise<void> {
+    if (!this.outboxModel || this.lifecycleHooks.size === 0) return;
+    for (let index = 0; index < 10; index += 1) {
+      const event = await this.claimOutboxEvent(new Types.ObjectId(paymentId));
+      if (!event) return;
+      await this.processClaimedOutboxEvent(event);
+    }
+  }
+
+  private claimOutboxEvent(
+    payment?: Types.ObjectId,
+  ): Promise<PaymentOutboxDocument | null> {
+    if (!this.outboxModel) return Promise.resolve(null);
+    const now = new Date();
+    const staleLock = new Date(
+      now.getTime() - this.outboxLockTimeoutSeconds() * 1000,
+    );
+    return this.outboxModel
+      .findOneAndUpdate(
+        {
+          ...(payment ? { payment } : {}),
+          $or: [
+            {
+              outboxStatus: PaymentOutboxStatus.Pending,
+              nextAttemptAt: { $lte: now },
+            },
+            {
+              outboxStatus: PaymentOutboxStatus.Processing,
+              lockedAt: { $lte: staleLock },
+            },
+          ],
+        },
+        {
+          $set: {
+            outboxStatus: PaymentOutboxStatus.Processing,
+            lockedAt: now,
+          },
+        },
+        { new: true, sort: { nextAttemptAt: 1, createdAt: 1 } },
+      )
+      .exec();
+  }
+
+  private async processClaimedOutboxEvent(
+    outbox: PaymentOutboxDocument,
+  ): Promise<void> {
+    if (!this.outboxModel) return;
+    const event = this.outboxToLifecycleEvent(outbox);
+    try {
+      for (const [hookId, hooks] of this.lifecycleHooks.entries()) {
+        for (const [method, callback] of this.lifecycleSteps(hooks, event)) {
+          const step = `${hookId}:${method}`;
+          if (outbox.completedSteps.includes(step)) continue;
+          await callback();
+          await this.outboxModel.updateOne(
+            { _id: outbox._id },
+            { $addToSet: { completedSteps: step } },
+          );
+          outbox.completedSteps.push(step);
+        }
+      }
+      const completedAt = new Date();
+      await Promise.all([
+        this.outboxModel.updateOne(
+          { _id: outbox._id },
+          {
+            $set: {
+              outboxStatus: PaymentOutboxStatus.Succeeded,
+              completedAt,
+            },
+            $unset: { lockedAt: 1, lastError: 1 },
+          },
+        ),
+        this.paymentModel.updateOne(
+          { _id: outbox.payment },
+          {
+            $unset: { lifecycleHookError: 1 },
+            $set: { lifecycleHookProcessedAt: completedAt },
+          },
+        ),
+      ]);
+    } catch (error) {
+      const message = (
+        error instanceof Error ? error.message : String(error)
+      ).slice(0, 2000);
+      const attempts = (outbox.attempts ?? 0) + 1;
+      const deadLetter = attempts >= this.outboxMaxAttempts();
+      const nextAttemptAt = new Date(
+        Date.now() + this.outboxBackoffSeconds(attempts) * 1000,
+      );
+      await Promise.all([
+        this.outboxModel.updateOne(
+          { _id: outbox._id },
+          {
+            $set: {
+              outboxStatus: deadLetter
+                ? PaymentOutboxStatus.DeadLetter
+                : PaymentOutboxStatus.Pending,
+              attempts,
+              nextAttemptAt,
+              lastError: message,
+            },
+            $unset: { lockedAt: 1 },
+          },
+        ),
+        this.paymentModel.updateOne(
+          { _id: outbox.payment },
+          { $set: { lifecycleHookError: message } },
+        ),
+      ]);
+      this.logger.error(
+        `Outbox ${outbox.eventKey} falló (intento ${attempts}): ${message}`,
+      );
+    }
+  }
+
+  private lifecycleSteps(
+    hooks: PaymentLifecycleHooks,
+    event: PaymentLifecycleEvent,
+  ): Array<[string, () => Promise<void>]> {
+    const steps: Array<[string, () => Promise<void>]> = [];
+    if (hooks.onPaymentStatusChanged) {
+      steps.push([
+        'onPaymentStatusChanged',
+        async () => void (await hooks.onPaymentStatusChanged?.(event)),
+      ]);
+    }
+    if (event.status === PaymentStatus.Paid && hooks.onPaymentPaid) {
+      steps.push([
+        'onPaymentPaid',
+        async () => void (await hooks.onPaymentPaid?.(event)),
+      ]);
+    }
+    if (
+      [PaymentStatus.Cancelled, PaymentStatus.Expired].includes(event.status) &&
+      hooks.onPaymentCancelled
+    ) {
+      steps.push([
+        'onPaymentCancelled',
+        async () => void (await hooks.onPaymentCancelled?.(event)),
+      ]);
+    }
+    if (
+      [PaymentStatus.PartiallyRefunded, PaymentStatus.Refunded].includes(
+        event.status,
+      ) &&
+      hooks.onPaymentRefunded
+    ) {
+      steps.push([
+        'onPaymentRefunded',
+        async () => void (await hooks.onPaymentRefunded?.(event)),
+      ]);
+    }
+    return steps;
+  }
+
+  private outboxToLifecycleEvent(
+    outbox: PaymentOutboxDocument,
+  ): PaymentLifecycleEvent {
+    return {
+      paymentId: outbox.payment.toString(),
+      orderId: outbox.orderId,
+      campaignId: outbox.campaignId,
+      userId: outbox.userId,
+      provider: outbox.provider,
+      previousStatus: outbox.previousStatus,
+      status: outbox.status,
+      source: outbox.source,
+      amount: centsToAmount(outbox.amountCents),
+      currency: outbox.currency,
+      txid: outbox.txid,
+      endToEndId: outbox.endToEndId,
+    };
+  }
+
+  private async notifyLifecycleDirect(
     payment: PaymentDocument,
     previousStatus: PaymentStatus,
     source: PaymentEventSource,
   ): Promise<void> {
-    if (this.lifecycleHooks.size === 0) return;
     const event: PaymentLifecycleEvent = {
       paymentId: payment._id.toString(),
       orderId: payment.order.toString(),
@@ -850,48 +2278,49 @@ export class PaymentsService {
       endToEndId: payment.endToEndId,
     };
     const errors: string[] = [];
-    for (const hooks of this.lifecycleHooks) {
-      try {
-        await hooks.onPaymentStatusChanged?.(event);
-        if (payment.status === PaymentStatus.Paid) {
-          await hooks.onPaymentPaid?.(event);
+    for (const hooks of this.lifecycleHooks.values()) {
+      for (const [, callback] of this.lifecycleSteps(hooks, event)) {
+        try {
+          await callback();
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : String(error));
         }
-        if (
-          [PaymentStatus.Cancelled, PaymentStatus.Expired].includes(
-            payment.status,
-          )
-        ) {
-          await hooks.onPaymentCancelled?.(event);
-        }
-        if (
-          [PaymentStatus.PartiallyRefunded, PaymentStatus.Refunded].includes(
-            payment.status,
-          )
-        ) {
-          await hooks.onPaymentRefunded?.(event);
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        errors.push(message);
-        this.logger.error(
-          `Falló callback para pago ${payment._id}: ${message}`,
-        );
       }
     }
-    if (errors.length === 0) {
-      await this.paymentModel.updateOne(
-        { _id: payment._id },
-        {
-          $unset: { lifecycleHookError: 1 },
-          $set: { lifecycleHookProcessedAt: new Date() },
-        },
-      );
-    } else {
-      await this.paymentModel.updateOne(
-        { _id: payment._id },
-        { $set: { lifecycleHookError: errors.join(' | ').slice(0, 2000) } },
-      );
+    if (errors.length) {
+      throw new ServiceUnavailableException(errors.join(' | ').slice(0, 2000));
     }
+  }
+
+  private outboxMaxAttempts(): number {
+    return Math.min(
+      50,
+      Math.max(
+        1,
+        Number(this.config.get('PAYMENTS_OUTBOX_MAX_ATTEMPTS') ?? 12),
+      ),
+    );
+  }
+
+  private outboxLockTimeoutSeconds(): number {
+    return Math.min(
+      3600,
+      Math.max(
+        30,
+        Number(this.config.get('PAYMENTS_OUTBOX_LOCK_SECONDS') ?? 300),
+      ),
+    );
+  }
+
+  private outboxBackoffSeconds(attempt: number): number {
+    const base = Math.min(
+      300,
+      Math.max(
+        1,
+        Number(this.config.get('PAYMENTS_OUTBOX_BACKOFF_SECONDS') ?? 5),
+      ),
+    );
+    return Math.min(3600, base * 2 ** Math.min(10, Math.max(0, attempt - 1)));
   }
 
   private extractWebhookEvents(
@@ -901,8 +2330,12 @@ export class PaymentsService {
     txid?: string;
     eventId?: string;
     endToEndId?: string;
+    paidAt?: Date;
     status: PaymentStatus;
-    refundedAmount?: number;
+    receipts?: PixReceiptSnapshot[];
+    refunds?: PixRefundSnapshot[];
+    refundedAmountCents?: number;
+    receiptIntegrityError?: string;
     raw: Record<string, unknown>;
   }> {
     if (providerName === PaymentProviderName.Mock) {
@@ -926,44 +2359,60 @@ export class PaymentsService {
     }
 
     const pix = Array.isArray(payload.pix) ? payload.pix : [];
-    return pix
-      .filter((item): item is Record<string, unknown> =>
-        Boolean(item && typeof item === 'object'),
-      )
-      .map((item) => {
-        const refunds = Array.isArray(item.devolucoes)
-          ? (item.devolucoes as Record<string, unknown>[])
-          : [];
-        const completedRefunds = refunds.filter(
-          (refund) => String(refund.status).toUpperCase() === 'DEVOLVIDO',
-        );
-        const pendingRefund = refunds.some(
-          (refund) =>
-            mapEfiRefundStatus(String(refund.status)) ===
-            PaymentStatus.RefundPending,
-        );
-        const refundedAmount = completedRefunds.reduce(
-          (sum, refund) => sum + Number(refund.valor ?? 0),
-          0,
-        );
-        let status = PaymentStatus.Paid;
-        if (pendingRefund) status = PaymentStatus.RefundPending;
-        else if (refundedAmount > 0) status = PaymentStatus.PartiallyRefunded;
-        return {
-          txid: typeof item.txid === 'string' ? item.txid : undefined,
-          eventId:
-            typeof item.endToEndId === 'string'
-              ? `${item.endToEndId}:${refunds
-                  .map((refund) => `${refund.id ?? ''}:${refund.status ?? ''}`)
-                  .join(',')}`
-              : undefined,
-          endToEndId:
-            typeof item.endToEndId === 'string' ? item.endToEndId : undefined,
-          status,
-          refundedAmount: refundedAmount || undefined,
-          raw: item,
-        };
-      });
+    const groups = new Map<string, Record<string, unknown>[]>();
+    const invalid: Record<string, unknown>[] = [];
+    for (const rawItem of pix) {
+      if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) {
+        invalid.push({ invalidPixEntry: String(rawItem) });
+        continue;
+      }
+      const item = rawItem as Record<string, unknown>;
+      const txid = typeof item.txid === 'string' ? item.txid.trim() : '';
+      if (!txid) {
+        invalid.push(item);
+        continue;
+      }
+      groups.set(txid, [...(groups.get(txid) ?? []), item]);
+    }
+    const events = [...groups.entries()].map(([txid, items]) => {
+      const summary = summarizeEfiPixEntries(items);
+      const pendingRefund = summary.refunds.some(
+        (refund) => refund.status === PaymentStatus.RefundPending,
+      );
+      let status = PaymentStatus.Paid;
+      if (pendingRefund) status = PaymentStatus.RefundPending;
+      else if (summary.refundedAmountCents > 0)
+        status = PaymentStatus.PartiallyRefunded;
+      const paidAt = summary.receipts.length
+        ? new Date(
+            Math.max(
+              ...summary.receipts.map((receipt) => receipt.paidAt.getTime()),
+            ),
+          )
+        : undefined;
+      return {
+        txid,
+        eventId: createHash('sha256')
+          .update(stableStringify(items))
+          .digest('hex'),
+        endToEndId: summary.receipts[0]?.endToEndId,
+        paidAt,
+        status,
+        receipts: summary.receipts,
+        refunds: summary.refunds,
+        refundedAmountCents: summary.refundedAmountCents,
+        receiptIntegrityError: summary.integrityError,
+        raw: { txid, pix: items },
+      };
+    });
+    return [
+      ...events,
+      ...invalid.map((raw) => ({
+        status: PaymentStatus.UnderReview,
+        receiptIntegrityError: 'Evento Pix sin txid o con formato inválido',
+        raw,
+      })),
+    ];
   }
 
   private validateCreateInput(dto: CreatePaymentDto): void {
@@ -1015,6 +2464,53 @@ export class PaymentsService {
       );
     }
     return normalized;
+  }
+
+  private toCents(amount: number): number {
+    if (!Number.isFinite(amount) || amount < 0) {
+      throw new BadRequestException('Importe financiero inválido');
+    }
+    const cents = Math.round(amount * 100);
+    if (Math.abs(amount * 100 - cents) > 1e-7) {
+      throw new BadRequestException(
+        'El importe admite como máximo 2 decimales',
+      );
+    }
+    return cents;
+  }
+
+  private paymentAmountCents(payment: PaymentDocument): number {
+    const cents = payment.amountCents ?? this.toCents(payment.amount);
+    if (!Number.isSafeInteger(cents) || cents <= 0) {
+      throw new BadRequestException('Importe del pago inválido');
+    }
+    return cents;
+  }
+
+  private copyPaymentState(
+    target: PaymentDocument,
+    source: PaymentDocument,
+  ): void {
+    const snapshot = source.toObject
+      ? source.toObject({ depopulate: true })
+      : source;
+    if (typeof target.set === 'function') target.set(snapshot);
+    else Object.assign(target, snapshot);
+  }
+
+  private isRetryableTransactionError(error: unknown): boolean {
+    if (!error || typeof error !== 'object') return false;
+    const candidate = error as {
+      code?: number;
+      name?: string;
+      hasErrorLabel?: (label: string) => boolean;
+    };
+    return Boolean(
+      candidate.code === 112 ||
+        candidate.name === 'VersionError' ||
+        candidate.hasErrorLabel?.('TransientTransactionError') ||
+        candidate.hasErrorLabel?.('UnknownTransactionCommitResult'),
+    );
   }
 
   private assertIdempotentRequest(
@@ -1094,24 +2590,32 @@ export class PaymentsService {
     };
   }
 
-  private async assertRefundAllowed(payment: PaymentDocument): Promise<void> {
+  private async assertRefundAllowed(
+    payment: PaymentDocument,
+    session?: ClientSession,
+  ): Promise<void> {
     if (!this.orderModel || !this.campaignModel || !this.awardModel) return;
+    const orderQuery = this.orderModel
+      .findById(payment.order)
+      .select('titleNumbers');
+    const campaignQuery = this.campaignModel
+      .findById(payment.campaign)
+      .select('status winningQuotaNumber');
+    const awardQuery = this.awardModel
+      .findOne({
+        order: payment.order,
+        status: PrizeAwardStatus.Fulfilled,
+      })
+      .select('_id');
+    if (session) {
+      orderQuery.session(session);
+      campaignQuery.session(session);
+      awardQuery.session(session);
+    }
     const [order, campaign, fulfilledAward] = await Promise.all([
-      this.orderModel
-        .findById(payment.order)
-        .select('titleNumbers')
-        .lean(),
-      this.campaignModel
-        .findById(payment.campaign)
-        .select('status winningQuotaNumber')
-        .lean(),
-      this.awardModel
-        .findOne({
-          order: payment.order,
-          status: PrizeAwardStatus.Fulfilled,
-        })
-        .select('_id')
-        .lean(),
+      orderQuery.lean(),
+      campaignQuery.lean(),
+      awardQuery.lean(),
     ]);
     if (fulfilledAward) {
       throw new ConflictException(
@@ -1133,9 +2637,9 @@ export class PaymentsService {
   private isDuplicateKeyError(error: unknown): boolean {
     return Boolean(
       error &&
-      typeof error === 'object' &&
-      'code' in error &&
-      (error as { code?: number }).code === 11000,
+        typeof error === 'object' &&
+        'code' in error &&
+        (error as { code?: number }).code === 11000,
     );
   }
 }

@@ -29,9 +29,7 @@ const LOGIN_LOCK_MILLISECONDS = 15 * 60 * 1000;
 
 @Injectable()
 export class UsersService {
-  constructor(
-    @InjectModel(User.name) private userModel: Model<UserDocument>,
-  ) {}
+  constructor(@InjectModel(User.name) private userModel: Model<UserDocument>) {}
 
   async create(dto: CreateUserDto): Promise<UserDocument> {
     const phone = normalizePhone(dto.phone);
@@ -277,11 +275,15 @@ export class UsersService {
 
     delete changes.password;
     try {
-      const updateOperation = dto.password
+      const invalidatesSessions =
+        dto.password !== undefined || dto.isActive !== undefined;
+      const updateOperation = invalidatesSessions
         ? {
             $set: changes,
             $inc: { authVersion: 1 },
-            $unset: { password: 1, lockedUntil: 1 },
+            ...(dto.password
+              ? { $unset: { password: 1, lockedUntil: 1 } }
+              : {}),
           }
         : { $set: changes };
       const updated = await this.userModel
@@ -298,7 +300,10 @@ export class UsersService {
     }
   }
 
-  async updateProfile(id: string, dto: UpdateMyProfileDto): Promise<UserDocument> {
+  async updateProfile(
+    id: string,
+    dto: UpdateMyProfileDto,
+  ): Promise<UserDocument> {
     return this.update(id, dto);
   }
 
@@ -308,7 +313,11 @@ export class UsersService {
     const user = await this.userModel
       .findByIdAndUpdate(
         id,
-        { $set: { isActive: false, failedLoginAttempts: 0 }, $unset: { lockedUntil: 1 } },
+        {
+          $set: { isActive: false, failedLoginAttempts: 0 },
+          $inc: { authVersion: 1 },
+          $unset: { lockedUntil: 1 },
+        },
         { new: true },
       )
       .exec();

@@ -1,6 +1,10 @@
 import { ConflictException } from '@nestjs/common';
 import { Types } from 'mongoose';
-import { PaymentCurrency, PaymentProviderName, PaymentStatus } from './payment.enums';
+import {
+  PaymentCurrency,
+  PaymentProviderName,
+  PaymentStatus,
+} from './payment.enums';
 import { PaymentsService } from './payments.service';
 import { PrizeAwardStatus } from '../prizes/schemas/prize-award.schema';
 
@@ -47,7 +51,10 @@ describe('PaymentsService refund policy', () => {
     };
     const awardModel = {
       findOne: jest.fn().mockReturnValue(
-        query({ _id: new Types.ObjectId(), status: PrizeAwardStatus.Fulfilled }),
+        query({
+          _id: new Types.ObjectId(),
+          status: PrizeAwardStatus.Fulfilled,
+        }),
       ),
     };
     const service = new PaymentsService(

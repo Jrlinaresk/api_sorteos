@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
-import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { Connection, ClientSession, Model, Types } from 'mongoose';
 import { CreateInstantPrizeDto } from './dto/create-instant-prize.dto';
 import { UpdateInstantPrizeDto } from './dto/update-instant-prize.dto';
@@ -19,7 +19,10 @@ import {
 import {
   PrizeAttempt,
   PrizeAttemptDocument,
+  PrizeAttemptOutcome,
   PrizeAttemptStatus,
+  PrizePlanSnapshot,
+  PrizePlanSnapshotEntry,
 } from './schemas/prize-attempt.schema';
 import {
   PrizeAward,
@@ -67,6 +70,7 @@ export class PrizesService {
   async create(dto: CreateInstantPrizeDto) {
     const campaign = await this.campaignModel.findById(dto.campaignId).exec();
     if (!campaign) throw new NotFoundException('Campaña no encontrada');
+    await this.assertPrizePlanEditable(campaign);
     const payload: Record<string, unknown> = { ...dto, campaign: campaign._id };
     delete payload.campaignId;
     if (dto.mechanic === PrizeMechanic.WinningTitle) {
@@ -75,18 +79,10 @@ export class PrizesService {
           'Los títulos premiados necesitan quotaNumber',
         );
       }
-      const number = dto.quotaNumber.padStart(campaign.quotaDigits, '0');
-      const numeric = Number(number);
-      if (
-        !/^\d+$/.test(number) ||
-        numeric < 0 ||
-        numeric >= campaign.totalTitles
-      ) {
-        throw new BadRequestException(
-          'Número de cuota fuera del rango de la campaña',
-        );
-      }
-      payload.quotaNumber = number;
+      payload.quotaNumber = this.normalizeWinningTitle(
+        dto.quotaNumber,
+        campaign,
+      );
       payload.stock = 1;
     } else if (dto.quotaNumber) {
       throw new BadRequestException(
@@ -113,17 +109,48 @@ export class PrizesService {
       throw new BadRequestException('Premio inválido');
     const existing = await this.prizeModel.findById(id).exec();
     if (!existing) throw new NotFoundException('Premio no encontrado');
-    if (
-      existing.awardedCount > 0 &&
-      (dto.quotaNumber || dto.mechanic || dto.campaignId)
-    ) {
-      throw new ConflictException(
-        'No puede cambiarse la mecánica de un premio adjudicado',
-      );
+    const sourceCampaign = await this.campaignModel
+      .findById(existing.campaign)
+      .exec();
+    if (!sourceCampaign) throw new NotFoundException('Campaña no encontrada');
+    await this.assertPrizePlanEditable(sourceCampaign);
+
+    let targetCampaign = sourceCampaign;
+    if (dto.campaignId && dto.campaignId !== existing.campaign.toString()) {
+      const destinationCampaign = await this.campaignModel
+        .findById(dto.campaignId)
+        .exec();
+      if (!destinationCampaign)
+        throw new NotFoundException('Campaña de destino no encontrada');
+      await this.assertPrizePlanEditable(destinationCampaign);
+      targetCampaign = destinationCampaign;
     }
+
     const payload: Record<string, unknown> = { ...dto };
     if (dto.campaignId) payload.campaign = new Types.ObjectId(dto.campaignId);
     delete payload.campaignId;
+    const mechanic = dto.mechanic ?? existing.mechanic;
+    const quotaNumber =
+      dto.quotaNumber === undefined ? existing.quotaNumber : dto.quotaNumber;
+    if (mechanic === PrizeMechanic.WinningTitle) {
+      if (!quotaNumber) {
+        throw new BadRequestException(
+          'Los títulos premiados necesitan quotaNumber',
+        );
+      }
+      payload.quotaNumber = this.normalizeWinningTitle(
+        quotaNumber,
+        targetCampaign,
+      );
+      payload.stock = 1;
+    } else {
+      if (dto.quotaNumber) {
+        throw new BadRequestException(
+          'quotaNumber solo corresponde a winning_title',
+        );
+      }
+      payload.quotaNumber = undefined;
+    }
     const oldMediaId = existing.mediaId?.toString();
     const newMediaId = dto.mediaId === undefined ? oldMediaId : dto.mediaId;
     const reference = `prize:${existing._id.toString()}`;
@@ -150,12 +177,13 @@ export class PrizesService {
   }
 
   async remove(id: string) {
+    if (!Types.ObjectId.isValid(id))
+      throw new BadRequestException('Premio inválido');
     const prize = await this.prizeModel.findById(id).exec();
     if (!prize) throw new NotFoundException('Premio no encontrado');
-    if (prize.awardedCount > 0) {
-      prize.status = InstantPrizeStatus.Cancelled;
-      return prize.save();
-    }
+    const campaign = await this.campaignModel.findById(prize.campaign).exec();
+    if (!campaign) throw new NotFoundException('Campaña no encontrada');
+    await this.assertPrizePlanEditable(campaign);
     const mediaId = prize.mediaId?.toString();
     const reference = `prize:${prize._id.toString()}`;
     await prize.deleteOne();
@@ -373,7 +401,7 @@ export class PrizesService {
     );
     const attempts = await this.attemptModel
       .find({ order: order._id })
-      .select('+entropyReveal')
+      .select('+entropyReveal +configurationSnapshot')
       .populate(
         'prize',
         'title description cashValue alternativeTitle imageUrl',
@@ -402,9 +430,13 @@ export class PrizesService {
     let reveal: string | undefined;
     try {
       await session.withTransaction(async () => {
+        played = undefined;
+        selected = null;
+        award = null;
+        reveal = undefined;
         const attempt = await this.attemptModel
           .findOne({ publicId })
-          .select('+accessSecret +entropyReveal')
+          .select('+accessSecret +entropyReveal +configurationSnapshot')
           .session(session)
           .exec();
         if (!attempt) throw new NotFoundException('Intento no encontrado');
@@ -412,52 +444,101 @@ export class PrizesService {
         if (attempt.status !== PrizeAttemptStatus.Pending) {
           throw new ConflictException('Este intento ya fue utilizado');
         }
-        const campaign = await this.campaignModel
-          .findById(attempt.campaign)
+        const order = await this.orderModel
+          .findById(attempt.order)
+          .select('+prizeLifecycleVersion')
           .session(session)
           .exec();
-        if (!campaign?.instantGame?.enabled) {
-          throw new ConflictException('El juego instantáneo no está activo');
+        if (!order) throw new NotFoundException('Pedido no encontrado');
+        if (
+          order.status !== OrderStatus.Paid ||
+          order.campaign.toString() !== attempt.campaign.toString()
+        ) {
+          throw new ConflictException(
+            'El intento solo puede jugarse mientras el pedido esté pagado',
+          );
         }
-        const definitions = await this.prizeModel
-          .find({
+        const locked = await this.orderModel.updateOne(
+          {
+            _id: order._id,
             campaign: attempt.campaign,
-            mechanic: attempt.mechanic,
-            status: InstantPrizeStatus.Active,
-            weight: { $gt: 0 },
-            $expr: { $lt: ['$awardedCount', '$stock'] },
-          })
-          .sort({ sortOrder: 1 })
-          .session(session)
-          .exec();
-        const noPrizeWeight = Math.max(
-          0,
-          campaign.instantGame.noPrizeWeight || 0,
+            status: OrderStatus.Paid,
+          },
+          { $inc: { prizeLifecycleVersion: 1 } },
+          { session },
         );
-        const totalWeight = definitions.reduce(
+        if (locked.modifiedCount !== 1) {
+          throw new ConflictException(
+            'El pedido cambió mientras se procesaba el intento',
+          );
+        }
+
+        const configurationSnapshot = attempt.configurationSnapshot;
+        if (!configurationSnapshot || !attempt.configurationHash) {
+          throw new ConflictException(
+            'El intento no contiene una configuración verificable',
+          );
+        }
+        const canonicalConfiguration = this.canonicalPrizePlan(
+          configurationSnapshot,
+          attempt.mechanic,
+        );
+        const configurationHash = this.hash(canonicalConfiguration);
+        if (
+          !this.safeHashEquals(configurationHash, attempt.configurationHash)
+        ) {
+          throw new ConflictException(
+            'La configuración comprometida del intento no es válida',
+          );
+        }
+
+        reveal = attempt.entropyReveal;
+        if (!reveal) {
+          throw new ConflictException(
+            'El intento no contiene la entropía comprometida',
+          );
+        }
+        const expectedCommitment = this.hash(
+          `${reveal}:${configurationHash}:${attempt.publicId}`,
+        );
+        if (
+          !attempt.entropyCommitment ||
+          !this.safeHashEquals(expectedCommitment, attempt.entropyCommitment)
+        ) {
+          throw new ConflictException(
+            'El compromiso de entropía del intento no es válido',
+          );
+        }
+
+        const totalWeight = configurationSnapshot.prizes.reduce(
           (sum, item) => sum + item.weight,
-          noPrizeWeight,
+          configurationSnapshot.noPrizeWeight,
         );
-        reveal = attempt.entropyReveal || randomBytes(32).toString('hex');
-        const digest = createHash('sha256')
-          .update(`${reveal}:${attempt.publicId}`)
-          .digest('hex');
-        const slots = Math.max(1, Math.ceil(totalWeight * 1000));
-        const draw = Number(BigInt(`0x${digest}`) % BigInt(slots)) / 1000;
-        let cursor = noPrizeWeight;
-        let chosen: InstantPrizeDocument | undefined;
-        for (const definition of definitions) {
-          cursor += definition.weight;
-          if (draw >= cursor - definition.weight && draw < cursor) {
-            chosen = definition;
-            break;
+        let chosen: PrizePlanSnapshotEntry | undefined;
+        if (totalWeight > 0) {
+          const digest = this.hash(
+            `${reveal}:${attempt.publicId}:${configurationHash}`,
+          );
+          const unit = Number(BigInt(`0x${digest.slice(0, 13)}`)) / 2 ** 52;
+          const draw = unit * totalWeight;
+          let cursor = configurationSnapshot.noPrizeWeight;
+          for (const definition of configurationSnapshot.prizes) {
+            const next = cursor + definition.weight;
+            if (definition.weight > 0 && draw >= cursor && draw < next) {
+              chosen = definition;
+              break;
+            }
+            cursor = next;
           }
         }
 
         if (chosen) {
+          attempt.drawnPrize = new Types.ObjectId(chosen.prizeId);
           selected = await this.prizeModel.findOneAndUpdate(
             {
-              _id: chosen._id,
+              _id: new Types.ObjectId(chosen.prizeId),
+              campaign: attempt.campaign,
+              mechanic: attempt.mechanic,
               status: InstantPrizeStatus.Active,
               $expr: { $lt: ['$awardedCount', '$stock'] },
             },
@@ -469,11 +550,6 @@ export class PrizesService {
               selected.status = InstantPrizeStatus.Exhausted;
               await selected.save({ session });
             }
-            const order = await this.orderModel
-              .findById(attempt.order)
-              .session(session)
-              .exec();
-            if (!order) throw new NotFoundException('Pedido no encontrado');
             award = new this.awardModel(
               this.awardPayload(selected, order, {
                 attempt: attempt._id,
@@ -483,12 +559,17 @@ export class PrizesService {
             await award.save({ session });
             attempt.prize = selected._id;
             attempt.award = award._id;
+            attempt.outcome = PrizeAttemptOutcome.Awarded;
             await this.orderModel.updateOne(
               { _id: order._id },
               { $addToSet: { instantPrizes: award._id } },
               { session },
             );
+          } else {
+            attempt.outcome = PrizeAttemptOutcome.InventoryExhausted;
           }
+        } else {
+          attempt.outcome = PrizeAttemptOutcome.NoPrize;
         }
         attempt.status = PrizeAttemptStatus.Played;
         attempt.playedAt = new Date();
@@ -513,29 +594,43 @@ export class PrizesService {
       orderToken,
       undefined,
     );
-    return this.claimOwnedAward(publicId, order._id.toString());
+    return this.claimAwardTransactional(publicId, {
+      orderId: order._id.toString(),
+    });
   }
 
   async claimAsUser(publicId: string, userId: string) {
-    const award = await this.awardModel.findOne({ publicId }).exec();
-    if (!award) throw new NotFoundException('Premio no encontrado');
-    if (!award.user || award.user.toString() !== userId) {
-      throw new ForbiddenException('El premio no pertenece a este usuario');
-    }
-    return this.markClaimed(award);
+    if (!Types.ObjectId.isValid(userId))
+      throw new BadRequestException('Usuario inválido');
+    return this.claimAwardTransactional(publicId, { userId });
   }
 
   async fulfill(publicId: string) {
-    const award = await this.awardModel.findOne({ publicId }).exec();
-    if (!award) throw new NotFoundException('Adjudicación no encontrada');
-    if (award.status !== PrizeAwardStatus.Claimed) {
-      throw new ConflictException(
-        'El premio debe estar reclamado antes de entregarse',
-      );
+    const session = await this.connection.startSession();
+    let fulfilled: PrizeAwardDocument | undefined;
+    try {
+      await session.withTransaction(async () => {
+        const award = await this.awardModel
+          .findOne({ publicId })
+          .session(session)
+          .exec();
+        if (!award) throw new NotFoundException('Adjudicación no encontrada');
+        if (award.status !== PrizeAwardStatus.Claimed) {
+          throw new ConflictException(
+            'El premio debe estar reclamado antes de entregarse',
+          );
+        }
+        await this.lockPaidOrderForPrizeLifecycle(award.order, session);
+        award.status = PrizeAwardStatus.Fulfilled;
+        award.fulfilledAt = new Date();
+        fulfilled = await award.save({ session });
+      });
+    } finally {
+      await session.endSession();
     }
-    award.status = PrizeAwardStatus.Fulfilled;
-    award.fulfilledAt = new Date();
-    return award.save();
+    if (!fulfilled)
+      throw new ConflictException('No se pudo entregar el premio');
+    return fulfilled;
   }
 
   async reverseForOrder(orderId: string | Types.ObjectId) {
@@ -570,6 +665,15 @@ export class PrizesService {
           );
           reversed += 1;
         }
+
+        await this.attemptModel.updateMany(
+          {
+            order: new Types.ObjectId(orderId.toString()),
+            status: PrizeAttemptStatus.Pending,
+          },
+          { $set: { status: PrizeAttemptStatus.Expired } },
+          { session },
+        );
       });
     } finally {
       await session.endSession();
@@ -578,23 +682,219 @@ export class PrizesService {
     return reversed;
   }
 
-  private async claimOwnedAward(publicId: string, orderId: string) {
-    const award = await this.awardModel.findOne({ publicId }).exec();
-    if (!award) throw new NotFoundException('Premio no encontrado');
-    if (award.order.toString() !== orderId) {
-      throw new ForbiddenException('El premio no pertenece a este pedido');
+  private async claimAwardTransactional(
+    publicId: string,
+    owner: { orderId: string } | { userId: string },
+  ) {
+    const session = await this.connection.startSession();
+    let claimed: PrizeAwardDocument | undefined;
+    try {
+      await session.withTransaction(async () => {
+        claimed = undefined;
+        const award = await this.awardModel
+          .findOne({ publicId })
+          .session(session)
+          .exec();
+        if (!award) throw new NotFoundException('Premio no encontrado');
+        if ('orderId' in owner && award.order.toString() !== owner.orderId) {
+          throw new ForbiddenException('El premio no pertenece a este pedido');
+        }
+        if (
+          'userId' in owner &&
+          (!award.user || award.user.toString() !== owner.userId)
+        ) {
+          throw new ForbiddenException('El premio no pertenece a este usuario');
+        }
+        await this.lockPaidOrderForPrizeLifecycle(award.order, session);
+        claimed = await this.markClaimed(award, session);
+      });
+    } finally {
+      await session.endSession();
     }
-    return this.markClaimed(award);
+    if (!claimed) throw new ConflictException('No se pudo reclamar el premio');
+    return claimed;
   }
 
-  private async markClaimed(award: PrizeAwardDocument) {
+  private async lockPaidOrderForPrizeLifecycle(
+    orderId: string | Types.ObjectId,
+    session: ClientSession,
+  ) {
+    const order = await this.orderModel
+      .findById(orderId)
+      .select('+prizeLifecycleVersion')
+      .session(session)
+      .exec();
+    if (!order || order.status !== OrderStatus.Paid) {
+      throw new ConflictException(
+        'El premio solo puede procesarse mientras el pedido esté pagado',
+      );
+    }
+    const locked = await this.orderModel.updateOne(
+      { _id: order._id, status: OrderStatus.Paid },
+      { $inc: { prizeLifecycleVersion: 1 } },
+      { session },
+    );
+    if (locked.modifiedCount !== 1) {
+      throw new ConflictException(
+        'El pedido cambió mientras se procesaba el premio',
+      );
+    }
+    return order;
+  }
+
+  private async markClaimed(
+    award: PrizeAwardDocument,
+    session?: ClientSession,
+  ) {
     if (award.status === PrizeAwardStatus.Claimed) return award;
     if (award.status !== PrizeAwardStatus.Awarded) {
       throw new ConflictException('Este premio no se puede reclamar');
     }
     award.status = PrizeAwardStatus.Claimed;
     award.claimedAt = new Date();
-    return award.save();
+    return award.save(session ? { session } : undefined);
+  }
+
+  private async assertPrizePlanEditable(campaign: RaffleDocument) {
+    if (campaign.status !== CampaignStatus.Draft || campaign.contractLockedAt) {
+      throw new ConflictException(
+        'El plan de premios solo puede modificarse antes de publicar la campaña',
+      );
+    }
+    if ((campaign.reservedCount ?? 0) > 0 || (campaign.soldCount ?? 0) > 0) {
+      throw new ConflictException(
+        'El plan de premios está congelado porque la campaña ya tiene actividad',
+      );
+    }
+    const campaignId = campaign._id;
+    const [order, attempt, award, adjudicatedPrize] = await Promise.all([
+      this.orderModel.exists({ campaign: campaignId }),
+      this.attemptModel.exists({ campaign: campaignId }),
+      this.awardModel.exists({ campaign: campaignId }),
+      this.prizeModel.exists({
+        campaign: campaignId,
+        awardedCount: { $gt: 0 },
+      }),
+    ]);
+    if (order || attempt || award || adjudicatedPrize) {
+      throw new ConflictException(
+        'El plan de premios está congelado porque la campaña ya tiene actividad',
+      );
+    }
+  }
+
+  private normalizeWinningTitle(quotaNumber: string, campaign: RaffleDocument) {
+    const number = quotaNumber.padStart(campaign.quotaDigits, '0');
+    const numeric = Number(number);
+    if (
+      !/^\d+$/.test(number) ||
+      numeric < 0 ||
+      numeric >= campaign.totalTitles
+    ) {
+      throw new BadRequestException(
+        'Número de cuota fuera del rango de la campaña',
+      );
+    }
+    return number;
+  }
+
+  private async buildPrizePlanSnapshot(
+    campaign: RaffleDocument,
+    mechanic: PrizeMechanic.Roulette | PrizeMechanic.Scratch,
+    session: ClientSession,
+  ): Promise<PrizePlanSnapshot> {
+    const definitions = await this.prizeModel
+      .find({
+        campaign: campaign._id,
+        mechanic,
+        status: { $ne: InstantPrizeStatus.Cancelled },
+      })
+      .sort({ sortOrder: 1, _id: 1 })
+      .session(session)
+      .exec();
+    const snapshot: PrizePlanSnapshot = {
+      version: 1,
+      mechanic,
+      noPrizeWeight: campaign.instantGame?.noPrizeWeight ?? 0,
+      prizes: definitions.map((definition) => ({
+        prizeId: definition._id.toString(),
+        weight: definition.weight,
+        stock: definition.stock,
+        sortOrder: definition.sortOrder ?? 0,
+      })),
+    };
+    this.canonicalPrizePlan(snapshot, mechanic);
+    return snapshot;
+  }
+
+  private canonicalPrizePlan(
+    snapshot: PrizePlanSnapshot,
+    expectedMechanic?: PrizeMechanic.Roulette | PrizeMechanic.Scratch,
+  ) {
+    if (
+      snapshot.version !== 1 ||
+      ![PrizeMechanic.Roulette, PrizeMechanic.Scratch].includes(
+        snapshot.mechanic,
+      ) ||
+      (expectedMechanic && snapshot.mechanic !== expectedMechanic) ||
+      !Array.isArray(snapshot.prizes) ||
+      !Number.isFinite(snapshot.noPrizeWeight) ||
+      snapshot.noPrizeWeight < 0
+    ) {
+      throw new ConflictException(
+        'La configuración comprometida del intento no es válida',
+      );
+    }
+    const seen = new Set<string>();
+    const prizes = snapshot.prizes.map((entry) => {
+      if (
+        !Types.ObjectId.isValid(entry.prizeId) ||
+        seen.has(entry.prizeId) ||
+        !Number.isFinite(entry.weight) ||
+        entry.weight < 0 ||
+        !Number.isSafeInteger(entry.stock) ||
+        entry.stock < 1 ||
+        !Number.isSafeInteger(entry.sortOrder)
+      ) {
+        throw new ConflictException(
+          'La configuración comprometida del intento no es válida',
+        );
+      }
+      seen.add(entry.prizeId);
+      return {
+        prizeId: entry.prizeId,
+        weight: entry.weight,
+        stock: entry.stock,
+        sortOrder: entry.sortOrder,
+      };
+    });
+    const sorted = [...prizes].sort(
+      (left, right) =>
+        left.sortOrder - right.sortOrder ||
+        left.prizeId.localeCompare(right.prizeId),
+    );
+    if (
+      prizes.some((entry, index) => entry.prizeId !== sorted[index]?.prizeId)
+    ) {
+      throw new ConflictException(
+        'La configuración comprometida del intento no tiene un orden canónico',
+      );
+    }
+    const totalWeight = prizes.reduce(
+      (sum, entry) => sum + entry.weight,
+      snapshot.noPrizeWeight,
+    );
+    if (!Number.isFinite(totalWeight)) {
+      throw new ConflictException(
+        'La configuración comprometida del intento no es válida',
+      );
+    }
+    return JSON.stringify({
+      version: 1,
+      mechanic: snapshot.mechanic,
+      noPrizeWeight: snapshot.noPrizeWeight,
+      prizes,
+    });
   }
 
   private async createGameAttempts(
@@ -612,6 +912,14 @@ export class PrizesService {
       campaign.instantGame.mechanic === 'scratch'
         ? PrizeMechanic.Scratch
         : PrizeMechanic.Roulette;
+    const configurationSnapshot = await this.buildPrizePlanSnapshot(
+      campaign,
+      mechanic,
+      session,
+    );
+    const configurationHash = this.hash(
+      this.canonicalPrizePlan(configurationSnapshot),
+    );
     const existing = await this.attemptModel
       .find({ order: order._id })
       .session(session)
@@ -622,7 +930,9 @@ export class PrizesService {
     for (let ordinal = 0; ordinal < tier.attempts; ordinal += 1) {
       if (byOrdinal.has(ordinal)) continue;
       const entropy = randomBytes(32).toString('hex');
+      const publicId = randomUUID();
       const attempt = new this.attemptModel({
+        publicId,
         campaign: campaign._id,
         order: order._id,
         user: order.user,
@@ -630,7 +940,11 @@ export class PrizesService {
         ordinal,
         status: PrizeAttemptStatus.Pending,
         accessSecret: this.hash(randomBytes(24).toString('hex')),
-        entropyCommitment: this.hash(entropy),
+        configurationHash,
+        configurationSnapshot,
+        entropyCommitment: this.hash(
+          `${entropy}:${configurationHash}:${publicId}`,
+        ),
         entropyReveal: entropy,
       });
       await attempt.save({ session });
@@ -700,6 +1014,8 @@ export class PrizesService {
     const raw: Record<string, any> = attempt.toObject();
     delete raw.accessSecret;
     delete raw.entropyReveal;
+    const configurationSnapshot = raw.configurationSnapshot;
+    delete raw.configurationSnapshot;
     return {
       ...raw,
       accessToken,
@@ -710,11 +1026,22 @@ export class PrizesService {
         attempt.status === PrizeAttemptStatus.Played
           ? entropyReveal || attempt.entropyReveal
           : undefined,
+      configurationSnapshot:
+        attempt.status === PrizeAttemptStatus.Played
+          ? configurationSnapshot
+          : undefined,
     };
   }
 
   private hash(value: string) {
     return createHash('sha256').update(value).digest('hex');
+  }
+
+  private safeHashEquals(left: string, right: string) {
+    if (!/^[a-f0-9]{64}$/.test(left) || !/^[a-f0-9]{64}$/.test(right)) {
+      return false;
+    }
+    return timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'));
   }
 
   private maskName(name: string) {

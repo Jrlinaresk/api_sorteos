@@ -285,6 +285,18 @@ export class Raffle {
   @Prop()
   drawDate?: Date;
 
+  /** Instante auditable en que el contrato dejó de ser editable. */
+  @Prop()
+  contractLockedAt?: Date;
+
+  /** Versión compartida por mutaciones del plan antes del lock. */
+  @Prop({ required: true, min: 0, default: 0 })
+  contractRevision: number;
+
+  /** Instante efectivo en que ya no quedaban títulos por vender. */
+  @Prop()
+  salesClosedAt?: Date;
+
   @Prop({
     required: true,
     default: 'BRL',

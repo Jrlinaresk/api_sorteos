@@ -10,7 +10,8 @@ import { DrawsService } from './draws.service';
 import { DrawResult, DrawResultSchema } from './schemas/draw-result.schema';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { ResultsController } from './results.controller';
-import { CaixaFederalLotteryService } from './caixa-federal-lottery.service';
+import { CaixaFederalLotteryModule } from './caixa-federal-lottery.module';
+import { EntropyBeaconService } from './entropy-beacon.service';
 
 @Module({
   imports: [
@@ -22,9 +23,10 @@ import { CaixaFederalLotteryService } from './caixa-federal-lottery.service';
     ]),
     AuthModule,
     NotificationsModule,
+    CaixaFederalLotteryModule,
   ],
   controllers: [DrawsController, ResultsController, AdminDrawsController],
-  providers: [DrawsService, CaixaFederalLotteryService],
+  providers: [DrawsService, EntropyBeaconService],
   exports: [DrawsService, MongooseModule],
 })
 export class DrawsModule {}

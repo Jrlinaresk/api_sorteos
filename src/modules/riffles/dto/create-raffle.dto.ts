@@ -288,8 +288,8 @@ export class CreateRaffleDto {
   costLevel?: string;
 
   @IsOptional()
-  @IsEnum(CampaignStatus)
-  status?: CampaignStatus;
+  @IsIn([CampaignStatus.Draft, CampaignStatus.Scheduled])
+  status?: CampaignStatus.Draft | CampaignStatus.Scheduled;
 
   @IsOptional()
   @IsString()

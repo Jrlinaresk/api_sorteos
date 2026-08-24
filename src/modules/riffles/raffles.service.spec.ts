@@ -12,6 +12,8 @@ import {
 describe('RafflesService domain rules', () => {
   let raffleModel: jest.Mock & Record<string, jest.Mock>;
   let media: Record<string, jest.Mock>;
+  let caixaFederal: Record<string, jest.Mock>;
+  let config: Record<string, jest.Mock>;
   let service: RafflesService;
 
   const validDto = () =>
@@ -34,13 +36,24 @@ describe('RafflesService domain rules', () => {
     raffleModel = jest.fn() as jest.Mock & Record<string, jest.Mock>;
     raffleModel.exists = jest.fn().mockResolvedValue(null);
     raffleModel.findById = jest.fn();
+    raffleModel.findOneAndUpdate = jest.fn();
     raffleModel.findOne = jest.fn();
+    raffleModel.find = jest.fn();
     raffleModel.updateMany = jest.fn().mockResolvedValue({ modifiedCount: 0 });
     media = {
       addReference: jest.fn().mockResolvedValue(undefined),
       removeReference: jest.fn().mockResolvedValue(undefined),
     };
-    service = new RafflesService(raffleModel as any, media as any);
+    caixaFederal = {
+      assertContestUpcoming: jest.fn().mockResolvedValue({}),
+    };
+    config = { get: jest.fn().mockReturnValue(undefined) };
+    service = new RafflesService(
+      raffleModel as any,
+      media as any,
+      caixaFederal as any,
+      config as any,
+    );
   });
 
   describe('campaign creation validation', () => {
@@ -51,18 +64,16 @@ describe('RafflesService domain rules', () => {
         'Una campaña programada necesita launchAt',
       ],
       [
-        'publicación sin reglamento',
+        'estado inicial público',
         { status: CampaignStatus.Active },
-        'La campaña necesita un reglamento antes de publicarse',
+        'solo puede crearse como borrador o programada',
       ],
       [
-        'activación criptográfica sin commit previo',
+        'estado inicial finalizado',
         {
-          status: CampaignStatus.Active,
-          regulationHtml: '<p>Reglas</p>',
-          drawMethod: DrawMethod.Cryptographic,
+          status: CampaignStatus.Drawn,
         },
-        'Cree la campaña criptográfica en borrador',
+        'solo puede crearse como borrador o programada',
       ],
       [
         'cierre anterior al lanzamiento',
@@ -173,7 +184,7 @@ describe('RafflesService domain rules', () => {
             combination: 'sum',
           },
         }),
-      ).rejects.toThrow('fijar el concurso Federal antes de abrir ventas');
+      ).rejects.toThrow('solo puede crearse como borrador o programada');
     });
 
     it('rechaza slug vacío, duplicado y una capacidad decimal insuficiente', async () => {
@@ -314,6 +325,7 @@ describe('RafflesService domain rules', () => {
       expect(raffleModel.findOne).toHaveBeenCalledWith({
         slug: 'titan-160',
         status: { $in: [CampaignStatus.Active, CampaignStatus.Open] },
+        $and: expect.any(Array),
       });
 
       query.exec.mockResolvedValueOnce(null);
@@ -322,48 +334,164 @@ describe('RafflesService domain rules', () => {
       );
     });
 
-    it('no activa una campaña Federal sin concurso fijado', () => {
-      expect(() =>
-        (service as any).assertActivationReady({
-          drawMethod: DrawMethod.FederalLottery,
-          regulationHtml: '<p>Reglas</p>',
+    it.each([
+      {
+        label: 'aún no lanzada',
+        launchAt: new Date(Date.now() + 60_000),
+        closesAt: undefined,
+        soldCount: 0,
+        reservedCount: 0,
+      },
+      {
+        label: 'cerrada por fecha',
+        launchAt: undefined,
+        closesAt: new Date(Date.now() - 60_000),
+        soldCount: 0,
+        reservedCount: 0,
+      },
+      {
+        label: 'sin stock',
+        launchAt: undefined,
+        closesAt: undefined,
+        soldCount: 90,
+        reservedCount: 10,
+      },
+    ])('publica isPurchasable=false si está $label', (overrides) => {
+      const view = (service as any).toPublicView(
+        {
+          _id: new Types.ObjectId(),
+          status: CampaignStatus.Active,
+          totalTitles: 100,
+          media: [],
           regulationHistory: [],
-          federalLottery: {
-            firstPrizeDigits: 3,
-            secondPrizeDigits: 3,
-            combination: 'sum',
-          },
-        }),
-      ).toThrow('fijar el concurso Federal');
+          ...overrides,
+        },
+        true,
+      );
+      expect(view.isPurchasable).toBe(false);
     });
 
-    it('el ciclo programado solo autoactiva la Federal con concurso fijado', async () => {
+    it('no activa una campaña Federal sin concurso fijado', async () => {
+      await expect(
+        (service as any).assertActivationReady(
+          {
+            drawMethod: DrawMethod.FederalLottery,
+            regulationHtml: '<p>Reglas</p>',
+            regulationHistory: [],
+            federalLottery: {
+              firstPrizeDigits: 3,
+              secondPrizeDigits: 3,
+              combination: 'sum',
+            },
+          },
+          new Date('2026-08-24T12:00:00.000Z'),
+          CampaignStatus.Active,
+        ),
+      ).rejects.toThrow('fijar el concurso Federal');
+    });
+
+    it('exige cerrar y fijar antes de ventas el instante de baliza criptográfica', async () => {
+      await expect(
+        (service as any).assertActivationReady(
+          {
+            drawMethod: DrawMethod.Cryptographic,
+            drawCommitment: 'a'.repeat(64),
+            regulationHtml: '<p>Reglas</p>',
+            regulationHistory: [],
+            termsVersion: '1',
+            totalTitles: 100,
+            soldCount: 0,
+            reservedCount: 0,
+          },
+          new Date('2026-08-24T12:00:00.000Z'),
+          CampaignStatus.Active,
+        ),
+      ).rejects.toThrow('debe fijar closesAt y drawDate');
+    });
+
+    it('consulta CAIXA antes de programar y vuelve a fallar cerrado si no confirma', async () => {
       const at = new Date('2026-08-24T12:00:00.000Z');
+      const campaign = {
+        drawMethod: DrawMethod.FederalLottery,
+        regulationHtml: '<p>Reglas</p>',
+        regulationHistory: [],
+        termsVersion: '1',
+        launchAt: new Date('2026-08-25T12:00:00.000Z'),
+        closesAt: new Date('2026-08-29T12:00:00.000Z'),
+        drawDate: new Date('2026-08-30T20:00:00.000Z'),
+        totalTitles: 1_000,
+        soldCount: 0,
+        reservedCount: 0,
+        federalLottery: {
+          contest: '6021',
+          firstPrizeDigits: 1,
+          secondPrizeDigits: 1,
+          combination: 'sum',
+        },
+      } as any;
+
+      await expect(
+        (service as any).assertActivationReady(
+          campaign,
+          at,
+          CampaignStatus.Scheduled,
+        ),
+      ).resolves.toBeUndefined();
+      expect(caixaFederal.assertContestUpcoming).toHaveBeenCalledWith(
+        '6021',
+        campaign.drawDate,
+        at,
+      );
+
+      caixaFederal.assertContestUpcoming.mockRejectedValueOnce(
+        new Error('CAIXA indisponible'),
+      );
+      await expect(
+        (service as any).assertActivationReady(
+          campaign,
+          at,
+          CampaignStatus.Scheduled,
+        ),
+      ).rejects.toThrow('CAIXA indisponible');
+    });
+
+    it('el ciclo no convierte cierres parciales en AwaitingDraw', async () => {
+      const at = new Date('2026-08-24T12:00:00.000Z');
+      const findQuery: Record<string, jest.Mock> = {
+        limit: jest.fn(),
+        exec: jest.fn().mockResolvedValue([]),
+      };
+      findQuery.limit.mockReturnValue(findQuery);
+      raffleModel.find.mockReturnValue(findQuery);
       await service.processLifecycle(at);
 
       expect(raffleModel.updateMany).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({
-          status: CampaignStatus.Scheduled,
-          launchAt: { $lte: at },
-          $and: expect.arrayContaining([
-            {
-              $or: [
-                { drawMethod: { $ne: DrawMethod.FederalLottery } },
-                {
-                  'federalLottery.contest': {
-                    $regex: /^[1-9]\d{0,9}$/,
-                  },
-                },
-              ],
-            },
-          ]),
+          $expr: { $eq: ['$soldCount', '$totalTitles'] },
+          reservedCount: 0,
         }),
-        { $set: { status: CampaignStatus.Active } },
+        [
+          {
+            $set: {
+              status: CampaignStatus.SoldOut,
+              salesClosedAt: { $ifNull: ['$salesClosedAt', at] },
+            },
+          },
+        ],
+      );
+      expect(raffleModel.updateMany).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          status: CampaignStatus.SoldOut,
+          $expr: { $eq: ['$soldCount', '$totalTitles'] },
+          reservedCount: 0,
+        }),
+        { $set: { status: CampaignStatus.AwaitingDraw } },
       );
     });
 
-    it('congela concurso, regla y método después de abrir ventas', () => {
+    it('congela todo el contrato económico, legal y aleatorio al salir de Draft', () => {
       const campaign = {
         status: CampaignStatus.Active,
         allocationCursor: 0,
@@ -379,7 +507,7 @@ describe('RafflesService domain rules', () => {
       } as Raffle;
 
       expect(() =>
-        (service as any).assertDrawConfigurationUpdate(campaign, {
+        (service as any).assertMutableUpdate(campaign, {
           federalLottery: {
             contest: '6021',
             firstPrizeDigits: 3,
@@ -387,17 +515,93 @@ describe('RafflesService domain rules', () => {
             combination: 'sum',
           },
         }),
-      ).toThrow('inmutables después de abrir ventas');
+      ).toThrow('contrato de campaña es inmutable');
       expect(() =>
-        (service as any).assertDrawConfigurationUpdate(campaign, {
+        (service as any).assertMutableUpdate(campaign, {
           drawMethod: DrawMethod.ManualExternal,
         }),
-      ).toThrow('método de sorteo');
+      ).toThrow('contrato de campaña es inmutable');
       expect(() =>
-        (service as any).assertDrawConfigurationUpdate(campaign, {
-          federalLottery: { ...campaign.federalLottery },
+        (service as any).assertMutableUpdate(campaign, {
+          ticketPrice: 0.01,
+        }),
+      ).toThrow('ticketPrice');
+      expect(() =>
+        (service as any).assertMutableUpdate(campaign, {
+          description: '<p>Contenido actualizado</p>',
         }),
       ).not.toThrow();
+    });
+
+    it('bloquea bypass de status, cierre parcial y cancelación con actividad', async () => {
+      const campaign = {
+        _id: new Types.ObjectId(),
+        status: CampaignStatus.Active,
+        allocationCursor: 10,
+        soldCount: 9,
+        reservedCount: 1,
+        totalTitles: 100,
+        save: jest.fn(),
+      } as any;
+      raffleModel.findById.mockReturnValue({
+        exec: jest.fn().mockResolvedValue(campaign),
+      });
+
+      expect(() =>
+        (service as any).assertMutableUpdate(campaign, {
+          status: CampaignStatus.Drawn,
+        }),
+      ).toThrow('endpoint de transición');
+      await expect(
+        service.changeStatus(
+          campaign._id.toString(),
+          CampaignStatus.AwaitingDraw,
+        ),
+      ).rejects.toThrow('100% de títulos pagados');
+      await expect(
+        service.changeStatus(campaign._id.toString(), CampaignStatus.Cancelled),
+      ).rejects.toThrow('ventas o reservas activas');
+    });
+
+    it('bloquea el contrato con CAS atómico al abandonar Draft', async () => {
+      const campaign = {
+        _id: new Types.ObjectId(),
+        __v: 7,
+        status: CampaignStatus.Draft,
+        allocationCursor: 0,
+        soldCount: 0,
+        reservedCount: 0,
+        totalTitles: 100,
+        drawMethod: DrawMethod.ManualExternal,
+        regulationHtml: '<p>Reglas</p>',
+        regulationHistory: [],
+        termsVersion: '1',
+      } as any;
+      raffleModel.findById.mockReturnValue({
+        exec: jest.fn().mockResolvedValue(campaign),
+      });
+      raffleModel.findOneAndUpdate.mockResolvedValue({
+        ...campaign,
+        status: CampaignStatus.Active,
+      });
+
+      await service.changeStatus(
+        campaign._id.toString(),
+        CampaignStatus.Active,
+      );
+
+      expect(raffleModel.findOneAndUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _id: campaign._id,
+          __v: 7,
+          status: CampaignStatus.Draft,
+        }),
+        expect.objectContaining({
+          $set: expect.objectContaining({ status: CampaignStatus.Active }),
+          $inc: { contractRevision: 1 },
+        }),
+        { new: true, runValidators: true },
+      );
     });
   });
 

@@ -41,7 +41,7 @@ export class LocationsController {
   }
   /**
    * GET /locations/city/:countryCode/:stateCode/:cityCode
-   * Retorna los detalles de una ciudad por su código ISO.
+   * Retorna los detalles de una ciudad por el código suministrado en el listado.
    */
   @Get('city/:countryCode/:stateCode/:cityCode')
   getCity(

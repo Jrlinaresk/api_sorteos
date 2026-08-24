@@ -4,7 +4,9 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Optional,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { createHmac, randomBytes } from 'node:crypto';
 
 interface ReferralRequest {
@@ -17,8 +19,7 @@ interface RateBucket {
   resetAt: number;
 }
 
-const processHashKey =
-  process.env.REFERRAL_IP_HASH_SECRET ?? randomBytes(32).toString('hex');
+const developmentFallbackHashKey = randomBytes(32).toString('hex');
 
 export function referralClientAddress(request: ReferralRequest): string {
   return (
@@ -27,8 +28,15 @@ export function referralClientAddress(request: ReferralRequest): string {
 }
 
 /** Hash unidireccional y con clave; nunca se conserva la IP cruda. */
-export function hashReferralClientAddress(request: ReferralRequest): string {
-  return createHmac('sha256', processHashKey)
+export function hashReferralClientAddress(
+  request: ReferralRequest,
+  configuredSecret?: string,
+): string {
+  const hashKey =
+    configuredSecret?.trim() ||
+    process.env.REFERRAL_IP_HASH_SECRET?.trim() ||
+    developmentFallbackHashKey;
+  return createHmac('sha256', hashKey)
     .update(referralClientAddress(request))
     .digest('hex');
 }
@@ -81,12 +89,19 @@ export class FixedWindowReferralRateLimiter {
 export class ReferralClickRateLimitGuard implements CanActivate {
   private readonly limiter = new FixedWindowReferralRateLimiter();
 
+  constructor(@Optional() private readonly config?: ConfigService) {}
+
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<ReferralRequest>();
     const response = context.switchToHttp().getResponse<{
       setHeader(name: string, value: string): void;
     }>();
-    const result = this.limiter.consume(hashReferralClientAddress(request));
+    const result = this.limiter.consume(
+      hashReferralClientAddress(
+        request,
+        this.config?.get<string>('REFERRAL_IP_HASH_SECRET'),
+      ),
+    );
     if (!result.allowed) {
       response.setHeader('Retry-After', String(result.retryAfterSeconds));
       throw new HttpException(

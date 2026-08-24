@@ -11,6 +11,40 @@ import {
 export type PaymentDocument = HydratedDocument<Payment>;
 
 @Schema({ _id: false })
+export class PaymentReceipt {
+  @Prop({ required: true })
+  endToEndId: string;
+
+  @Prop({ required: true, min: 1 })
+  amountCents: number;
+
+  @Prop({ required: true })
+  paidAt: Date;
+}
+
+export const PaymentReceiptSchema =
+  SchemaFactory.createForClass(PaymentReceipt);
+
+@Schema({ _id: false })
+export class PaymentProviderRefund {
+  @Prop({ required: true })
+  providerRefundId: string;
+
+  @Prop({ required: true })
+  endToEndId: string;
+
+  @Prop({ required: true, min: 1 })
+  amountCents: number;
+
+  @Prop({ required: true, enum: PaymentStatus })
+  status: PaymentStatus;
+}
+
+export const PaymentProviderRefundSchema = SchemaFactory.createForClass(
+  PaymentProviderRefund,
+);
+
+@Schema({ _id: false })
 export class PaymentStatusHistoryEntry {
   @Prop({ required: true, enum: PaymentStatus })
   status: PaymentStatus;
@@ -82,7 +116,11 @@ export class PaymentRefund {
 
 export const PaymentRefundSchema = SchemaFactory.createForClass(PaymentRefund);
 
-@Schema({ timestamps: true, collection: 'payments' })
+@Schema({
+  timestamps: true,
+  collection: 'payments',
+  optimisticConcurrency: true,
+})
 export class Payment {
   @ApiProperty({ description: 'Pedido al que pertenece el pago' })
   @Prop({ type: Types.ObjectId, ref: 'Order', required: true, index: true })
@@ -120,6 +158,15 @@ export class Payment {
   @Prop()
   endToEndId?: string;
 
+  @Prop({ type: [String], default: [] })
+  endToEndIds: string[];
+
+  @Prop({ type: [PaymentReceiptSchema], default: [] })
+  receipts: PaymentReceipt[];
+
+  @Prop({ type: [PaymentProviderRefundSchema], default: [] })
+  providerRefunds: PaymentProviderRefund[];
+
   @ApiPropertyOptional({ description: 'URL/location del QR Pix' })
   @Prop()
   qrCode?: string;
@@ -139,6 +186,18 @@ export class Payment {
   @ApiProperty({ description: 'Importe decimal en la moneda indicada' })
   @Prop({ required: true, min: 0.01 })
   amount: number;
+
+  @Prop({ required: true, min: 1 })
+  amountCents: number;
+
+  @Prop({ required: true, min: 0, default: 0 })
+  receivedAmountCents: number;
+
+  @Prop({ required: true, min: 0, default: 0 })
+  refundedAmountCents: number;
+
+  @Prop({ required: true, min: 0, default: 0 })
+  refundReservedAmountCents: number;
 
   @ApiProperty({ enum: PaymentCurrency, default: PaymentCurrency.BRL })
   @Prop({ required: true, enum: PaymentCurrency, default: PaymentCurrency.BRL })
@@ -169,6 +228,9 @@ export class Payment {
 
   @Prop({ default: 0, min: 0 })
   refundedAmount: number;
+
+  @Prop({ required: true, min: 0, default: 0 })
+  transitionSequence: number;
 
   @Prop({ type: MongooseSchema.Types.Mixed })
   providerPayload?: Record<string, unknown>;

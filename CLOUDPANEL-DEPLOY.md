@@ -18,12 +18,17 @@ proxy_pass http://127.0.0.1:8017;
 proxy_http_version 1.1;
 proxy_set_header Host $host;
 proxy_set_header X-Real-IP $remote_addr;
-proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-For $remote_addr;
 proxy_set_header X-Forwarded-Proto $scheme;
 proxy_read_timeout 120s;
 proxy_send_timeout 120s;
 client_max_body_size 260m;
 ```
+
+Estas cabeceras se sobrescriben deliberadamente. No use
+`$proxy_add_x_forwarded_for` ni conserve `X-Real-IP` recibido del navegador:
+la API usa esa IP para límites de solicitudes y auditoría. Los puertos `8017`
+y `8081` deben continuar ligados exclusivamente a `127.0.0.1`.
 
 Si se habilita mTLS para el webhook EFI, CloudPanel debe validar el certificado
 cliente y sobrescribir la cabecera confiable con el resultado de Nginx (por

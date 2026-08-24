@@ -61,30 +61,43 @@ públicas de usuario no contienen hashes ni contraseñas.
 [`.env.example`](./.env.example) es el contrato documentado. Los grupos críticos
 son:
 
-| Grupo | Variables principales |
-| --- | --- |
-| Mongo | `MONGO_ROOT_*`, `MONGO_APP_*`, `MONGO_REPLICA_SET`, `MONGO_REPLICA_KEY`, `MONGODB_URI` |
-| Auth | `JWT_SECRET`, `EMAIL_CODE_SECRET`, `CHECKOUT_ACCESS_SECRET_KEY` |
-| Navegador | `CORS_ORIGINS`, `TRUST_PROXY`, `SWAGGER_ENABLED` |
-| Correo | `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, y opcionalmente `SMTP_USER` + `SMTP_PASS` |
-| Pagos | `PAYMENTS_PROVIDER`, `PAYMENTS_PUBLIC_SECRET_KEY`, `EFI_PIX_*`, `EFI_WEBHOOK_*` |
-| Sorteo Federal | `CAIXA_FEDERAL_API_BASE_URL` y límites `CAIXA_FEDERAL_*` |
-| Medios | `MEDIA_LOCAL_ROOT`, límites de imagen/video y directorio temporal |
-| Push | las tres variables `WEB_PUSH_VAPID_*` y sus límites opcionales |
+| Grupo     | Variables principales                                                                  |
+| --------- | -------------------------------------------------------------------------------------- |
+| Mongo     | `MONGO_ROOT_*`, `MONGO_APP_*`, `MONGO_REPLICA_SET`, `MONGO_REPLICA_KEY`, `MONGODB_URI` |
+| Auth      | `JWT_SECRET`, `EMAIL_CODE_SECRET`, `CHECKOUT_ACCESS_SECRET_KEY`                        |
+| Navegador | `CORS_ORIGINS`, `TRUST_PROXY`, `SWAGGER_ENABLED`                                       |
+| Correo    | `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, y opcionalmente `SMTP_USER` + `SMTP_PASS`       |
+| Pagos     | `PAYMENTS_PROVIDER`, `PAYMENTS_PUBLIC_SECRET_KEY`, `EFI_PIX_*`, `EFI_WEBHOOK_*`        |
+| Sorteos   | `CAIXA_FEDERAL_*`, flags `DRAW_*` y baliza NIST allowlisted                            |
+| Medios    | `MEDIA_LOCAL_ROOT`, límites de imagen/video y directorio temporal                      |
+| Push      | las tres variables `WEB_PUSH_VAPID_*` y sus límites opcionales                         |
 
 En producción, los secretos de aplicación deben tener al menos 32 caracteres.
 Las tres variables VAPID (`SUBJECT`, `PUBLIC_KEY`, `PRIVATE_KEY`) son opcionales,
 pero si se configura una deben configurarse las tres. Sin ellas permanece
 operativo el inbox interno, sin envío Web Push.
 
-Las campañas que usan Lotería Federal deben fijar el número de concurso antes
-de abrir ventas. Al verificar, el administrador no introduce números ganadores
-ni URLs: la API consulta dos veces el endpoint oficial de CAIXA, valida que las
-dos respuestas normalizadas coincidan y conserva los cuerpos, sus hashes
-SHA-256 y metadatos acotados como evidencia de auditoría.
+Las campañas que usan Lotería Federal deben fijar `closesAt`, número de concurso
+y una `drawDate` de un día posterior antes de programarse o abrir ventas. La API confirma dos veces que CAIXA lo
+anuncia como próximo concurso aún no publicado y que la fecha oficial coincide.
+Al verificar, el operador no introduce números, premios adicionales ni URLs: la
+API vuelve a conciliar dos lecturas oficiales, exige que el sorteo sea posterior
+al cierre efectivo de ventas y conserva cuerpos, hashes SHA-256 y metadatos
+acotados como evidencia de auditoría.
 La plantilla usa `servicebus3.caixa.gov.br`; por compatibilidad se admite
 también el host oficial `servicebus2.caixa.gov.br`, sin puertos, redirecciones
 ni rutas configurables fuera del endpoint Federal.
+
+El método criptográfico tampoco acepta entropía del operador: antes de vender
+congela `closesAt` y `drawDate`, y combina la revelación con el primer pulso
+HTTPS de la baliza NIST a partir de ese instante ya comprometido, conservando
+pulso, firma, certificado y hash del cuerpo. Los métodos
+`manual_external` y `cryptographic` están deshabilitados por defecto en
+producción y requieren habilitación explícita. La verificación manual y la
+publicación final son exclusivas de ADMIN; además, la misma identidad no puede
+verificar y publicar.
+La selección temporal sigue la API oficial documentada de
+[NIST Randomness Beacon 2.0](https://csrc.nist.gov/projects/interoperable-randomness-beacons/beacon-20).
 
 Para generar el entorno de producción:
 

@@ -58,14 +58,12 @@ export class OrderAccessService {
     const phone = normalizeOrderPhone(dto.phone);
     const email = normalizeOrderEmail(dto.email);
     this.assertNormalizedPhone(phone);
+    const campaignId = this.normalizeCampaignId(dto.campaignId);
     const now = new Date();
-    const identityHash = this.hashIdentity(phone, email, dto.campaignId);
+    const identityHash = this.hashIdentity(phone, email, campaignId);
     const recent = await this.findRecentChallenge(identityHash, now);
     if (recent) {
-      return this.publicChallengeResponse(
-        recent.challengeId,
-        recent.expiresAt,
-      );
+      return this.publicChallengeResponse(recent.challengeId, recent.expiresAt);
     }
 
     const filter: Record<string, unknown> = {
@@ -73,21 +71,24 @@ export class OrderAccessService {
       'buyer.email': email,
       $or: [{ user: { $exists: false } }, { user: null }],
     };
-    if (dto.campaignId) {
-      filter.campaign = new Types.ObjectId(dto.campaignId);
+    if (campaignId) {
+      filter.campaign = new Types.ObjectId(campaignId);
     }
 
     const matches = await this.orderModel
       .find(filter)
       .select('_id')
       .sort({ createdAt: -1 })
-      .limit(this.maxOrders())
+      .limit(this.maxOrders() + 1)
       .lean()
       .exec();
 
     const challengeId = randomBytes(24).toString('base64url');
     const code = String(randomInt(100_000, 1_000_000));
-    const orderIds = matches.map((order) => order._id);
+    const truncated = matches.length > this.maxOrders();
+    const orderIds = matches
+      .slice(0, this.maxOrders())
+      .map((order) => order._id);
     const expiresAt = new Date(now.getTime() + CHALLENGE_LIFETIME_MS);
     let challenge: OrderAccessChallengeDocument;
     try {
@@ -106,6 +107,7 @@ export class OrderAccessService {
               challengeId,
               codeHash: this.hashCode(challengeId, code),
               orderIds,
+              truncated,
               attempts: 0,
               createdAt: now,
               expiresAt,
@@ -143,16 +145,18 @@ export class OrderAccessService {
   async confirm(dto: ConfirmOrderAccessDto) {
     const session = await this.connection.startSession();
     let invalid = false;
+    let confirmationError: BadRequestException | undefined;
     let recovered: Array<Record<string, unknown>> = [];
 
     try {
       await session.withTransaction(async () => {
         invalid = false;
+        confirmationError = undefined;
         recovered = [];
         const now = new Date();
         const challenge = await this.challengeModel
           .findOne({ challengeId: dto.challengeId })
-          .select('+codeHash +orderIds')
+          .select('+codeHash +orderIds +truncated')
           .session(session)
           .exec();
 
@@ -178,6 +182,15 @@ export class OrderAccessService {
           );
           await challenge.save({ session });
           invalid = true;
+          return;
+        }
+
+        if (challenge.truncated) {
+          await this.challengeModel.deleteOne(
+            { _id: challenge._id },
+            { session },
+          );
+          confirmationError = this.campaignFilterRequired();
           return;
         }
 
@@ -237,8 +250,16 @@ export class OrderAccessService {
       await session.endSession();
     }
 
+    if (confirmationError) throw confirmationError;
     if (invalid) throw this.invalidChallenge();
-    return { orders: recovered };
+    return {
+      orders: recovered,
+      meta: {
+        count: recovered.length,
+        hasMore: false,
+        truncated: false,
+      },
+    };
   }
 
   private publicChallengeResponse(
@@ -339,9 +360,14 @@ export class OrderAccessService {
   }
 
   private hmacSecret(): string {
+    const dedicated = this.config
+      .get<string>('ORDER_ACCESS_CODE_SECRET')
+      ?.trim();
     const secret =
-      this.config.get<string>('ORDER_ACCESS_CODE_SECRET')?.trim() ||
-      this.config.get<string>('CHECKOUT_ACCESS_SECRET_KEY')?.trim();
+      dedicated ||
+      (this.config.get<string>('NODE_ENV') === 'production'
+        ? undefined
+        : this.config.get<string>('CHECKOUT_ACCESS_SECRET_KEY')?.trim());
     if (!secret || secret.length < 32) {
       throw new ServiceUnavailableException(
         'Configure un secreto seguro para recuperar pedidos',
@@ -364,7 +390,30 @@ export class OrderAccessService {
     }
   }
 
+  private normalizeCampaignId(campaignId?: string): string | undefined {
+    if (!campaignId) return undefined;
+    if (!Types.ObjectId.isValid(campaignId)) {
+      throw new BadRequestException('Campaña inválida');
+    }
+    return new Types.ObjectId(campaignId).toHexString();
+  }
+
   private invalidChallenge(): BadRequestException {
     return new BadRequestException('Código inválido o expirado');
+  }
+
+  private campaignFilterRequired(): BadRequestException {
+    return new BadRequestException({
+      statusCode: 400,
+      code: 'ORDER_ACCESS_CAMPAIGN_REQUIRED',
+      message:
+        'Hay más pedidos que el límite seguro. Solicite otro código indicando campaignId; si ya lo indicó, contacte con soporte.',
+      meta: {
+        hasMore: true,
+        truncated: true,
+        requiresCampaignId: true,
+        maxOrders: this.maxOrders(),
+      },
+    });
   }
 }

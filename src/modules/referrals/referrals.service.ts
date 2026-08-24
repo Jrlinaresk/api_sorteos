@@ -3,9 +3,11 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { FilterQuery, Model, Types } from 'mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { ClientSession, Connection, FilterQuery, Model, Types } from 'mongoose';
 import { CaptureReferralClickDto } from './dto/capture-referral-click.dto';
 import { CreateReferralCodeDto } from './dto/create-referral-code.dto';
 import {
@@ -67,6 +69,9 @@ export class ReferralsService {
     private readonly clickModel: Model<ReferralClickDocument>,
     @InjectModel(ReferralCommission.name)
     private readonly commissionModel: Model<ReferralCommissionDocument>,
+    @Optional()
+    @InjectConnection()
+    private readonly connection?: Connection,
   ) {}
 
   async createCode(dto: CreateReferralCodeDto): Promise<ReferralCodeDocument> {
@@ -340,28 +345,102 @@ export class ReferralsService {
     dto: UpdateCommissionStatusDto,
   ): Promise<ReferralCommissionDocument> {
     const _id = this.toObjectId(id, 'comisión');
-    const commission = await this.commissionModel.findById(_id).exec();
-    if (!commission) throw new NotFoundException('Comisión no encontrada');
-    if (!canTransitionCommission(commission.status, dto.status)) {
-      throw new ConflictException(
-        `Transición inválida: ${commission.status} -> ${dto.status}`,
+    if (!this.connection) {
+      throw new ServiceUnavailableException(
+        'La actualización financiera requiere transacciones',
       );
     }
+    const session = await this.connection.startSession();
+    let result: ReferralCommissionDocument | undefined;
+    try {
+      await session.withTransaction(async () => {
+        result = undefined;
+        const commission = await this.commissionModel
+          .findById(_id)
+          .session(session)
+          .exec();
+        if (!commission) throw new NotFoundException('Comisión no encontrada');
+        if (!canTransitionCommission(commission.status, dto.status)) {
+          throw new ConflictException(
+            `Transición inválida: ${commission.status} -> ${dto.status}`,
+          );
+        }
 
-    const now = new Date();
-    commission.status = dto.status;
-    commission.statusChangedAt = now;
-    commission.statusReason = dto.reason;
-    if (dto.status === ReferralCommissionStatus.Approved) {
-      commission.approvedAt = now;
-    } else if (dto.status === ReferralCommissionStatus.Paid) {
-      commission.paidAt = now;
-    } else if (dto.status === ReferralCommissionStatus.Rejected) {
-      commission.rejectedAt = now;
-    } else if (dto.status === ReferralCommissionStatus.Reversed) {
-      commission.reversedAt = now;
+        const releasesConversion =
+          this.isReleasedStatus(dto.status) && !commission.conversionReleasedAt;
+        if (commission.status === dto.status && !releasesConversion) {
+          result = commission;
+          return;
+        }
+
+        const now = new Date();
+        const set: Record<string, unknown> = {
+          status: dto.status,
+          statusChangedAt: now,
+          statusReason: dto.reason,
+        };
+        if (dto.status === ReferralCommissionStatus.Approved) {
+          set.approvedAt = now;
+        } else if (dto.status === ReferralCommissionStatus.Paid) {
+          set.paidAt = now;
+        } else if (dto.status === ReferralCommissionStatus.Rejected) {
+          set.rejectedAt = now;
+        } else if (dto.status === ReferralCommissionStatus.Reversed) {
+          set.reversedAt = now;
+        }
+        if (releasesConversion) set.conversionReleasedAt = now;
+
+        const filter: Record<string, unknown> = {
+          _id,
+          status: commission.status,
+        };
+        if (releasesConversion) {
+          filter.conversionReleasedAt = { $exists: false };
+        }
+        const updated = await this.commissionModel
+          .findOneAndUpdate(
+            filter,
+            { $set: set },
+            { new: true, session, runValidators: true },
+          )
+          .exec();
+        if (!updated) {
+          throw new ConflictException(
+            'La comisión cambió mientras se actualizaba; reintente',
+          );
+        }
+        if (releasesConversion) {
+          await this.releaseConversion(updated.referralCode, session);
+        }
+        result = updated;
+      });
+    } finally {
+      await session.endSession();
     }
-    return commission.save();
+    if (!result) {
+      throw new ConflictException('No se pudo actualizar la comisión');
+    }
+    return result;
+  }
+
+  private isReleasedStatus(status: ReferralCommissionStatus): boolean {
+    return [
+      ReferralCommissionStatus.Rejected,
+      ReferralCommissionStatus.Reversed,
+    ].includes(status);
+  }
+
+  private async releaseConversion(
+    codeId: Types.ObjectId,
+    session: ClientSession,
+  ): Promise<void> {
+    await this.codeModel
+      .updateOne(
+        { _id: codeId, conversionsCount: { $gt: 0 } },
+        { $inc: { conversionsCount: -1 } },
+        { session },
+      )
+      .exec();
   }
 
   private async paginate<TResult, TView>(

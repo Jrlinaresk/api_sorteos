@@ -3,6 +3,7 @@ import {
   PaymentProviderName,
   PaymentStatus,
 } from '../payment.enums';
+import { PixReceiptSnapshot, PixRefundSnapshot } from '../payment-finance';
 
 export interface ProviderPayer {
   name: string;
@@ -45,6 +46,11 @@ export interface ProviderPaymentResult {
   pixCopyPaste?: string;
   checkoutUrl?: string;
   paidAt?: Date;
+  receipts?: PixReceiptSnapshot[];
+  refunds?: PixRefundSnapshot[];
+  receivedAmountCents?: number;
+  refundedAmountCents?: number;
+  receiptIntegrityError?: string;
   raw?: Record<string, unknown>;
 }
 

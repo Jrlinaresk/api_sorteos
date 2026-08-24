@@ -1,32 +1,11 @@
-import { Type } from 'class-transformer';
-import {
-  ArrayMaxSize,
-  IsArray,
-  IsOptional,
-  IsString,
-  Matches,
-  MaxLength,
-  MinLength,
-  ValidateNested,
-} from 'class-validator';
+import { Allow } from 'class-validator';
 
-export class AdditionalOutcomeDto {
-  @IsString()
-  @MinLength(1)
-  @MaxLength(180)
-  prizeTitle: string;
-
-  @IsString()
-  @Matches(/^\d+$/)
-  @MaxLength(12)
-  winningNumber: string;
-}
-
+/**
+ * El resultado Federal se deriva por completo del contrato de campaña y de
+ * CAIXA. No admite números ni premios introducidos durante la verificación.
+ */
 export class VerifyFederalDrawDto {
-  @IsOptional()
-  @IsArray()
-  @ArrayMaxSize(100)
-  @ValidateNested({ each: true })
-  @Type(() => AdditionalOutcomeDto)
-  additionalOutcomes?: AdditionalOutcomeDto[];
+  /** Metadato interno para que class-validator trate el DTO vacío como conocido. */
+  @Allow()
+  private readonly _validationMarker?: never;
 }

@@ -48,6 +48,7 @@ export class AdminDrawsController {
   }
 
   @Post('verify/manual-external')
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Registra un resultado externo con evidencia' })
   verifyManual(
     @Param('campaignId') campaignId: string,
@@ -59,7 +60,8 @@ export class AdminDrawsController {
 
   @Post('verify/cryptographic')
   @ApiOperation({
-    summary: 'Revela la semilla y combina una entropía externa auditable',
+    summary:
+      'Revela la semilla y combina el pulso NIST comprometido por drawDate',
   })
   verifyCryptographic(
     @Param('campaignId') campaignId: string,
@@ -70,6 +72,7 @@ export class AdminDrawsController {
   }
 
   @Post('publish')
+  @Roles(UserRole.ADMIN)
   @ApiOperation({
     summary: 'Publica de forma inmutable un resultado ya verificado',
   })

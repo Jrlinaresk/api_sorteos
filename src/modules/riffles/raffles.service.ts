@@ -19,6 +19,8 @@ import {
   slugifyCampaign,
 } from './schema/raffle.schema';
 import { MediaService } from '../media/media.service';
+import { CaixaFederalLotteryService } from '../draws/caixa-federal-lottery.service';
+import { ConfigService } from '@nestjs/config';
 
 export interface CampaignPriceQuote {
   selectedQuantity: number;
@@ -43,15 +45,70 @@ const PUBLIC_STATUSES = [
   CampaignStatus.Closed,
 ];
 
+const SAFE_CONTENT_FIELDS = [
+  'name',
+  'shortDescription',
+  'description',
+  'imageUrl',
+  'media',
+  'category',
+  'size',
+  'costLevel',
+  'statusLabel',
+  'statusText',
+  'modules',
+  'notice',
+  'contacts',
+  'seo',
+  'analytics',
+  'featured',
+  'sortOrder',
+] as const;
+
+const CONTRACT_FIELDS = [
+  'regulationHtml',
+  'termsVersion',
+  'slug',
+  'totalTitles',
+  'quotaDigits',
+  'launchAt',
+  'drawDate',
+  'currency',
+  'itemPrice',
+  'ticketPrice',
+  'itemCondition',
+  'prizeTitle',
+  'cashAlternative',
+  'minimumOrderAmount',
+  'maxTitlesPerOrder',
+  'quantitySuggestions',
+  'promotionTiers',
+  'drawMethod',
+  'federalLottery',
+  'instantGame',
+  'doubleChance',
+  'progressOverride',
+] as const;
+
 @Injectable()
 export class RafflesService {
   constructor(
     @InjectModel(Raffle.name)
     private readonly raffleModel: Model<RaffleDocument>,
     private readonly media: MediaService,
+    private readonly caixaFederal: CaixaFederalLotteryService,
+    private readonly config: ConfigService,
   ) {}
 
   async create(dto: CreateRaffleDto): Promise<RaffleDocument> {
+    if (
+      dto.status !== undefined &&
+      ![CampaignStatus.Draft, CampaignStatus.Scheduled].includes(dto.status)
+    ) {
+      throw new BadRequestException(
+        'Una campaña solo puede crearse como borrador o programada',
+      );
+    }
     const slug = slugifyCampaign(dto.slug || dto.name);
     if (!slug)
       throw new BadRequestException('El slug de la campaña no es válido');
@@ -80,6 +137,8 @@ export class RafflesService {
       reservedCount: 0,
       currency: (dto.currency || 'BRL').toUpperCase(),
       status: dto.status || CampaignStatus.Draft,
+      contractLockedAt:
+        dto.status === CampaignStatus.Scheduled ? new Date() : undefined,
       itemCondition: dto.itemCondition || 'new',
       termsVersion: dto.termsVersion || '1',
       regulationHistory: dto.regulationHtml?.trim()
@@ -93,6 +152,13 @@ export class RafflesService {
           ]
         : [],
     });
+    if (campaign.status === CampaignStatus.Scheduled) {
+      await this.assertActivationReady(
+        campaign,
+        new Date(),
+        CampaignStatus.Scheduled,
+      );
+    }
     const reference = `campaign:${campaign._id.toString()}`;
     const mediaIds = this.mediaIds(dto.media);
     try {
@@ -185,10 +251,32 @@ export class RafflesService {
   }
 
   async findPurchasableBySlug(slug: string): Promise<RaffleDocument> {
+    const now = new Date();
     const campaign = await this.raffleModel
       .findOne({
         slug: slugifyCampaign(slug),
         status: { $in: [CampaignStatus.Active, CampaignStatus.Open] },
+        $and: [
+          {
+            $or: [
+              { launchAt: { $exists: false } },
+              { launchAt: null },
+              { launchAt: { $lte: now } },
+            ],
+          },
+          {
+            $or: [
+              { closesAt: { $exists: false } },
+              { closesAt: null },
+              { closesAt: { $gt: now } },
+            ],
+          },
+          {
+            $expr: {
+              $lt: [{ $add: ['$soldCount', '$reservedCount'] }, '$totalTitles'],
+            },
+          },
+        ],
       })
       .exec();
     if (!campaign) {
@@ -224,7 +312,7 @@ export class RafflesService {
   async update(id: string, dto: UpdateRaffleDto): Promise<RaffleDocument> {
     const campaign = await this.findOne(id);
     const previousMediaIds = this.mediaIds(campaign.media);
-    this.assertDrawConfigurationUpdate(campaign, dto);
+    this.assertMutableUpdate(campaign, dto);
     this.prepareRegulationUpdate(campaign, dto);
     if (
       dto.totalTitles !== undefined &&
@@ -261,15 +349,31 @@ export class RafflesService {
     );
     const reference = `campaign:${campaign._id.toString()}`;
     try {
-      for (const mediaId of added)
-        await this.media.addReference(mediaId, reference);
       const federalLotteryUpdate = dto.federalLottery;
-      const campaignUpdate = { ...dto };
-      delete campaignUpdate.federalLottery;
-      Object.assign(campaign, campaignUpdate);
-      if (federalLotteryUpdate) {
+      const contractLocked = this.isContractLocked(campaign);
+      this.applyDefinedFields(campaign, dto, SAFE_CONTENT_FIELDS);
+      if (!contractLocked) {
+        this.applyDefinedFields(campaign, dto, CONTRACT_FIELDS);
+        if (dto.currency !== undefined)
+          campaign.currency = dto.currency.toUpperCase();
+        if (dto.closesAt !== undefined)
+          campaign.closesAt = new Date(dto.closesAt);
+      } else if (dto.closesAt !== undefined) {
+        campaign.closesAt = new Date(dto.closesAt);
+      }
+      if (!contractLocked && federalLotteryUpdate) {
         if (campaign.federalLottery) {
-          Object.assign(campaign.federalLottery, federalLotteryUpdate);
+          campaign.federalLottery.firstPrizeDigits =
+            federalLotteryUpdate.firstPrizeDigits ??
+            campaign.federalLottery.firstPrizeDigits;
+          campaign.federalLottery.secondPrizeDigits =
+            federalLotteryUpdate.secondPrizeDigits ??
+            campaign.federalLottery.secondPrizeDigits;
+          campaign.federalLottery.combination =
+            federalLotteryUpdate.combination ??
+            campaign.federalLottery.combination;
+          campaign.federalLottery.contest =
+            federalLotteryUpdate.contest ?? campaign.federalLottery.contest;
         } else {
           campaign.federalLottery = {
             firstPrizeDigits: federalLotteryUpdate.firstPrizeDigits ?? 3,
@@ -280,6 +384,8 @@ export class RafflesService {
         }
       }
       this.assertDocumentConfiguration(campaign);
+      for (const mediaId of added)
+        await this.media.addReference(mediaId, reference);
       const saved = await campaign.save();
       await Promise.all(
         removed.map((mediaId) =>
@@ -302,18 +408,74 @@ export class RafflesService {
     status: CampaignStatus,
   ): Promise<RaffleDocument> {
     const campaign = await this.findOne(id);
+    const leavingDraft =
+      campaign.status === CampaignStatus.Draft &&
+      status !== CampaignStatus.Draft;
     const allowed = this.allowedTransitions(campaign.status);
     if (!allowed.includes(status)) {
       throw new ConflictException(
         `Transición inválida: ${campaign.status} → ${status}`,
       );
     }
-    if (status === CampaignStatus.Active || status === CampaignStatus.Open) {
-      this.assertActivationReady(campaign);
+    if (status === CampaignStatus.Cancelled) {
+      this.assertCancellationSafe(campaign);
     }
+    if (
+      [
+        CampaignStatus.Scheduled,
+        CampaignStatus.Active,
+        CampaignStatus.Open,
+      ].includes(status)
+    ) {
+      await this.assertActivationReady(campaign, new Date(), status);
+    }
+    if (status === CampaignStatus.SoldOut) {
+      this.assertFullySold(campaign);
+    }
+    if (status === CampaignStatus.AwaitingDraw) {
+      this.assertFullySold(campaign);
+      if ((campaign.reservedCount || 0) !== 0) {
+        throw new ConflictException(
+          'No se puede cerrar el sorteo con cuotas aún reservadas',
+        );
+      }
+      campaign.salesClosedAt ??= new Date();
+    }
+    if (leavingDraft) campaign.contractLockedAt ??= new Date();
     campaign.status = status;
     if (status === CampaignStatus.Active && !campaign.launchAt)
       campaign.launchAt = new Date();
+    if (leavingDraft) {
+      const version = (campaign as unknown as { __v?: number }).__v;
+      const filter: FilterQuery<RaffleDocument> = {
+        _id: campaign._id,
+        status: CampaignStatus.Draft,
+        $or: [
+          { contractLockedAt: { $exists: false } },
+          { contractLockedAt: null },
+        ],
+      };
+      if (version !== undefined) filter.__v = version;
+      const locked = await this.raffleModel.findOneAndUpdate(
+        filter,
+        {
+          $set: {
+            status,
+            contractLockedAt: campaign.contractLockedAt,
+            launchAt: campaign.launchAt,
+            regulationHistory: campaign.regulationHistory,
+          },
+          $inc: { contractRevision: 1 },
+        },
+        { new: true, runValidators: true },
+      );
+      if (!locked) {
+        throw new ConflictException(
+          'El contrato cambió durante la publicación; revise y reintente',
+        );
+      }
+      return locked;
+    }
     return campaign.save();
   }
 
@@ -362,48 +524,55 @@ export class RafflesService {
   }
 
   async processLifecycle(at = new Date()) {
-    const [activated, soldOut, closedForSales] = await Promise.all([
-      this.raffleModel.updateMany(
+    const due = await this.raffleModel
+      .find({ status: CampaignStatus.Scheduled, launchAt: { $lte: at } })
+      .limit(100)
+      .exec();
+    let activatedCount = 0;
+    let activationBlocked = 0;
+    for (const campaign of due) {
+      try {
+        await this.assertActivationReady(campaign, at, CampaignStatus.Active);
+        campaign.status = CampaignStatus.Active;
+        campaign.contractLockedAt ??= at;
+        await campaign.save();
+        activatedCount += 1;
+      } catch {
+        // Falla cerrado: la tarea vuelve a comprobarlo en el siguiente ciclo.
+        activationBlocked += 1;
+      }
+    }
+    const soldOut = await this.raffleModel.updateMany(
+      {
+        status: { $in: [CampaignStatus.Active, CampaignStatus.Open] },
+        $expr: { $eq: ['$soldCount', '$totalTitles'] },
+        reservedCount: 0,
+      },
+      [
         {
-          status: CampaignStatus.Scheduled,
-          launchAt: { $lte: at },
-          regulationHtml: { $exists: true, $nin: ['', null] },
-          $and: [
-            {
-              $or: [
-                { drawMethod: { $ne: DrawMethod.Cryptographic } },
-                { drawCommitment: { $type: 'string' } },
-              ],
-            },
-            {
-              $or: [
-                { drawMethod: { $ne: DrawMethod.FederalLottery } },
-                { 'federalLottery.contest': { $regex: /^[1-9]\d{0,9}$/ } },
-              ],
-            },
-          ],
+          $set: {
+            status: CampaignStatus.SoldOut,
+            salesClosedAt: { $ifNull: ['$salesClosedAt', at] },
+          },
         },
-        { $set: { status: CampaignStatus.Active } },
-      ),
-      this.raffleModel.updateMany(
-        {
-          status: { $in: [CampaignStatus.Active, CampaignStatus.Open] },
-          $expr: { $gte: ['$soldCount', '$totalTitles'] },
-        },
-        { $set: { status: CampaignStatus.SoldOut } },
-      ),
-      this.raffleModel.updateMany(
-        {
-          status: { $in: [CampaignStatus.Active, CampaignStatus.Open] },
-          closesAt: { $lte: at },
-        },
-        { $set: { status: CampaignStatus.AwaitingDraw } },
-      ),
-    ]);
+      ],
+    );
+    const awaitingDraw = await this.raffleModel.updateMany(
+      {
+        status: CampaignStatus.SoldOut,
+        $expr: { $eq: ['$soldCount', '$totalTitles'] },
+        reservedCount: 0,
+        salesClosedAt: { $exists: true },
+      },
+      { $set: { status: CampaignStatus.AwaitingDraw } },
+    );
     return {
-      activated: activated.modifiedCount,
+      activated: activatedCount,
+      activationBlocked,
       soldOut: soldOut.modifiedCount,
-      closedForSales: closedForSales.modifiedCount,
+      awaitingDraw: awaitingDraw.modifiedCount,
+      // Las campañas parciales vencidas permanecen cerradas por fecha, no sorteables.
+      closedForSales: 0,
     };
   }
 
@@ -482,35 +651,14 @@ export class RafflesService {
     if (dto.status === CampaignStatus.Scheduled && !dto.launchAt) {
       throw new BadRequestException('Una campaña programada necesita launchAt');
     }
-    if (
-      [CampaignStatus.Active, CampaignStatus.Open].includes(
-        dto.status as CampaignStatus,
-      )
-    ) {
-      if (!dto.regulationHtml?.trim()) {
-        throw new BadRequestException(
-          'La campaña necesita un reglamento antes de publicarse',
-        );
-      }
-      if (dto.drawMethod === DrawMethod.Cryptographic) {
-        throw new BadRequestException(
-          'Cree la campaña criptográfica en borrador, publique el compromiso y luego actívela',
-        );
-      }
-      if (
-        (dto.drawMethod || DrawMethod.FederalLottery) ===
-          DrawMethod.FederalLottery &&
-        !/^[1-9]\d{0,9}$/.test(dto.federalLottery?.contest || '')
-      ) {
-        throw new BadRequestException(
-          'La campaña debe fijar el concurso Federal antes de abrir ventas',
-        );
-      }
-    }
     const launchAt = dto.launchAt ? new Date(dto.launchAt) : undefined;
     const closesAt = dto.closesAt ? new Date(dto.closesAt) : undefined;
+    const drawDate = dto.drawDate ? new Date(dto.drawDate) : undefined;
     if (launchAt && closesAt && closesAt <= launchAt) {
       throw new BadRequestException('closesAt debe ser posterior a launchAt');
+    }
+    if (drawDate && closesAt && drawDate <= closesAt) {
+      throw new BadRequestException('drawDate debe ser posterior a closesAt');
     }
     const maxPerOrder = dto.maxTitlesPerOrder || 20_000;
     for (const quantity of dto.quantitySuggestions || []) {
@@ -562,7 +710,11 @@ export class RafflesService {
     }
   }
 
-  private assertActivationReady(campaign: Raffle) {
+  private async assertActivationReady(
+    campaign: Raffle,
+    at: Date,
+    targetStatus: CampaignStatus,
+  ): Promise<void> {
     if (!campaign.regulationHtml?.trim()) {
       throw new ConflictException(
         'La campaña necesita un reglamento antes de publicarse',
@@ -584,37 +736,148 @@ export class RafflesService {
         'La campaña debe fijar el concurso Federal antes de abrir ventas',
       );
     }
+    if (
+      targetStatus === CampaignStatus.Scheduled &&
+      (!campaign.launchAt || new Date(campaign.launchAt) <= at)
+    ) {
+      throw new ConflictException(
+        'Una campaña programada necesita un launchAt futuro',
+      );
+    }
+    if (
+      [CampaignStatus.Active, CampaignStatus.Open].includes(targetStatus) &&
+      campaign.launchAt &&
+      new Date(campaign.launchAt) > at
+    ) {
+      throw new ConflictException(
+        'Use el estado programado mientras launchAt sea futuro',
+      );
+    }
+    if (campaign.closesAt && new Date(campaign.closesAt) <= at) {
+      throw new ConflictException(
+        'No se puede abrir una campaña cuya fecha de cierre ya pasó',
+      );
+    }
+    if (campaign.drawDate && new Date(campaign.drawDate) <= at) {
+      throw new ConflictException(
+        'No se puede abrir una campaña cuya fecha de sorteo ya pasó',
+      );
+    }
+    if (
+      campaign.drawDate &&
+      campaign.closesAt &&
+      new Date(campaign.drawDate) <= new Date(campaign.closesAt)
+    ) {
+      throw new ConflictException(
+        'La fecha de sorteo debe ser posterior al cierre de ventas',
+      );
+    }
+    if (campaign.soldCount + campaign.reservedCount >= campaign.totalTitles) {
+      throw new ConflictException(
+        'No se puede abrir una campaña sin títulos disponibles',
+      );
+    }
+    this.assertDrawMethodEnabled(campaign.drawMethod);
+    if (campaign.drawMethod === DrawMethod.Cryptographic) {
+      if (!campaign.closesAt || !campaign.drawDate) {
+        throw new ConflictException(
+          'La campaña criptográfica debe fijar closesAt y drawDate antes de abrir ventas',
+        );
+      }
+    }
+    if (campaign.drawMethod === DrawMethod.FederalLottery) {
+      if (!campaign.closesAt) {
+        throw new ConflictException(
+          'La campaña Federal debe fijar closesAt antes de abrir ventas',
+        );
+      }
+      if (!campaign.drawDate) {
+        throw new ConflictException(
+          'La campaña Federal necesita una drawDate declarada',
+        );
+      }
+      const drawDate = new Date(campaign.drawDate);
+      if (!Number.isFinite(drawDate.getTime()) || drawDate <= at) {
+        throw new ConflictException(
+          'La fecha declarada del sorteo Federal debe ser futura',
+        );
+      }
+      if (
+        this.utcDateKey(drawDate) <=
+        this.utcDateKey(new Date(campaign.closesAt))
+      ) {
+        throw new ConflictException(
+          'La fecha Federal debe ser un día posterior al cierre de ventas',
+        );
+      }
+      if (campaign.closesAt && new Date(campaign.closesAt) >= drawDate) {
+        throw new ConflictException(
+          'El sorteo Federal debe ser posterior al cierre de ventas',
+        );
+      }
+      await this.caixaFederal.assertContestUpcoming(
+        campaign.federalLottery.contest!,
+        drawDate,
+        at,
+      );
+    }
     this.ensureCurrentRegulationVersion(campaign);
   }
 
-  private assertDrawConfigurationUpdate(
-    campaign: Raffle,
-    dto: UpdateRaffleDto,
-  ): void {
-    const salesOpened =
-      ![CampaignStatus.Draft, CampaignStatus.Scheduled].includes(
-        campaign.status,
-      ) ||
-      campaign.allocationCursor > 0 ||
-      campaign.soldCount > 0 ||
-      campaign.reservedCount > 0;
-    if (!salesOpened) return;
-
-    if (dto.drawMethod && dto.drawMethod !== campaign.drawMethod) {
-      throw new ConflictException(
-        'No se puede cambiar el método de sorteo después de abrir ventas',
+  private assertMutableUpdate(campaign: Raffle, dto: UpdateRaffleDto): void {
+    if ('status' in (dto as Record<string, unknown>)) {
+      throw new BadRequestException(
+        'El estado solo puede modificarse mediante el endpoint de transición',
       );
     }
-    if (!dto.federalLottery) return;
-    const current = campaign.federalLottery;
-    const changed =
-      dto.federalLottery.contest !== current?.contest ||
-      dto.federalLottery.firstPrizeDigits !== current?.firstPrizeDigits ||
-      dto.federalLottery.secondPrizeDigits !== current?.secondPrizeDigits ||
-      dto.federalLottery.combination !== current?.combination;
-    if (changed) {
+    if (!this.isContractLocked(campaign)) return;
+
+    const attempted = CONTRACT_FIELDS.filter(
+      (field) => (dto as Record<string, unknown>)[field] !== undefined,
+    );
+    if (attempted.length) {
       throw new ConflictException(
-        'El concurso y la regla Federal son inmutables después de abrir ventas',
+        `El contrato de campaña es inmutable; no se puede modificar: ${attempted.join(', ')}`,
+      );
+    }
+    if (dto.closesAt === undefined) return;
+    if (!campaign.closesAt) {
+      throw new ConflictException(
+        'No se puede añadir una fecha de cierre después de congelar el contrato',
+      );
+    }
+    const current = new Date(campaign.closesAt);
+    const next = new Date(dto.closesAt);
+    const now = new Date();
+    if (!Number.isFinite(next.getTime())) {
+      throw new BadRequestException('closesAt no es una fecha válida');
+    }
+    if (next.getTime() === current.getTime()) return;
+    if (
+      ![
+        CampaignStatus.Scheduled,
+        CampaignStatus.Active,
+        CampaignStatus.Open,
+      ].includes(campaign.status) ||
+      current <= now ||
+      next <= current
+    ) {
+      throw new ConflictException(
+        'Después de publicar solo se permite extender un cierre aún vigente',
+      );
+    }
+    if (campaign.drawDate && next >= new Date(campaign.drawDate)) {
+      throw new ConflictException(
+        'La extensión debe terminar antes de la fecha declarada del sorteo',
+      );
+    }
+    if (
+      campaign.drawMethod === DrawMethod.FederalLottery &&
+      campaign.drawDate &&
+      this.utcDateKey(next) >= this.utcDateKey(new Date(campaign.drawDate))
+    ) {
+      throw new ConflictException(
+        'La extensión Federal debe terminar en un día anterior al sorteo',
       );
     }
   }
@@ -626,7 +889,9 @@ export class RafflesService {
         campaign.launchAt &&
         campaign.launchAt <= new Date())
     ) {
-      this.assertActivationReady(campaign);
+      // La comprobación remota CAIXA se hace al cambiar de estado; aquí solo
+      // se valida que una edición de contenido no corrompa el documento.
+      this.assertActivationConfiguration(campaign);
     }
     if (
       campaign.launchAt &&
@@ -634,6 +899,13 @@ export class RafflesService {
       campaign.closesAt <= campaign.launchAt
     ) {
       throw new BadRequestException('closesAt debe ser posterior a launchAt');
+    }
+    if (
+      campaign.drawDate &&
+      campaign.closesAt &&
+      campaign.drawDate <= campaign.closesAt
+    ) {
+      throw new BadRequestException('drawDate debe ser posterior a closesAt');
     }
     if (10 ** campaign.quotaDigits < campaign.totalTitles) {
       throw new BadRequestException('quotaDigits no alcanza para totalTitles');
@@ -666,6 +938,97 @@ export class RafflesService {
     }
   }
 
+  private assertActivationConfiguration(campaign: Raffle): void {
+    if (!campaign.regulationHtml?.trim()) {
+      throw new ConflictException(
+        'La campaña necesita un reglamento antes de publicarse',
+      );
+    }
+    if (
+      campaign.drawMethod === DrawMethod.Cryptographic &&
+      !campaign.drawCommitment
+    ) {
+      throw new ConflictException(
+        'La campaña necesita publicar el compromiso criptográfico',
+      );
+    }
+    if (
+      campaign.drawMethod === DrawMethod.FederalLottery &&
+      !/^[1-9]\d{0,9}$/.test(campaign.federalLottery?.contest || '')
+    ) {
+      throw new ConflictException(
+        'La campaña debe fijar el concurso Federal antes de abrir ventas',
+      );
+    }
+  }
+
+  private assertDrawMethodEnabled(method: DrawMethod): void {
+    const production =
+      (this.config.get<string>('NODE_ENV') || process.env.NODE_ENV) ===
+      'production';
+    if (!production) return;
+    if (
+      method === DrawMethod.ManualExternal &&
+      this.config.get<string>('DRAW_MANUAL_EXTERNAL_ENABLED') !== 'true'
+    ) {
+      throw new ConflictException(
+        'El sorteo manual externo está deshabilitado en producción',
+      );
+    }
+    if (
+      method === DrawMethod.Cryptographic &&
+      this.config.get<string>('DRAW_CRYPTOGRAPHIC_ENABLED') !== 'true'
+    ) {
+      throw new ConflictException(
+        'El sorteo criptográfico está deshabilitado en producción',
+      );
+    }
+  }
+
+  private isContractLocked(campaign: Raffle): boolean {
+    return (
+      campaign.status !== CampaignStatus.Draft ||
+      Boolean(campaign.contractLockedAt) ||
+      campaign.allocationCursor > 0 ||
+      campaign.soldCount > 0 ||
+      campaign.reservedCount > 0
+    );
+  }
+
+  private applyDefinedFields(
+    campaign: RaffleDocument,
+    dto: UpdateRaffleDto,
+    fields: readonly string[],
+  ): void {
+    const target = campaign as unknown as Record<string, unknown>;
+    const source = dto as unknown as Record<string, unknown>;
+    for (const field of fields) {
+      if (source[field] !== undefined && field !== 'federalLottery') {
+        target[field] = source[field];
+      }
+    }
+  }
+
+  private assertCancellationSafe(campaign: Raffle): void {
+    if (campaign.soldCount > 0 || campaign.reservedCount > 0) {
+      throw new ConflictException(
+        'No se puede cancelar una campaña con ventas o reservas activas; complete primero el flujo de reembolso/cancelación',
+      );
+    }
+  }
+
+  private assertFullySold(campaign: Raffle): void {
+    if (campaign.soldCount !== campaign.totalTitles) {
+      throw new ConflictException(
+        'AwaitingDraw/SoldOut requiere el 100% de títulos pagados',
+      );
+    }
+  }
+
+  private utcDateKey(value: Date): string {
+    return value.toISOString().slice(0, 10);
+  }
+
   private toPublicView(campaign: RaffleDocument, includeDetails: boolean) {
     const raw = (campaign as any).toObject
       ? (campaign as any).toObject()
@@ -677,6 +1040,7 @@ export class RafflesService {
     delete raw.winners;
     delete raw.mainWinner;
     delete raw.drawCommittedBy;
+    delete raw.contractRevision;
     delete raw.__v;
     if (!raw.analytics?.enabled) raw.analytics = { enabled: false };
 
@@ -728,22 +1092,26 @@ export class RafflesService {
           }
         : null);
 
+    const now = new Date();
+    const withinLaunchWindow =
+      !raw.launchAt || new Date(raw.launchAt).getTime() <= now.getTime();
+    const withinClosingWindow =
+      !raw.closesAt || new Date(raw.closesAt).getTime() > now.getTime();
     const view: any = {
       ...raw,
       id,
       cover,
       progress,
       availableCount,
-      isPurchasable: [CampaignStatus.Active, CampaignStatus.Open].includes(
-        raw.status,
-      ),
-      currentNotice: this.isTimedContentActive(raw.notice, new Date())
+      isPurchasable:
+        [CampaignStatus.Active, CampaignStatus.Open].includes(raw.status) &&
+        withinLaunchWindow &&
+        withinClosingWindow &&
+        availableCount > 0,
+      currentNotice: this.isTimedContentActive(raw.notice, now)
         ? raw.notice
         : null,
-      doubleChanceActive: this.isTimedContentActive(
-        raw.doubleChance,
-        new Date(),
-      ),
+      doubleChanceActive: this.isTimedContentActive(raw.doubleChance, now),
     };
     if (!includeDetails) {
       delete view.regulationHtml;
@@ -859,7 +1227,6 @@ export class RafflesService {
       ],
       [CampaignStatus.Scheduled]: [
         CampaignStatus.Active,
-        CampaignStatus.Draft,
         CampaignStatus.Cancelled,
       ],
       [CampaignStatus.Active]: [
@@ -877,11 +1244,7 @@ export class RafflesService {
         CampaignStatus.Active,
         CampaignStatus.Cancelled,
       ],
-      [CampaignStatus.AwaitingDraw]: [
-        CampaignStatus.Drawn,
-        CampaignStatus.Active,
-        CampaignStatus.Cancelled,
-      ],
+      [CampaignStatus.AwaitingDraw]: [CampaignStatus.Drawn],
       [CampaignStatus.Drawn]: [CampaignStatus.Closed],
       [CampaignStatus.Closed]: [],
       [CampaignStatus.Cancelled]: [],

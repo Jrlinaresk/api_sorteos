@@ -3,9 +3,17 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { ClientSession, Connection, Model, Types } from 'mongoose';
+import { UsersService } from '../users/users.service';
+import {
+  normalizeCpf,
+  normalizeEmail,
+  normalizePhone,
+} from '../users/utils/user-normalization';
 import {
   calculateCommissionAmount,
   isReferralCodeUsable,
@@ -31,6 +39,9 @@ export interface AttributeReferralOrderInput {
   referralCode?: string;
   clickId?: string;
   buyerUserId?: string;
+  buyerPhone?: string;
+  buyerEmail?: string;
+  buyerCpf?: string;
   campaignId?: string;
   orderAmount: number;
   commissionBase?: number;
@@ -51,6 +62,10 @@ export class ReferralAttributionService {
     private readonly clickModel: Model<ReferralClickDocument>,
     @InjectModel(ReferralCommission.name)
     private readonly commissionModel: Model<ReferralCommissionDocument>,
+    @Optional() private readonly users?: UsersService,
+    @Optional()
+    @InjectConnection()
+    private readonly connection?: Connection,
   ) {}
 
   async attributeOrder(
@@ -104,6 +119,7 @@ export class ReferralAttributionService {
     ) {
       throw new ConflictException('No se permite la autorreferencia');
     }
+    await this.assertGuestIsNotBeneficiary(code, input);
 
     const currency = input.currency.trim().toUpperCase();
     if (!/^[A-Z]{3}$/.test(currency)) {
@@ -169,7 +185,9 @@ export class ReferralAttributionService {
     }
   }
 
-  async approveOrder(orderId: string): Promise<ReferralCommissionDocument | null> {
+  async approveOrder(
+    orderId: string,
+  ): Promise<ReferralCommissionDocument | null> {
     return this.commissionModel
       .findOneAndUpdate(
         { orderId, status: ReferralCommissionStatus.Pending },
@@ -186,19 +204,77 @@ export class ReferralAttributionService {
       .exec();
   }
 
-  async reverseOrder(orderId: string, reason: string): Promise<ReferralCommissionDocument | null> {
-    const commission = await this.commissionModel.findOne({ orderId }).exec();
-    if (!commission || commission.status === ReferralCommissionStatus.Reversed) return commission;
-    if (commission.status === ReferralCommissionStatus.Paid) {
-      throw new ConflictException('Una comisión ya pagada requiere reversión administrativa manual');
+  async reverseOrder(
+    orderId: string,
+    reason: string,
+  ): Promise<ReferralCommissionDocument | null> {
+    if (!this.connection) {
+      throw new ServiceUnavailableException(
+        'La reversión de comisiones requiere transacciones',
+      );
     }
-    commission.status = ReferralCommissionStatus.Reversed;
-    commission.statusChangedAt = new Date();
-    commission.reversedAt = new Date();
-    commission.statusReason = reason.slice(0, 500);
-    await commission.save();
-    await this.releaseConversion(commission.referralCode);
-    return commission;
+    const session = await this.connection.startSession();
+    let result: ReferralCommissionDocument | null | undefined;
+    try {
+      await session.withTransaction(async () => {
+        result = undefined;
+        const commission = await this.commissionModel
+          .findOne({ orderId })
+          .session(session)
+          .exec();
+        if (!commission) {
+          result = null;
+          return;
+        }
+        if (commission.status === ReferralCommissionStatus.Paid) {
+          throw new ConflictException(
+            'Una comisión ya pagada requiere reversión administrativa manual',
+          );
+        }
+        if (commission.conversionReleasedAt) {
+          result = commission;
+          return;
+        }
+
+        const now = new Date();
+        const alreadyRejected =
+          commission.status === ReferralCommissionStatus.Rejected;
+        const targetStatus = alreadyRejected
+          ? ReferralCommissionStatus.Rejected
+          : ReferralCommissionStatus.Reversed;
+        const set: Record<string, unknown> = {
+          status: targetStatus,
+          statusChangedAt: now,
+          statusReason: reason.slice(0, 500),
+          conversionReleasedAt: now,
+        };
+        if (!alreadyRejected) set.reversedAt = now;
+        const updated = await this.commissionModel
+          .findOneAndUpdate(
+            {
+              _id: commission._id,
+              status: commission.status,
+              conversionReleasedAt: { $exists: false },
+            },
+            { $set: set },
+            { new: true, session, runValidators: true },
+          )
+          .exec();
+        if (!updated) {
+          throw new ConflictException(
+            'La comisión cambió mientras se revertía; reintente',
+          );
+        }
+        await this.releaseConversion(updated.referralCode, session);
+        result = updated;
+      });
+    } finally {
+      await session.endSession();
+    }
+    if (result === undefined) {
+      throw new ConflictException('No se pudo revertir la comisión');
+    }
+    return result;
   }
 
   private async claimConversion(
@@ -233,11 +309,15 @@ export class ReferralAttributionService {
       .exec();
   }
 
-  private async releaseConversion(codeId: Types.ObjectId): Promise<void> {
+  private async releaseConversion(
+    codeId: Types.ObjectId,
+    session?: ClientSession,
+  ): Promise<void> {
     await this.codeModel
       .updateOne(
         { _id: codeId, conversionsCount: { $gt: 0 } },
         { $inc: { conversionsCount: -1 } },
+        session ? { session } : undefined,
       )
       .exec();
   }
@@ -245,6 +325,30 @@ export class ReferralAttributionService {
   private assertMoney(value: number, field: string) {
     if (!Number.isFinite(value) || value < 0) {
       throw new BadRequestException(`${field} inválido`);
+    }
+  }
+
+  private async assertGuestIsNotBeneficiary(
+    code: ReferralCodeDocument,
+    input: AttributeReferralOrderInput,
+  ): Promise<void> {
+    if (!code.beneficiaryUser || !this.users) return;
+    const beneficiary = await this.users.findOneOrNull(
+      code.beneficiaryUser.toString(),
+    );
+    if (!beneficiary) return;
+
+    const samePhone =
+      Boolean(input.buyerPhone) &&
+      normalizePhone(input.buyerPhone!) === normalizePhone(beneficiary.phone);
+    const buyerEmail = normalizeEmail(input.buyerEmail);
+    const sameEmail =
+      Boolean(buyerEmail) && buyerEmail === normalizeEmail(beneficiary.email);
+    const buyerCpf = normalizeCpf(input.buyerCpf);
+    const sameCpf =
+      Boolean(buyerCpf) && buyerCpf === normalizeCpf(beneficiary.cpf);
+    if (samePhone || sameEmail || sameCpf) {
+      throw new ConflictException('No se permite la autorreferencia');
     }
   }
 

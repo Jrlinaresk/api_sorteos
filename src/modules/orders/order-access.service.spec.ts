@@ -60,15 +60,19 @@ describe('OrderAccessService', () => {
     activeChallenge = null;
     createdChallenges = [];
     challengeModel = {
-      create: jest.fn().mockImplementation(async (payload) => {
-        activeChallenge = document({
-          ...payload,
-          _id: new Types.ObjectId(),
-        });
-        createdChallenges.push(activeChallenge);
-        return activeChallenge;
-      }),
       findOne: jest.fn().mockImplementation(() => executable(activeChallenge)),
+      findOneAndUpdate: jest
+        .fn()
+        .mockImplementation(
+          (_filter: unknown, update: { $set: Record<string, unknown> }) => {
+            activeChallenge = document({
+              ...update.$set,
+              _id: activeChallenge?._id || new Types.ObjectId(),
+            });
+            createdChallenges.push(activeChallenge);
+            return executable(activeChallenge);
+          },
+        ),
       deleteOne: jest.fn().mockResolvedValue({ deletedCount: 1 }),
     };
     orderModel = {
@@ -102,6 +106,7 @@ describe('OrderAccessService', () => {
         get: jest.fn((name: string) => {
           if (name === 'CHECKOUT_ACCESS_SECRET_KEY') return hmacSecret;
           if (name === 'ORDER_ACCESS_MAX_ORDERS') return '20';
+          if (name === 'ORDER_ACCESS_REQUEST_COOLDOWN_SECONDS') return '60';
           return undefined;
         }),
       } as any,
@@ -152,6 +157,11 @@ describe('OrderAccessService', () => {
       { session },
     );
     expect(result.orders).toHaveLength(2);
+    expect(result.meta).toEqual({
+      count: 2,
+      hasMore: false,
+      truncated: false,
+    });
 
     for (let index = 0; index < recoveredOrders.length; index += 1) {
       const returned = result.orders[index] as Record<string, any>;
@@ -185,7 +195,7 @@ describe('OrderAccessService', () => {
 
     expect(response).toEqual({
       challengeId: expect.stringMatching(/^[A-Za-z0-9_-]{32}$/),
-      expiresInSeconds: 900,
+      expiresInSeconds: expect.any(Number),
       message:
         'Si los datos coinciden, enviaremos un código al correo indicado.',
     });
@@ -193,16 +203,102 @@ describe('OrderAccessService', () => {
     expect(createdChallenges[0]).toEqual(
       expect.objectContaining({
         codeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        identityHash: expect.stringMatching(/^[a-f0-9]{64}$/),
         orderIds: [],
+        truncated: false,
         attempts: 0,
       }),
     );
     expect(createdChallenges[0]).not.toHaveProperty('email');
     expect(createdChallenges[0]).not.toHaveProperty('phone');
+    expect(response.expiresInSeconds).toBeGreaterThanOrEqual(899);
+    expect(response.expiresInSeconds).toBeLessThanOrEqual(900);
     expect(orderModel.find.mock.calls[0][0]).toEqual(
       expect.objectContaining({
         campaign: expect.any(Types.ObjectId),
       }),
+    );
+  });
+
+  it('reutiliza el challenge durante el cooldown persistente y evita spam distribuido', async () => {
+    const orderId = new Types.ObjectId();
+    orderModel.find.mockReturnValue(executable([{ _id: orderId }]));
+
+    const first = await service.request({
+      phone: buyer.phone,
+      email: buyer.email,
+    });
+    const second = await service.request({
+      phone: buyer.phone,
+      email: buyer.email,
+    });
+
+    expect(second.challengeId).toBe(first.challengeId);
+    expect(orderModel.find).toHaveBeenCalledTimes(1);
+    expect(challengeModel.findOneAndUpdate).toHaveBeenCalledTimes(1);
+    expect(email.sendVerificationEmail).toHaveBeenCalledTimes(1);
+    expect(createdChallenges[0].identityHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(createdChallenges[0].identityHash).not.toContain(buyer.phone);
+    expect(createdChallenges[0].identityHash).not.toContain(buyer.email);
+  });
+
+  it('no espera la entrega SMTP para responder cuando hay coincidencias', async () => {
+    const orderId = new Types.ObjectId();
+    orderModel.find.mockReturnValue(executable([{ _id: orderId }]));
+    let finishDelivery: (() => void) | undefined;
+    email.sendVerificationEmail.mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishDelivery = resolve;
+      }),
+    );
+
+    await expect(
+      service.request({ phone: buyer.phone, email: buyer.email }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        challengeId: expect.any(String),
+      }),
+    );
+    expect(email.sendVerificationEmail).toHaveBeenCalledTimes(1);
+    finishDelivery?.();
+    await Promise.resolve();
+  });
+
+  it('no rota un subconjunto silencioso y exige filtrar por campaña si se supera el máximo', async () => {
+    const matches = Array.from({ length: 21 }, () => ({
+      _id: new Types.ObjectId(),
+    }));
+    orderModel.find.mockReturnValue(executable(matches));
+    const challenge = await service.request({
+      phone: buyer.phone,
+      email: buyer.email,
+    });
+    const code = email.sendVerificationEmail.mock.calls[0][1];
+
+    let response: unknown;
+    try {
+      await service.confirm({ challengeId: challenge.challengeId, code });
+    } catch (error) {
+      response = (error as { getResponse: () => unknown }).getResponse();
+    }
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        code: 'ORDER_ACCESS_CAMPAIGN_REQUIRED',
+        meta: {
+          hasMore: true,
+          truncated: true,
+          requiresCampaignId: true,
+          maxOrders: 20,
+        },
+      }),
+    );
+    expect(createdChallenges[0].orderIds).toHaveLength(20);
+    expect(createdChallenges[0].truncated).toBe(true);
+    expect(orderModel.find).toHaveBeenCalledTimes(1);
+    expect(challengeModel.deleteOne).toHaveBeenCalledWith(
+      { _id: activeChallenge?._id },
+      { session },
     );
   });
 
@@ -254,6 +350,7 @@ describe('OrderAccessService', () => {
       service.confirm({ challengeId: challenge.challengeId, code }),
     ).resolves.toEqual({
       orders: [expect.objectContaining({ accessToken: expect.any(String) })],
+      meta: { count: 1, hasMore: false, truncated: false },
     });
 
     activeChallenge = null;

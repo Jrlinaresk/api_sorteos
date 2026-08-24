@@ -11,8 +11,15 @@ export class TasksService {
   @Cron('0 * * * * *')
   async handleCampaignLifecycle() {
     const result = await this.campaigns.processLifecycle();
-    if (result.activated || result.soldOut || result.closedForSales) {
-      this.logger.log(`Ciclo de campañas actualizado: ${JSON.stringify(result)}`);
+    if (
+      result.activated ||
+      result.soldOut ||
+      result.awaitingDraw ||
+      result.activationBlocked
+    ) {
+      this.logger.log(
+        `Ciclo de campañas actualizado: ${JSON.stringify(result)}`,
+      );
     }
     return result;
   }

@@ -10,10 +10,14 @@ import {
   InstantPrizeStatus,
   PrizeMechanic,
 } from './schemas/instant-prize.schema';
-import { PrizeAttemptStatus } from './schemas/prize-attempt.schema';
+import {
+  PrizeAttemptOutcome,
+  PrizeAttemptStatus,
+} from './schemas/prize-attempt.schema';
 import { PrizeAwardStatus } from './schemas/prize-award.schema';
 import { OrderStatus } from '../orders/schemas/order.schema';
 import { QuotaStatus } from '../orders/schemas/quota.schema';
+import { CampaignStatus } from '../riffles/schema/raffle.schema';
 
 function executable<T>(value: T) {
   const query: Record<string, jest.Mock> = {
@@ -47,6 +51,35 @@ function document(payload: Record<string, any>) {
   return value;
 }
 
+function sha256(value: string) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function committedAttempt(
+  payload: Record<string, any>,
+  configurationSnapshot: {
+    version: 1;
+    mechanic: PrizeMechanic.Roulette | PrizeMechanic.Scratch;
+    noPrizeWeight: number;
+    prizes: Array<{
+      prizeId: string;
+      weight: number;
+      stock: number;
+      sortOrder: number;
+    }>;
+  },
+) {
+  const configurationHash = sha256(JSON.stringify(configurationSnapshot));
+  return document({
+    ...payload,
+    configurationSnapshot,
+    configurationHash,
+    entropyCommitment: sha256(
+      `${payload.entropyReveal}:${configurationHash}:${payload.publicId}`,
+    ),
+  });
+}
+
 describe('PrizesService inventory and lifecycle', () => {
   let prizeModel: jest.Mock & Record<string, jest.Mock>;
   let attemptModel: jest.Mock & Record<string, jest.Mock>;
@@ -66,16 +99,21 @@ describe('PrizesService inventory and lifecycle', () => {
     prizeModel.find = jest.fn();
     prizeModel.findById = jest.fn();
     prizeModel.updateOne = jest.fn();
+    prizeModel.exists = jest.fn().mockResolvedValue(null);
     attemptModel = jest.fn() as jest.Mock & Record<string, jest.Mock>;
     attemptModel.find = jest.fn();
     attemptModel.findOne = jest.fn();
+    attemptModel.updateMany = jest.fn().mockResolvedValue({ modifiedCount: 0 });
+    attemptModel.exists = jest.fn().mockResolvedValue(null);
     awardModel = jest.fn() as jest.Mock & Record<string, jest.Mock>;
     awardModel.find = jest.fn();
     awardModel.findOne = jest.fn();
+    awardModel.exists = jest.fn().mockResolvedValue(null);
     campaignModel = { findById: jest.fn() };
     orderModel = {
       findById: jest.fn(),
       updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+      exists: jest.fn().mockResolvedValue(null),
     };
     quotaModel = { find: jest.fn() };
     session = {
@@ -107,7 +145,14 @@ describe('PrizesService inventory and lifecycle', () => {
   it('normaliza un título premiado, fuerza stock unitario y reserva inventario', async () => {
     const campaignId = new Types.ObjectId();
     campaignModel.findById.mockReturnValue(
-      executable({ _id: campaignId, quotaDigits: 3, totalTitles: 1_000 }),
+      executable({
+        _id: campaignId,
+        status: CampaignStatus.Draft,
+        reservedCount: 0,
+        soldCount: 0,
+        quotaDigits: 3,
+        totalTitles: 1_000,
+      }),
     );
     prizeModel.mockImplementation((payload: Record<string, unknown>) =>
       document({ ...payload, _id: new Types.ObjectId(), awardedCount: 0 }),
@@ -135,7 +180,14 @@ describe('PrizesService inventory and lifecycle', () => {
   it('rechaza números fuera de campaña y quotaNumber en mecánicas aleatorias', async () => {
     const campaignId = new Types.ObjectId();
     campaignModel.findById.mockReturnValue(
-      executable({ _id: campaignId, quotaDigits: 2, totalTitles: 100 }),
+      executable({
+        _id: campaignId,
+        status: CampaignStatus.Draft,
+        reservedCount: 0,
+        soldCount: 0,
+        quotaDigits: 2,
+        totalTitles: 100,
+      }),
     );
 
     await expect(
@@ -159,6 +211,103 @@ describe('PrizesService inventory and lifecycle', () => {
         weight: 1,
       }),
     ).rejects.toThrow('quotaNumber solo corresponde a winning_title');
+  });
+
+  it('congela crear, editar y borrar premios al salir de Draft', async () => {
+    const campaignId = new Types.ObjectId();
+    const prizeId = new Types.ObjectId();
+    const campaign = {
+      _id: campaignId,
+      status: CampaignStatus.Active,
+      reservedCount: 0,
+      soldCount: 0,
+      quotaDigits: 6,
+      totalTitles: 1_000_000,
+    };
+    const prize = document({
+      _id: prizeId,
+      campaign: campaignId,
+      title: 'Pix R$ 50',
+      mechanic: PrizeMechanic.Roulette,
+      weight: 1,
+      stock: 5,
+      awardedCount: 0,
+    });
+    prize.deleteOne = jest.fn();
+    campaignModel.findById.mockReturnValue(executable(campaign));
+    prizeModel.findById.mockReturnValue(executable(prize));
+
+    await expect(
+      service.create({
+        campaignId: campaignId.toString(),
+        title: 'Nuevo premio',
+        mechanic: PrizeMechanic.Roulette,
+        stock: 1,
+        weight: 1,
+      }),
+    ).rejects.toThrow('solo puede modificarse antes de publicar la campaña');
+    await expect(
+      service.update(prizeId.toString(), { title: 'Alterado' }),
+    ).rejects.toThrow('solo puede modificarse antes de publicar la campaña');
+    await expect(service.remove(prizeId.toString())).rejects.toThrow(
+      'solo puede modificarse antes de publicar la campaña',
+    );
+
+    expect(prizeModel).not.toHaveBeenCalled();
+    expect(prize.save).not.toHaveBeenCalled();
+    expect(prize.deleteOne).not.toHaveBeenCalled();
+  });
+
+  it('congela el plan aunque el estado sea Draft si ya existe actividad', async () => {
+    const campaignId = new Types.ObjectId();
+    campaignModel.findById.mockReturnValue(
+      executable({
+        _id: campaignId,
+        status: CampaignStatus.Draft,
+        reservedCount: 0,
+        soldCount: 0,
+        quotaDigits: 6,
+        totalTitles: 1_000_000,
+      }),
+    );
+    orderModel.exists.mockResolvedValue({ _id: new Types.ObjectId() });
+
+    await expect(
+      service.create({
+        campaignId: campaignId.toString(),
+        title: 'Premio tardío',
+        mechanic: PrizeMechanic.Roulette,
+        stock: 1,
+        weight: 1,
+      }),
+    ).rejects.toThrow('la campaña ya tiene actividad');
+    expect(prizeModel).not.toHaveBeenCalled();
+  });
+
+  it('no descongela el plan si una campaña programada vuelve a Draft', async () => {
+    const campaignId = new Types.ObjectId();
+    campaignModel.findById.mockReturnValue(
+      executable({
+        _id: campaignId,
+        status: CampaignStatus.Draft,
+        contractLockedAt: new Date(),
+        reservedCount: 0,
+        soldCount: 0,
+        quotaDigits: 6,
+        totalTitles: 1_000_000,
+      }),
+    );
+
+    await expect(
+      service.create({
+        campaignId: campaignId.toString(),
+        title: 'Cambio posterior a publicación',
+        mechanic: PrizeMechanic.Roulette,
+        stock: 1,
+        weight: 1,
+      }),
+    ).rejects.toThrow('solo puede modificarse antes de publicar la campaña');
+    expect(orderModel.exists).not.toHaveBeenCalled();
   });
 
   it('adjudica una cuota ganadora solo después de pago y agota el stock', async () => {
@@ -267,6 +416,7 @@ describe('PrizesService inventory and lifecycle', () => {
       instantGame: {
         enabled: true,
         mechanic: 'scratch',
+        noPrizeWeight: 0,
         tiers: [
           { quantity: 10, attempts: 1 },
           { quantity: 20, attempts: 3 },
@@ -280,6 +430,22 @@ describe('PrizesService inventory and lifecycle', () => {
       status: PrizeAttemptStatus.Pending,
     });
     const created: Array<Record<string, any>> = [];
+    prizeModel.find.mockReturnValue(
+      executable([
+        document({
+          _id: new Types.ObjectId('000000000000000000000001'),
+          weight: 0,
+          stock: 1,
+          sortOrder: 0,
+        }),
+        document({
+          _id: new Types.ObjectId('000000000000000000000002'),
+          weight: 2,
+          stock: 3,
+          sortOrder: 1,
+        }),
+      ]),
+    );
     attemptModel.find.mockReturnValue(executable([existing]));
     attemptModel.mockImplementation((payload: Record<string, unknown>) => {
       const attempt = document({ ...payload, _id: new Types.ObjectId() });
@@ -297,8 +463,32 @@ describe('PrizesService inventory and lifecycle', () => {
     expect(attempts.map((attempt: any) => attempt.ordinal)).toEqual([0, 1, 2]);
     for (const attempt of created) {
       expect(attempt.mechanic).toBe(PrizeMechanic.Scratch);
+      expect(attempt.configurationSnapshot).toEqual({
+        version: 1,
+        mechanic: PrizeMechanic.Scratch,
+        noPrizeWeight: 0,
+        prizes: [
+          {
+            prizeId: '000000000000000000000001',
+            weight: 0,
+            stock: 1,
+            sortOrder: 0,
+          },
+          {
+            prizeId: '000000000000000000000002',
+            weight: 2,
+            stock: 3,
+            sortOrder: 1,
+          },
+        ],
+      });
+      expect(attempt.configurationHash).toBe(
+        sha256(JSON.stringify(attempt.configurationSnapshot)),
+      );
       expect(attempt.entropyCommitment).toBe(
-        createHash('sha256').update(attempt.entropyReveal).digest('hex'),
+        sha256(
+          `${attempt.entropyReveal}:${attempt.configurationHash}:${attempt.publicId}`,
+        ),
       );
       expect(attempt.accessSecret).toMatch(/^[a-f0-9]{64}$/);
       expect(attempt.save).toHaveBeenCalledWith({ session });
@@ -309,32 +499,42 @@ describe('PrizesService inventory and lifecycle', () => {
     const token = 'attempt-secret-token-1234567890123';
     const reveal = 'fixed-server-entropy';
     const campaignId = new Types.ObjectId();
-    const attempt = document({
-      _id: new Types.ObjectId(),
-      publicId: 'attempt-public-id',
-      campaign: campaignId,
-      order: new Types.ObjectId(),
-      status: PrizeAttemptStatus.Pending,
-      mechanic: PrizeMechanic.Roulette,
-      accessSecret: createHash('sha256').update(token).digest('hex'),
-      entropyReveal: reveal,
-    });
+    const configurationSnapshot = {
+      version: 1 as const,
+      mechanic: PrizeMechanic.Roulette as const,
+      noPrizeWeight: 1,
+      prizes: [],
+    };
+    const attempt = committedAttempt(
+      {
+        _id: new Types.ObjectId(),
+        publicId: 'attempt-public-id',
+        campaign: campaignId,
+        order: new Types.ObjectId(),
+        status: PrizeAttemptStatus.Pending,
+        mechanic: PrizeMechanic.Roulette,
+        accessSecret: createHash('sha256').update(token).digest('hex'),
+        entropyReveal: reveal,
+      },
+      configurationSnapshot,
+    );
     attemptModel.findOne.mockReturnValue(executable(attempt));
-    campaignModel.findById.mockReturnValue(
+    orderModel.findById.mockReturnValue(
       executable({
-        _id: campaignId,
-        instantGame: { enabled: true, noPrizeWeight: 1 },
+        _id: attempt.order,
+        campaign: campaignId,
+        status: OrderStatus.Paid,
       }),
     );
-    prizeModel.find.mockReturnValue(executable([]));
-
     const result = await service.playAttempt('attempt-public-id', token);
 
     expect(attempt.status).toBe(PrizeAttemptStatus.Played);
+    expect(attempt.outcome).toBe(PrizeAttemptOutcome.NoPrize);
     expect(result).toEqual(
       expect.objectContaining({
         won: false,
         entropyReveal: reveal,
+        configurationSnapshot,
       }),
     );
     expect(result).not.toHaveProperty('accessSecret');
@@ -347,16 +547,6 @@ describe('PrizesService inventory and lifecycle', () => {
     const token = 'attempt-secret-token-1234567890123';
     const campaignId = new Types.ObjectId();
     const orderId = new Types.ObjectId();
-    const attempt = document({
-      _id: new Types.ObjectId(),
-      publicId: 'winning-attempt',
-      campaign: campaignId,
-      order: orderId,
-      status: PrizeAttemptStatus.Pending,
-      mechanic: PrizeMechanic.Roulette,
-      accessSecret: createHash('sha256').update(token).digest('hex'),
-      entropyReveal: 'winning-fixed-entropy',
-    });
     const chosen = document({
       _id: new Types.ObjectId(),
       title: 'Pix R$ 50',
@@ -365,21 +555,40 @@ describe('PrizesService inventory and lifecycle', () => {
       awardedCount: 0,
       status: InstantPrizeStatus.Active,
     });
+    const attempt = committedAttempt(
+      {
+        _id: new Types.ObjectId(),
+        publicId: 'winning-attempt',
+        campaign: campaignId,
+        order: orderId,
+        status: PrizeAttemptStatus.Pending,
+        mechanic: PrizeMechanic.Roulette,
+        accessSecret: createHash('sha256').update(token).digest('hex'),
+        entropyReveal: 'winning-fixed-entropy',
+      },
+      {
+        version: 1,
+        mechanic: PrizeMechanic.Roulette,
+        noPrizeWeight: 0,
+        prizes: [
+          {
+            prizeId: chosen._id.toString(),
+            weight: 1,
+            stock: 2,
+            sortOrder: 0,
+          },
+        ],
+      },
+    );
     const selected = document({ ...chosen, awardedCount: 1 });
     const order = document({
       _id: orderId,
       campaign: campaignId,
+      status: OrderStatus.Paid,
       buyer: { name: 'Maria', phone: '+5511999999999' },
     });
     const awardId = new Types.ObjectId();
     attemptModel.findOne.mockReturnValue(executable(attempt));
-    campaignModel.findById.mockReturnValue(
-      executable({
-        _id: campaignId,
-        instantGame: { enabled: true, noPrizeWeight: 0 },
-      }),
-    );
-    prizeModel.find.mockReturnValue(executable([chosen]));
     prizeModel.findOneAndUpdate.mockResolvedValue(selected);
     orderModel.findById.mockReturnValue(executable(order));
     awardModel.mockImplementation((payload: Record<string, unknown>) =>
@@ -391,11 +600,203 @@ describe('PrizesService inventory and lifecycle', () => {
     expect(result.won).toBe(true);
     expect(attempt.prize).toBe(selected._id);
     expect(attempt.award).toBe(awardId);
+    expect(attempt.drawnPrize).toEqual(chosen._id);
+    expect(attempt.outcome).toBe(PrizeAttemptOutcome.Awarded);
+    expect(orderModel.updateOne).toHaveBeenCalledWith(
+      {
+        _id: orderId,
+        campaign: campaignId,
+        status: OrderStatus.Paid,
+      },
+      { $inc: { prizeLifecycleVersion: 1 } },
+      { session },
+    );
+    expect(prizeModel.findOneAndUpdate).toHaveBeenCalledWith(
+      {
+        _id: chosen._id,
+        campaign: campaignId,
+        mechanic: PrizeMechanic.Roulette,
+        status: InstantPrizeStatus.Active,
+        $expr: { $lt: ['$awardedCount', '$stock'] },
+      },
+      { $inc: { awardedCount: 1 } },
+      { new: true, session },
+    );
     expect(orderModel.updateOne).toHaveBeenCalledWith(
       { _id: orderId },
       { $addToSet: { instantPrizes: awardId } },
       { session },
     );
+  });
+
+  it('falla cerrado si se altera el snapshot o la entropía comprometida', async () => {
+    const token = 'attempt-secret-token-1234567890123';
+    const campaignId = new Types.ObjectId();
+    const orderId = new Types.ObjectId();
+    const base = {
+      _id: new Types.ObjectId(),
+      publicId: 'tampered-attempt',
+      campaign: campaignId,
+      order: orderId,
+      status: PrizeAttemptStatus.Pending,
+      mechanic: PrizeMechanic.Roulette,
+      accessSecret: sha256(token),
+      entropyReveal: 'original-entropy',
+    };
+    const attempt = committedAttempt(base, {
+      version: 1,
+      mechanic: PrizeMechanic.Roulette,
+      noPrizeWeight: 1,
+      prizes: [],
+    });
+    attempt.configurationSnapshot.noPrizeWeight = 2;
+    attemptModel.findOne.mockReturnValue(executable(attempt));
+    orderModel.findById.mockReturnValue(
+      executable({
+        _id: orderId,
+        campaign: campaignId,
+        status: OrderStatus.Paid,
+      }),
+    );
+
+    await expect(service.playAttempt(base.publicId, token)).rejects.toThrow(
+      'La configuración comprometida del intento no es válida',
+    );
+    expect(attempt.save).not.toHaveBeenCalled();
+    expect(prizeModel.findOneAndUpdate).not.toHaveBeenCalled();
+
+    const entropyAttempt = committedAttempt(
+      { ...base, publicId: 'tampered-entropy' },
+      {
+        version: 1,
+        mechanic: PrizeMechanic.Roulette,
+        noPrizeWeight: 1,
+        prizes: [],
+      },
+    );
+    entropyAttempt.entropyReveal = 'changed-after-commitment';
+    attemptModel.findOne.mockReturnValue(executable(entropyAttempt));
+    await expect(
+      service.playAttempt('tampered-entropy', token),
+    ).rejects.toThrow('El compromiso de entropía del intento no es válido');
+    expect(entropyAttempt.save).not.toHaveBeenCalled();
+  });
+
+  it('no sobreasigna si el premio elegido se agotó antes del incremento atómico', async () => {
+    const token = 'attempt-secret-token-1234567890123';
+    const campaignId = new Types.ObjectId();
+    const orderId = new Types.ObjectId();
+    const prizeId = new Types.ObjectId();
+    const attempt = committedAttempt(
+      {
+        _id: new Types.ObjectId(),
+        publicId: 'depleted-attempt',
+        campaign: campaignId,
+        order: orderId,
+        status: PrizeAttemptStatus.Pending,
+        mechanic: PrizeMechanic.Roulette,
+        accessSecret: sha256(token),
+        entropyReveal: 'depleted-entropy',
+      },
+      {
+        version: 1,
+        mechanic: PrizeMechanic.Roulette,
+        noPrizeWeight: 0,
+        prizes: [
+          {
+            prizeId: prizeId.toString(),
+            weight: 1,
+            stock: 1,
+            sortOrder: 0,
+          },
+        ],
+      },
+    );
+    attemptModel.findOne.mockReturnValue(executable(attempt));
+    orderModel.findById.mockReturnValue(
+      executable({
+        _id: orderId,
+        campaign: campaignId,
+        status: OrderStatus.Paid,
+      }),
+    );
+    prizeModel.findOneAndUpdate.mockResolvedValue(null);
+
+    const result = await service.playAttempt('depleted-attempt', token);
+
+    expect(result.won).toBe(false);
+    expect(attempt.status).toBe(PrizeAttemptStatus.Played);
+    expect(attempt.drawnPrize).toEqual(prizeId);
+    expect(attempt.outcome).toBe(PrizeAttemptOutcome.InventoryExhausted);
+    expect(awardModel).not.toHaveBeenCalled();
+    expect(prizeModel.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _id: prizeId,
+        status: InstantPrizeStatus.Active,
+        $expr: { $lt: ['$awardedCount', '$stock'] },
+      }),
+      { $inc: { awardedCount: 1 } },
+      { new: true, session },
+    );
+  });
+
+  it('oculta snapshot, entropía y secreto mientras el intento está pendiente', () => {
+    const attempt = committedAttempt(
+      {
+        publicId: 'pending-attempt',
+        status: PrizeAttemptStatus.Pending,
+        mechanic: PrizeMechanic.Roulette,
+        accessSecret: sha256('secret'),
+        entropyReveal: 'hidden-entropy',
+      },
+      {
+        version: 1,
+        mechanic: PrizeMechanic.Roulette,
+        noPrizeWeight: 0,
+        prizes: [],
+      },
+    );
+
+    const view = (service as any).attemptView(attempt);
+
+    expect(view.configurationHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(view.entropyCommitment).toMatch(/^[a-f0-9]{64}$/);
+    expect(view.configurationSnapshot).toBeUndefined();
+    expect(view.entropyReveal).toBeUndefined();
+    expect(view.accessSecret).toBeUndefined();
+  });
+
+  it('no permite jugar un intento después del reembolso del pedido', async () => {
+    const campaignId = new Types.ObjectId();
+    const orderId = new Types.ObjectId();
+    const token = 'attempt-secret-token-1234567890123';
+    attemptModel.findOne.mockReturnValue(
+      executable(
+        document({
+          _id: new Types.ObjectId(),
+          publicId: 'refunded-attempt',
+          campaign: campaignId,
+          order: orderId,
+          status: PrizeAttemptStatus.Pending,
+          mechanic: PrizeMechanic.Roulette,
+          accessSecret: createHash('sha256').update(token).digest('hex'),
+        }),
+      ),
+    );
+    orderModel.findById.mockReturnValue(
+      executable({
+        _id: orderId,
+        campaign: campaignId,
+        status: OrderStatus.Refunded,
+      }),
+    );
+
+    await expect(
+      service.playAttempt('refunded-attempt', token),
+    ).rejects.toThrow(
+      'El intento solo puede jugarse mientras el pedido esté pagado',
+    );
+    expect(prizeModel.find).not.toHaveBeenCalled();
   });
 
   it('protege el intento con token constante y acepta al usuario propietario', async () => {
@@ -414,12 +815,17 @@ describe('PrizesService inventory and lifecycle', () => {
 
   it('permite reclamar una vez al dueño y exige reclamar antes de entregar', async () => {
     const userId = new Types.ObjectId();
+    const orderId = new Types.ObjectId();
     const award = document({
       publicId: 'award-public-id',
       user: userId,
+      order: orderId,
       status: PrizeAwardStatus.Awarded,
     });
     awardModel.findOne.mockReturnValue(executable(award));
+    orderModel.findById.mockReturnValue(
+      executable({ _id: orderId, status: OrderStatus.Paid }),
+    );
 
     const claimed = await service.claimAsUser(
       'award-public-id',
@@ -430,11 +836,39 @@ describe('PrizesService inventory and lifecycle', () => {
     expect(claimed.status).toBe(PrizeAwardStatus.Claimed);
     expect(claimed.claimedAt).toBeInstanceOf(Date);
     expect(award.save).toHaveBeenCalledTimes(1);
+    expect(orderModel.updateOne).toHaveBeenCalledWith(
+      { _id: orderId, status: OrderStatus.Paid },
+      { $inc: { prizeLifecycleVersion: 1 } },
+      { session },
+    );
 
     award.status = PrizeAwardStatus.Awarded;
     await expect(service.fulfill('award-public-id')).rejects.toThrow(
       'El premio debe estar reclamado antes de entregarse',
     );
+  });
+
+  it('serializa la reclamación con el pedido y la rechaza después del reembolso', async () => {
+    const userId = new Types.ObjectId();
+    const orderId = new Types.ObjectId();
+    const award = document({
+      publicId: 'refunded-award',
+      user: userId,
+      order: orderId,
+      status: PrizeAwardStatus.Awarded,
+    });
+    awardModel.findOne.mockReturnValue(executable(award));
+    orderModel.findById.mockReturnValue(
+      executable({ _id: orderId, status: OrderStatus.Refunded }),
+    );
+
+    await expect(
+      service.claimAsUser('refunded-award', userId.toString()),
+    ).rejects.toThrow(
+      'El premio solo puede procesarse mientras el pedido esté pagado',
+    );
+    expect(orderModel.updateOne).not.toHaveBeenCalled();
+    expect(award.save).not.toHaveBeenCalled();
   });
 
   it('autoriza el pedido antes de listar sus premios e intentos usando su ID interno', async () => {
@@ -510,6 +944,11 @@ describe('PrizesService inventory and lifecycle', () => {
       awards.every((award) => award.status === PrizeAwardStatus.Reversed),
     ).toBe(true);
     expect(prizeModel.updateOne).toHaveBeenCalledTimes(2);
+    expect(attemptModel.updateMany).toHaveBeenCalledWith(
+      { order: orderId, status: PrizeAttemptStatus.Pending },
+      { $set: { status: PrizeAttemptStatus.Expired } },
+      { session },
+    );
     expect(prizeModel.updateOne).toHaveBeenNthCalledWith(
       1,
       { _id: awards[0].prize, awardedCount: { $gt: 0 } },

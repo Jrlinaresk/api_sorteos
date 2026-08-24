@@ -41,12 +41,16 @@ import { validateEnvironment } from './config/environment.validation';
       }),
     }),
     ScheduleModule.forRoot(),
-    ThrottlerModule.forRoot([
-      {
-        ttl: Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000),
-        limit: Number(process.env.RATE_LIMIT_MAX || 180),
-      },
-    ]),
+    ThrottlerModule.forRootAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => [
+        {
+          ttl: Number(config.get<string>('RATE_LIMIT_WINDOW_MS') || 60_000),
+          limit: Number(config.get<string>('RATE_LIMIT_MAX') || 180),
+        },
+      ],
+    }),
     HealthModule,
     AuthModule,
     AuditModule,
@@ -94,7 +98,8 @@ function mongoUri(config: ConfigService): string {
     ? `${encodeURIComponent(user)}:${encodeURIComponent(password || '')}@`
     : '';
   const query = new URLSearchParams();
-  if (user) query.set('authSource', config.get<string>('DB_AUTH_SOURCE') || 'admin');
+  if (user)
+    query.set('authSource', config.get<string>('DB_AUTH_SOURCE') || 'admin');
   const replicaSet = config.get<string>('MONGODB_REPLICA_SET');
   if (replicaSet) {
     query.set('replicaSet', replicaSet);

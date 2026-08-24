@@ -87,6 +87,10 @@ export class ReferralCommission {
   @Prop()
   reversedAt?: Date;
 
+  /** Marca idempotente: la capacidad del código ya fue devuelta una vez. */
+  @Prop()
+  conversionReleasedAt?: Date;
+
   @Prop({ trim: true, maxlength: 500 })
   statusReason?: string;
 

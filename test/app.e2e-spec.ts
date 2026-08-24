@@ -33,6 +33,7 @@ describe('Sorteos API transaction journey (e2e)', () => {
       'e2e-checkout-secret-with-at-least-32-characters';
     process.env.PAYMENTS_PROVIDER = 'mock';
     process.env.PAYMENTS_ALLOW_MOCK = 'true';
+    process.env.DRAW_MANUAL_EXTERNAL_ENABLED = 'true';
 
     const { AppModule } = await import('../src/app.module');
     const testingModule = await Test.createTestingModule({
@@ -50,7 +51,9 @@ describe('Sorteos API transaction journey (e2e)', () => {
     await app.init();
     connection = app.get<Connection>(getConnectionToken());
     if (!connection.db?.databaseName.endsWith('_e2e')) {
-      throw new Error('La URI de integración debe apuntar a una base terminada en _e2e');
+      throw new Error(
+        'La URI de integración debe apuntar a una base terminada en _e2e',
+      );
     }
     await connection.dropDatabase();
     await connection.syncIndexes();
@@ -155,9 +158,9 @@ describe('Sorteos API transaction journey (e2e)', () => {
       .expect(({ body }) => {
         expect(body.order.status).toBe('paid');
         expect(body.order.quotas).toHaveLength(10);
-        expect(body.order.quotas.every((quota: any) => quota.status === 'paid')).toBe(
-          true,
-        );
+        expect(
+          body.order.quotas.every((quota: any) => quota.status === 'paid'),
+        ).toBe(true);
       });
 
     await request(http)
@@ -167,7 +170,10 @@ describe('Sorteos API transaction journey (e2e)', () => {
       .expect(({ body }) => {
         expect(body.data).toEqual(
           expect.arrayContaining([
-            expect.objectContaining({ publicId: orderPublicId, status: 'paid' }),
+            expect.objectContaining({
+              publicId: orderPublicId,
+              status: 'paid',
+            }),
           ]),
         );
       });
@@ -277,12 +283,38 @@ describe('Sorteos API transaction journey (e2e)', () => {
         expect(body.outcomes[0].winner.name).toContain('Compradora');
       });
 
+    const concurrentRefunds = await Promise.all([
+      request(http)
+        .post(`/api/v1/payments/admin/${refundablePaymentId}/refund`)
+        .set('Authorization', authorization)
+        .send({
+          idempotencyKey: 'e2e-refund-concurrent-000001',
+          amount: 7,
+          reason: 'Validar reserva concurrente E2E A',
+        }),
+      request(http)
+        .post(`/api/v1/payments/admin/${refundablePaymentId}/refund`)
+        .set('Authorization', authorization)
+        .send({
+          idempotencyKey: 'e2e-refund-concurrent-000002',
+          amount: 7,
+          reason: 'Validar reserva concurrente E2E B',
+        }),
+    ]);
+    expect(concurrentRefunds.map((response) => response.status).sort()).toEqual(
+      [200, 400],
+    );
+    expect(
+      concurrentRefunds.find((response) => response.status === 200)?.body
+        .status,
+    ).toBe('partially_refunded');
+
     await request(http)
       .post(`/api/v1/payments/admin/${refundablePaymentId}/refund`)
       .set('Authorization', authorization)
       .send({
-        idempotencyKey: 'e2e-refund-request-000001',
-        reason: 'Validar reversión integral E2E',
+        idempotencyKey: 'e2e-refund-remainder-000003',
+        reason: 'Completar saldo restante después de la carrera E2E',
       })
       .expect(200)
       .expect(({ body }) => expect(body.status).toBe('refunded'));
