@@ -1,5 +1,11 @@
 import { AlertCircle, LoaderCircle, X } from 'lucide-react';
-import type { FormEvent, ReactNode } from 'react';
+import {
+  useEffect,
+  useId,
+  useRef,
+  type FormEvent,
+  type ReactNode,
+} from 'react';
 import { ApiError } from '@/lib/api';
 import { statusLabel, statusTone } from '@/lib/status';
 
@@ -23,7 +29,11 @@ export function ResourcePageHeader({
   );
 }
 
-export function LoadingPanel({ label = 'Cargando datos…' }: { label?: string }) {
+export function LoadingPanel({
+  label = 'Cargando datos…',
+}: {
+  label?: string;
+}) {
   return (
     <div className="state-panel state-panel--loading" role="status">
       <LoaderCircle className="spin" aria-hidden="true" size={22} />
@@ -53,7 +63,11 @@ export function ErrorPanel({
         ) : null}
       </div>
       {onRetry ? (
-        <button className="button button--secondary" type="button" onClick={onRetry}>
+        <button
+          className="button button--secondary"
+          type="button"
+          onClick={onRetry}
+        >
           Reintentar
         </button>
       ) : null}
@@ -146,19 +160,45 @@ export function Modal({
   onClose: () => void;
   wide?: boolean;
 }) {
+  const titleId = useId();
+  const descriptionId = useId();
+  const dialogRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const focusHandle = window.requestAnimationFrame(() => {
+      dialogRef.current
+        ?.querySelector<HTMLElement>(
+          '[autofocus], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)',
+        )
+        ?.focus();
+    });
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusHandle);
+      document.removeEventListener('keydown', handleKeyDown);
+      previousFocus?.focus();
+    };
+  }, [onClose]);
+
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
+        ref={dialogRef}
         className={`modal${wide ? ' modal--wide' : ''}`}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="resource-modal-title"
+        aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="modal__header">
           <div>
-            <h2 id="resource-modal-title">{title}</h2>
-            {description ? <p>{description}</p> : null}
+            <h2 id={titleId}>{title}</h2>
+            {description ? <p id={descriptionId}>{description}</p> : null}
           </div>
           <button
             className="icon-button"
@@ -195,7 +235,11 @@ export function ConfirmDialog({
   return (
     <Modal title={title} description={description} onClose={onClose}>
       <div className="modal__actions">
-        <button className="button button--secondary" type="button" onClick={onClose}>
+        <button
+          className="button button--secondary"
+          type="button"
+          onClick={onClose}
+        >
           Cancelar
         </button>
         <button

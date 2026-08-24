@@ -765,6 +765,28 @@ describe('RafflesService domain rules', () => {
       ).rejects.toThrow('ventas o reservas activas');
     });
 
+    it('impide marcar drawn sin publicar un resultado verificado', async () => {
+      const campaign = {
+        _id: new Types.ObjectId(),
+        status: CampaignStatus.AwaitingDraw,
+        allocationCursor: 100,
+        soldCount: 100,
+        reservedCount: 0,
+        totalTitles: 100,
+        save: jest.fn(),
+      } as any;
+      raffleModel.findById.mockReturnValue({
+        exec: jest.fn().mockResolvedValue(campaign),
+      });
+
+      await expect(
+        service.changeStatus(campaign._id.toString(), CampaignStatus.Drawn),
+      ).rejects.toThrow(
+        'solo puede alcanzarse publicando un resultado verificado',
+      );
+      expect(campaign.save).not.toHaveBeenCalled();
+    });
+
     it('bloquea el contrato con CAS atómico al abandonar Draft', async () => {
       const campaign = {
         _id: new Types.ObjectId(),

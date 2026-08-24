@@ -1,5 +1,11 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Eye, EyeOff, LoaderCircle, LockKeyhole, ShieldCheck } from 'lucide-react';
+import {
+  Eye,
+  EyeOff,
+  LoaderCircle,
+  LockKeyhole,
+  ShieldCheck,
+} from 'lucide-react';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
@@ -44,14 +50,18 @@ export function LoginPage() {
           error instanceof Error
             ? error.message
             : 'No pudimos iniciar sesión. Revisa tus datos.',
-        correlationId: error instanceof ApiError ? error.correlationId : undefined,
+        correlationId:
+          error instanceof ApiError ? error.correlationId : undefined,
       });
     }
   };
 
   return (
     <main className="login-page">
-      <section className="login-story" aria-label="Panel de administración de sorteos">
+      <section
+        className="login-story"
+        aria-label="Panel de administración de sorteos"
+      >
         <div className="login-story__glow" aria-hidden="true" />
         <div className="login-story__content">
           <span className="login-story__pill">
@@ -61,21 +71,31 @@ export function LoginPage() {
           <p className="eyebrow">Sorteos · Centro de control</p>
           <h1>Todo el negocio, bajo una sola operación.</h1>
           <p>
-            Campañas, ventas, Pix, premios y trazabilidad en una interfaz conectada
-            directamente al mismo backend.
+            Campañas, ventas, Pix, premios y trazabilidad en una interfaz
+            conectada directamente al mismo backend.
           </p>
           <ul>
-            <li><span>01</span> Visión financiera en tiempo real</li>
-            <li><span>02</span> Flujos críticos protegidos por permisos</li>
-            <li><span>03</span> Historial auditable de cada acción</li>
+            <li>
+              <span>01</span> Visión financiera en tiempo real
+            </li>
+            <li>
+              <span>02</span> Flujos críticos protegidos por permisos
+            </li>
+            <li>
+              <span>03</span> Historial auditable de cada acción
+            </li>
           </ul>
         </div>
-        <p className="login-story__foot">Acceso exclusivo para el equipo autorizado</p>
+        <p className="login-story__foot">
+          Acceso exclusivo para el equipo autorizado
+        </p>
       </section>
       <section className="login-panel">
         <div className="login-card">
           <header>
-            <span className="brand-mark" aria-hidden="true">S</span>
+            <span className="brand-mark" aria-hidden="true">
+              S
+            </span>
             <div>
               <p className="eyebrow">Área segura</p>
               <h2>Bienvenido de nuevo</h2>
@@ -104,7 +124,11 @@ export function LoginPage() {
                 aria-describedby={errors.phone ? 'phone-error' : undefined}
                 autoFocus
               />
-              {errors.phone ? <small id="phone-error" className="field-error">{errors.phone.message}</small> : null}
+              {errors.phone ? (
+                <small id="phone-error" className="field-error">
+                  {errors.phone.message}
+                </small>
+              ) : null}
             </label>
             <label className="field">
               <span>Contraseña</span>
@@ -115,27 +139,48 @@ export function LoginPage() {
                   autoComplete="current-password"
                   placeholder="Tu contraseña"
                   aria-invalid={Boolean(errors.password)}
-                  aria-describedby={errors.password ? 'password-error' : undefined}
+                  aria-describedby={
+                    errors.password ? 'password-error' : undefined
+                  }
                 />
                 <button
                   type="button"
                   className="icon-button"
-                  aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                  aria-label={
+                    showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'
+                  }
                   onClick={() => setShowPassword((visible) => !visible)}
                 >
-                  {showPassword ? <EyeOff size={19} aria-hidden="true" /> : <Eye size={19} aria-hidden="true" />}
+                  {showPassword ? (
+                    <EyeOff size={19} aria-hidden="true" />
+                  ) : (
+                    <Eye size={19} aria-hidden="true" />
+                  )}
                 </button>
               </span>
-              {errors.password ? <small id="password-error" className="field-error">{errors.password.message}</small> : null}
+              {errors.password ? (
+                <small id="password-error" className="field-error">
+                  {errors.password.message}
+                </small>
+              ) : null}
             </label>
-            <button className="button button--primary login-submit" type="submit" disabled={isSubmitting}>
-              {isSubmitting ? <LoaderCircle className="spin" size={18} aria-hidden="true" /> : <LockKeyhole size={18} aria-hidden="true" />}
+            <button
+              className="button button--primary login-submit"
+              type="submit"
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? (
+                <LoaderCircle className="spin" size={18} aria-hidden="true" />
+              ) : (
+                <LockKeyhole size={18} aria-hidden="true" />
+              )}
               {isSubmitting ? 'Verificando…' : 'Entrar al panel'}
             </button>
           </form>
           <footer>
             <ShieldCheck size={16} aria-hidden="true" />
-            La renovación de sesión usa una cookie HttpOnly y no expone el token de larga duración al navegador.
+            La renovación de sesión usa una cookie HttpOnly y no expone el token
+            de larga duración al navegador.
           </footer>
         </div>
       </section>

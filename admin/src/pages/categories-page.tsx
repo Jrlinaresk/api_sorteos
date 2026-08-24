@@ -33,7 +33,10 @@ export function CategoriesPage() {
   });
 
   const save = useMutation({
-    mutationFn: (input: { id?: string; body: { name: string; description?: string } }) =>
+    mutationFn: (input: {
+      id?: string;
+      body: { name: string; description?: string };
+    }) =>
       input.id
         ? api.patch<Category>(`/categories/${input.id}`, input.body)
         : api.post<Category>('/categories', input.body),
@@ -46,7 +49,11 @@ export function CategoriesPage() {
       });
     },
     onError: (error) =>
-      showToast({ tone: 'error', title: 'No se pudo guardar', message: errorMessage(error) }),
+      showToast({
+        tone: 'error',
+        title: 'No se pudo guardar',
+        message: errorMessage(error),
+      }),
   });
 
   const remove = useMutation({
@@ -57,14 +64,20 @@ export function CategoriesPage() {
       showToast({ tone: 'success', title: 'Categoría eliminada' });
     },
     onError: (error) =>
-      showToast({ tone: 'error', title: 'No se pudo eliminar', message: errorMessage(error) }),
+      showToast({
+        tone: 'error',
+        title: 'No se pudo eliminar',
+        message: errorMessage(error),
+      }),
   });
 
   const visible = useMemo(() => {
     const term = search.trim().toLocaleLowerCase();
     if (!term) return categories.data ?? [];
     return (categories.data ?? []).filter((category) =>
-      `${category.name} ${category.description ?? ''}`.toLocaleLowerCase().includes(term),
+      `${category.name} ${category.description ?? ''}`
+        .toLocaleLowerCase()
+        .includes(term),
     );
   }, [categories.data, search]);
 
@@ -75,7 +88,11 @@ export function CategoriesPage() {
         description="Organiza las campañas sin dejar categorías referenciadas sin control."
         actions={
           can('operator', 'admin') ? (
-            <button className="button button--primary" type="button" onClick={() => setEditing('new')}>
+            <button
+              className="button button--primary"
+              type="button"
+              onClick={() => setEditing('new')}
+            >
               <Plus aria-hidden="true" size={18} /> Nueva categoría
             </button>
           ) : null
@@ -99,11 +116,20 @@ export function CategoriesPage() {
         </div>
 
         {categories.isLoading ? <LoadingPanel /> : null}
-        {categories.isError ? <ErrorPanel error={categories.error} onRetry={() => categories.refetch()} /> : null}
+        {categories.isError ? (
+          <ErrorPanel
+            error={categories.error}
+            onRetry={() => categories.refetch()}
+          />
+        ) : null}
         {categories.isSuccess && visible.length === 0 ? (
           <EmptyPanel
             title={search ? 'Sin coincidencias' : 'Todavía no hay categorías'}
-            description={search ? 'Prueba con otro término.' : 'Crea la primera para clasificar tus campañas.'}
+            description={
+              search
+                ? 'Prueba con otro término.'
+                : 'Crea la primera para clasificar tus campañas.'
+            }
           />
         ) : null}
         {visible.length ? (
@@ -119,7 +145,9 @@ export function CategoriesPage() {
               <tbody>
                 {visible.map((category) => (
                   <tr key={idOf(category)}>
-                    <td><strong>{category.name}</strong></td>
+                    <td>
+                      <strong>{category.name}</strong>
+                    </td>
                     <td>{category.description || '—'}</td>
                     <td className="table-actions">
                       {can('operator', 'admin') ? (
@@ -182,7 +210,11 @@ export function CategoriesPage() {
                   defaultValue={editing === 'new' ? '' : editing.name}
                 />
               </Field>
-              <Field label="Descripción" htmlFor="category-description" hint="Máximo 200 caracteres.">
+              <Field
+                label="Descripción"
+                htmlFor="category-description"
+                hint="Máximo 200 caracteres."
+              >
                 <textarea
                   id="category-description"
                   name="description"
@@ -193,10 +225,18 @@ export function CategoriesPage() {
               </Field>
             </div>
             <div className="modal__actions">
-              <button className="button button--secondary" type="button" onClick={() => setEditing(null)}>
+              <button
+                className="button button--secondary"
+                type="button"
+                onClick={() => setEditing(null)}
+              >
                 Cancelar
               </button>
-              <button className="button button--primary" type="submit" disabled={save.isPending}>
+              <button
+                className="button button--primary"
+                type="submit"
+                disabled={save.isPending}
+              >
                 {save.isPending ? 'Guardando…' : 'Guardar categoría'}
               </button>
             </div>

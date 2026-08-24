@@ -230,6 +230,7 @@ services:
       TRUST_PROXY: '${TRUST_PROXY:-false}'
       CORS_ORIGINS: '${CORS_ORIGINS:-http://localhost:3000}'
       SWAGGER_ENABLED: '${SWAGGER_ENABLED:-true}'
+      ADMIN_PANEL_ENABLED: '${ADMIN_PANEL_ENABLED:-true}'
       DB_HOST: 'mongodb'
       DB_PORT: '27017'
       DB_NAME: '${MONGO_DATABASE:-api_sorteos}'

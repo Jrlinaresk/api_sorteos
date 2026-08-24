@@ -20,8 +20,9 @@ levanta Mongo como replica set de un nodo:
 ./deploy-dev.sh
 ```
 
-La API queda en `http://127.0.0.1:8080/api/v1`, el health check en
-`/api/v1/health` y Swagger en `/api/docs`. Para seguir los logs:
+La API queda en `http://127.0.0.1:8080/api/v1`, el panel administrativo en
+`http://127.0.0.1:8080/admin`, el health check en `/api/v1/health` y Swagger en
+`/api/docs`. Para seguir los logs:
 
 ```bash
 ./deploy-dev.sh --follow
@@ -30,13 +31,34 @@ La API queda en `http://127.0.0.1:8080/api/v1`, el health check en
 La base de datos de desarrollo se publica únicamente en loopback. En producción
 Mongo no publica ningún puerto.
 
-## Desarrollo local de Nest
+## Desarrollo local del monolito
 
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
 pnpm start:dev
 ```
+
+Este comando inicia Nest en el puerto 8080 y Vite en el 5173. Durante desarrollo
+el panel se abre en `http://localhost:5173/admin/`; Vite reenvía `/api` a Nest.
+`pnpm build` compila ambos y Nest sirve los archivos resultantes desde `/admin`
+en producción. No se necesita desplegar ni mantener un segundo servidor.
+
+El acceso admite únicamente cuentas `operator` o `admin`. El refresh token del
+panel permanece en una cookie `HttpOnly`, `SameSite=Strict` y `Secure` en
+producción; React conserva en memoria solo el access token corto. Si la base aún
+no tiene administrador, compile el servidor y ejecute una sola vez el bootstrap
+con las variables `BOOTSTRAP_ADMIN_NAME`, `BOOTSTRAP_ADMIN_PHONE`,
+`BOOTSTRAP_ADMIN_PASSWORD` y, opcionalmente, `BOOTSTRAP_ADMIN_EMAIL`/`CPF`:
+
+```bash
+pnpm build:server
+pnpm bootstrap:admin
+```
+
+El bootstrap es transaccional e idempotente: después de inicializarse no permite
+crear administradores adicionales por esta vía. La guía funcional completa del
+panel está en [ADMIN-PANEL.md](./ADMIN-PANEL.md).
 
 Para ejecutar Nest fuera de Compose hay que proporcionar una URI de Mongo válida
 con `replicaSet`, además de las variables de `.env.example`. No se debe conectar
@@ -68,7 +90,7 @@ son:
 | --------- | -------------------------------------------------------------------------------------- |
 | Mongo     | `MONGO_ROOT_*`, `MONGO_APP_*`, `MONGO_REPLICA_SET`, `MONGO_REPLICA_KEY`, `MONGODB_URI` |
 | Auth      | `JWT_SECRET`, `EMAIL_CODE_SECRET`, `CHECKOUT_ACCESS_SECRET_KEY`                        |
-| Navegador | `CORS_ORIGINS`, `TRUST_PROXY`, `SWAGGER_ENABLED`                                       |
+| Navegador | `CORS_ORIGINS`, `TRUST_PROXY`, `SWAGGER_ENABLED`, `ADMIN_PANEL_ENABLED`                |
 | Correo    | `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, y opcionalmente `SMTP_USER` + `SMTP_PASS`       |
 | Pagos     | `PAYMENTS_PROVIDER`, `PAYMENTS_PUBLIC_SECRET_KEY`, `EFI_PIX_*`, `EFI_WEBHOOK_*`        |
 | Sorteos   | `CAIXA_FEDERAL_*`, flags `DRAW_*` y baliza NIST allowlisted                            |
@@ -130,10 +152,12 @@ keyfile y los medios.
 ## Pruebas y calidad
 
 ```bash
-pnpm lint
-pnpm test
-pnpm build
+pnpm verify
 ```
+
+`verify` comprueba lint, compilación Nest + React, pruebas Jest y pruebas Vitest
+del panel. También pueden ejecutarse por separado con `pnpm build:admin` y
+`pnpm test:admin`.
 
 ## Producción
 

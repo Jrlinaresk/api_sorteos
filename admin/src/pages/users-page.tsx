@@ -1,6 +1,13 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Edit3, Plus, Search, Trash2, UserRoundCheck, UserRoundX } from 'lucide-react';
+import {
+  Edit3,
+  Plus,
+  Search,
+  Trash2,
+  UserRoundCheck,
+  UserRoundX,
+} from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { formatDateTime } from '@/lib/format';
@@ -45,7 +52,8 @@ export function UsersPage() {
 
   const users = useQuery({
     queryKey: ['users', page, limit],
-    queryFn: () => api.get<DataPage<AdminUser>>('/users', { query: { page, limit } }),
+    queryFn: () =>
+      api.get<DataPage<AdminUser>>('/users', { query: { page, limit } }),
     enabled: can('admin'),
   });
 
@@ -57,10 +65,17 @@ export function UsersPage() {
     onSuccess: async (_, input) => {
       await queryClient.invalidateQueries({ queryKey: ['users'] });
       setEditing(null);
-      showToast({ tone: 'success', title: input.id ? 'Usuario actualizado' : 'Usuario creado' });
+      showToast({
+        tone: 'success',
+        title: input.id ? 'Usuario actualizado' : 'Usuario creado',
+      });
     },
     onError: (error) =>
-      showToast({ tone: 'error', title: 'No se pudo guardar', message: errorMessage(error) }),
+      showToast({
+        tone: 'error',
+        title: 'No se pudo guardar',
+        message: errorMessage(error),
+      }),
   });
 
   const remove = useMutation({
@@ -71,7 +86,11 @@ export function UsersPage() {
       showToast({ tone: 'success', title: 'Usuario eliminado' });
     },
     onError: (error) =>
-      showToast({ tone: 'error', title: 'No se pudo eliminar', message: errorMessage(error) }),
+      showToast({
+        tone: 'error',
+        title: 'No se pudo eliminar',
+        message: errorMessage(error),
+      }),
   });
 
   const visible = useMemo(() => {
@@ -89,7 +108,10 @@ export function UsersPage() {
   if (!can('admin')) {
     return (
       <main className="page">
-        <ResourcePageHeader title="Usuarios" description="Administración de cuentas y permisos." />
+        <ResourcePageHeader
+          title="Usuarios"
+          description="Administración de cuentas y permisos."
+        />
         <AccessDenied message="Solo un administrador puede consultar o modificar usuarios." />
       </main>
     );
@@ -101,7 +123,11 @@ export function UsersPage() {
         title="Usuarios"
         description="Crea cuentas internas, asigna roles y bloquea accesos cuando sea necesario."
         actions={
-          <button className="button button--primary" type="button" onClick={() => setEditing('new')}>
+          <button
+            className="button button--primary"
+            type="button"
+            onClick={() => setEditing('new')}
+          >
             <Plus aria-hidden="true" size={18} /> Nuevo usuario
           </button>
         }
@@ -120,15 +146,25 @@ export function UsersPage() {
               onChange={(event) => setSearch(event.target.value)}
             />
           </label>
-          <span className="toolbar__meta">{users.data?.meta.total ?? 0} cuentas</span>
+          <span className="toolbar__meta">
+            {users.data?.meta.total ?? 0} cuentas
+          </span>
         </div>
 
         {users.isLoading ? <LoadingPanel /> : null}
-        {users.isError ? <ErrorPanel error={users.error} onRetry={() => users.refetch()} /> : null}
+        {users.isError ? (
+          <ErrorPanel error={users.error} onRetry={() => users.refetch()} />
+        ) : null}
         {users.isSuccess && visible.length === 0 ? (
           <EmptyPanel
-            title={search ? 'Sin coincidencias en esta página' : 'No hay usuarios'}
-            description={search ? 'Limpia el filtro o cambia de página.' : 'Crea una cuenta para comenzar.'}
+            title={
+              search ? 'Sin coincidencias en esta página' : 'No hay usuarios'
+            }
+            description={
+              search
+                ? 'Limpia el filtro o cambia de página.'
+                : 'Crea una cuenta para comenzar.'
+            }
           />
         ) : null}
         {visible.length ? (
@@ -148,17 +184,35 @@ export function UsersPage() {
                 {visible.map((user) => (
                   <tr key={user.id}>
                     <td>
-                      <strong>{user.name || user.nickname || 'Sin nombre'}</strong>
-                      {user.id === currentUser?.id ? <small className="table-note">Tu cuenta</small> : null}
+                      <strong>
+                        {user.name || user.nickname || 'Sin nombre'}
+                      </strong>
+                      {user.id === currentUser?.id ? (
+                        <small className="table-note">Tu cuenta</small>
+                      ) : null}
                     </td>
                     <td>
                       <span>{user.phone}</span>
-                      {user.email ? <small className="table-note">{user.email}</small> : null}
+                      {user.email ? (
+                        <small className="table-note">{user.email}</small>
+                      ) : null}
                     </td>
-                    <td><span className="role-pill">{roleLabel(user.role)}</span></td>
                     <td>
-                      <span className={user.isActive ? 'inline-state inline-state--positive' : 'inline-state inline-state--negative'}>
-                        {user.isActive ? <UserRoundCheck aria-hidden="true" size={17} /> : <UserRoundX aria-hidden="true" size={17} />}
+                      <span className="role-pill">{roleLabel(user.role)}</span>
+                    </td>
+                    <td>
+                      <span
+                        className={
+                          user.isActive
+                            ? 'inline-state inline-state--positive'
+                            : 'inline-state inline-state--negative'
+                        }
+                      >
+                        {user.isActive ? (
+                          <UserRoundCheck aria-hidden="true" size={17} />
+                        ) : (
+                          <UserRoundX aria-hidden="true" size={17} />
+                        )}
                         {user.isActive ? 'Activo' : 'Bloqueado'}
                       </span>
                     </td>
@@ -177,7 +231,11 @@ export function UsersPage() {
                         type="button"
                         disabled={user.id === currentUser?.id}
                         aria-label={`Eliminar ${user.name || user.phone}`}
-                        title={user.id === currentUser?.id ? 'No puedes eliminar tu propia sesión' : undefined}
+                        title={
+                          user.id === currentUser?.id
+                            ? 'No puedes eliminar tu propia sesión'
+                            : undefined
+                        }
                         onClick={() => setDeleting(user)}
                       >
                         <Trash2 aria-hidden="true" size={18} />
@@ -205,7 +263,12 @@ export function UsersPage() {
           user={editing}
           busy={save.isPending}
           onClose={() => !save.isPending && setEditing(null)}
-          onSave={(body) => save.mutate({ id: editing === 'new' ? undefined : editing.id, body })}
+          onSave={(body) =>
+            save.mutate({
+              id: editing === 'new' ? undefined : editing.id,
+              body,
+            })
+          }
         />
       ) : null}
 
@@ -262,49 +325,118 @@ function UserEditor({
         }
       >
         <div className="form-grid">
-          <Field label="Teléfono" htmlFor="user-phone" required hint="De 8 a 15 dígitos; acepta formato internacional.">
-            <input id="user-phone" name="phone" required autoFocus defaultValue={existing?.phone} />
+          <Field
+            label="Teléfono"
+            htmlFor="user-phone"
+            required
+            hint="De 8 a 15 dígitos; acepta formato internacional."
+          >
+            <input
+              id="user-phone"
+              name="phone"
+              required
+              autoFocus
+              defaultValue={existing?.phone}
+            />
           </Field>
           <Field label="Rol" htmlFor="user-role" required>
-            <select id="user-role" name="role" required defaultValue={existing?.role ?? 'customer'}>
+            <select
+              id="user-role"
+              name="role"
+              required
+              defaultValue={existing?.role ?? 'customer'}
+            >
               <option value="customer">Cliente</option>
               <option value="operator">Operador</option>
               <option value="admin">Administrador</option>
             </select>
           </Field>
           <Field label="Nombre" htmlFor="user-name">
-            <input id="user-name" name="name" minLength={2} maxLength={120} defaultValue={existing?.name} />
+            <input
+              id="user-name"
+              name="name"
+              minLength={2}
+              maxLength={120}
+              defaultValue={existing?.name}
+            />
           </Field>
           <Field label="Apodo" htmlFor="user-nickname">
-            <input id="user-nickname" name="nickname" minLength={2} maxLength={50} defaultValue={existing?.nickname} />
+            <input
+              id="user-nickname"
+              name="nickname"
+              minLength={2}
+              maxLength={50}
+              defaultValue={existing?.nickname}
+            />
           </Field>
           <Field label="Correo" htmlFor="user-email">
-            <input id="user-email" name="email" type="email" maxLength={150} defaultValue={existing?.email} />
+            <input
+              id="user-email"
+              name="email"
+              type="email"
+              maxLength={150}
+              defaultValue={existing?.email}
+            />
           </Field>
           <Field label="CPF" htmlFor="user-cpf">
-            <input id="user-cpf" name="cpf" defaultValue={existing?.cpf} placeholder="529.982.247-25" />
+            <input
+              id="user-cpf"
+              name="cpf"
+              defaultValue={existing?.cpf}
+              placeholder="529.982.247-25"
+            />
           </Field>
           <Field
             label={creating ? 'Contraseña' : 'Nueva contraseña'}
             htmlFor="user-password"
             hint="8–72 caracteres, con mayúscula, minúscula y número. Déjala vacía para conservarla."
           >
-            <input id="user-password" name="password" type="password" minLength={8} maxLength={72} autoComplete="new-password" />
+            <input
+              id="user-password"
+              name="password"
+              type="password"
+              minLength={8}
+              maxLength={72}
+              autoComplete="new-password"
+            />
           </Field>
           <Field label="Dirección" htmlFor="user-address">
-            <input id="user-address" name="address" maxLength={250} defaultValue={existing?.address} />
+            <input
+              id="user-address"
+              name="address"
+              maxLength={250}
+              defaultValue={existing?.address}
+            />
           </Field>
         </div>
         {!creating ? (
           <label className="check-field">
-            <input name="isActive" type="checkbox" defaultChecked={existing?.isActive} />
+            <input
+              name="isActive"
+              type="checkbox"
+              defaultChecked={existing?.isActive}
+            />
             <span>Permitir que esta cuenta inicie sesión</span>
           </label>
         ) : null}
         <div className="modal__actions">
-          <button className="button button--secondary" type="button" onClick={onClose}>Cancelar</button>
-          <button className="button button--primary" type="submit" disabled={busy}>
-            {busy ? 'Guardando…' : creating ? 'Crear usuario' : 'Guardar cambios'}
+          <button
+            className="button button--secondary"
+            type="button"
+            onClick={onClose}
+          >
+            Cancelar
+          </button>
+          <button
+            className="button button--primary"
+            type="submit"
+            disabled={busy}
+          >
+            {busy
+              ? 'Guardando…'
+              : creating
+                ? 'Crear usuario'
+                : 'Guardar cambios'}
           </button>
         </div>
       </form>

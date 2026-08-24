@@ -22,6 +22,7 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 FROM dependencies AS builder
 COPY nest-cli.json tsconfig.json tsconfig.build.json ./
 COPY src ./src
+COPY admin ./admin
 RUN pnpm build \
   && pnpm prune --prod
 

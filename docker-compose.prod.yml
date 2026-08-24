@@ -236,6 +236,7 @@ services:
       TRUST_PROXY: '${TRUST_PROXY:-true}'
       CORS_ORIGINS: '${CORS_ORIGINS:?CORS_ORIGINS es obligatorio}'
       SWAGGER_ENABLED: '${SWAGGER_ENABLED:-false}'
+      ADMIN_PANEL_ENABLED: '${ADMIN_PANEL_ENABLED:-true}'
       DB_HOST: 'mongodb'
       DB_PORT: '27017'
       DB_NAME: '${MONGO_DATABASE:-api_sorteos}'

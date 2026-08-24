@@ -12,6 +12,7 @@ import {
   loginSession,
   logoutSession,
   refreshSession,
+  SESSION_EXPIRED_EVENT,
   setAccessToken,
 } from './api';
 import type { AdminUser, UserRole } from './types';
@@ -49,6 +50,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    const expire = () => {
+      setAccessToken(null);
+      queryClient.clear();
+      setUser(null);
+      setStatus('anonymous');
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, expire);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, expire);
+  }, [queryClient]);
 
   const login = useCallback(async (phone: string, password: string) => {
     const session = await loginSession(phone, password);

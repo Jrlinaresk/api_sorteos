@@ -1,6 +1,6 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Download, RefreshCw, Search, SlidersHorizontal } from 'lucide-react';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   Button,
@@ -14,7 +14,12 @@ import {
   StatusBadge,
 } from '@/components/ui';
 import { api, downloadFile } from '@/lib/api';
-import { compactId, formatDateTime, formatInteger, formatMoney } from '@/lib/format';
+import {
+  compactId,
+  formatDateTime,
+  formatInteger,
+  formatMoney,
+} from '@/lib/format';
 import { useToast } from '@/lib/toast-context';
 import type { Campaign, DataPage, Order, OrderStatus } from '@/lib/types';
 import {
@@ -32,13 +37,15 @@ export function OrdersPage() {
   const { showToast } = useToast();
   const page = positiveInteger(searchParams.get('page'), 1);
   const limit = positiveInteger(searchParams.get('limit'), DEFAULT_LIMIT, 100);
-  const status = searchParams.get('status') as OrderStatus | null;
+  const rawStatus = searchParams.get('status');
+  const status = ORDER_STATUS_OPTIONS.some(
+    (option) => option.value === rawStatus,
+  )
+    ? (rawStatus as OrderStatus)
+    : undefined;
   const campaignId = searchParams.get('campaignId') ?? '';
   const appliedSearch = searchParams.get('search') ?? '';
-  const [searchDraft, setSearchDraft] = useState(appliedSearch);
   const [downloading, setDownloading] = useState(false);
-
-  useEffect(() => setSearchDraft(appliedSearch), [appliedSearch]);
 
   const campaignsQuery = useQuery({
     queryKey: ['campaigns', 'options'],
@@ -80,11 +87,12 @@ export function OrdersPage() {
 
   const submitSearch = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    updateFilters({ search: searchDraft.trim() || undefined });
+    const form = new FormData(event.currentTarget);
+    const search = String(form.get('search') ?? '').trim();
+    updateFilters({ search: search || undefined });
   };
 
   const clearFilters = () => {
-    setSearchDraft('');
     setSearchParams(new URLSearchParams({ page: '1', limit: String(limit) }), {
       replace: true,
     });
@@ -131,7 +139,7 @@ export function OrdersPage() {
   const hasFilters = Boolean(status || campaignId || appliedSearch);
 
   return (
-    <main className="page" aria-labelledby="orders-page-title">
+    <main className="page" aria-label="Órdenes">
       <PageHeader
         eyebrow="Operación comercial"
         title="Órdenes"
@@ -169,16 +177,21 @@ export function OrdersPage() {
         title="Filtros"
         description="La búsqueda cubre ID público, nombre, teléfono, correo y CPF."
       >
-        <form className="filters" onSubmit={submitSearch} role="search">
+        <form
+          className="filters"
+          onSubmit={submitSearch}
+          role="search"
+          key={appliedSearch}
+        >
           <label className="field field--wide">
             <span>Buscar orden o comprador</span>
             <span className="input-with-icon">
               <Search size={17} aria-hidden="true" />
               <input
+                name="search"
                 type="search"
-                value={searchDraft}
+                defaultValue={appliedSearch}
                 maxLength={120}
-                onChange={(event) => setSearchDraft(event.target.value)}
                 placeholder="ID, nombre, teléfono, correo o CPF"
               />
             </span>
@@ -208,7 +221,9 @@ export function OrdersPage() {
               onChange={(event) =>
                 updateFilters({ campaignId: event.target.value || undefined })
               }
-              aria-describedby={campaignsQuery.isError ? 'campaign-filter-error' : undefined}
+              aria-describedby={
+                campaignsQuery.isError ? 'campaign-filter-error' : undefined
+              }
             >
               <option value="">Todas las campañas</option>
               {campaignId && !selectedCampaign ? (
@@ -225,7 +240,8 @@ export function OrdersPage() {
             </select>
             {campaignsQuery.isError ? (
               <small id="campaign-filter-error" role="status">
-                No se pudo cargar el catálogo; el resto de filtros sigue disponible.
+                No se pudo cargar el catálogo; el resto de filtros sigue
+                disponible.
               </small>
             ) : null}
           </label>
@@ -255,7 +271,7 @@ export function OrdersPage() {
               type="button"
               variant="ghost"
               onClick={clearFilters}
-              disabled={!hasFilters && !searchDraft}
+              disabled={!hasFilters}
             >
               Limpiar
             </Button>
@@ -267,8 +283,8 @@ export function OrdersPage() {
         <InlineAlert tone="info" title="Exportación por campaña">
           <p>
             El CSV incluye todos los títulos pagados de{' '}
-            <strong>{selectedCampaign?.name ?? compactId(campaignId)}</strong>, no solo
-            los registros visibles en esta página.
+            <strong>{selectedCampaign?.name ?? compactId(campaignId)}</strong>,
+            no solo los registros visibles en esta página.
           </p>
         </InlineAlert>
       ) : null}
@@ -284,10 +300,15 @@ export function OrdersPage() {
         {ordersQuery.isPending ? (
           <LoadingState label="Cargando órdenes…" />
         ) : ordersQuery.isError ? (
-          <ErrorState error={ordersQuery.error} onRetry={() => void ordersQuery.refetch()} />
+          <ErrorState
+            error={ordersQuery.error}
+            onRetry={() => void ordersQuery.refetch()}
+          />
         ) : orders.length === 0 ? (
           <EmptyState
-            title={hasFilters ? 'No hay coincidencias' : 'Todavía no hay órdenes'}
+            title={
+              hasFilters ? 'No hay coincidencias' : 'Todavía no hay órdenes'
+            }
             description={
               hasFilters
                 ? 'Prueba con otros filtros o limpia la búsqueda.'
@@ -295,7 +316,11 @@ export function OrdersPage() {
             }
             action={
               hasFilters ? (
-                <Button type="button" variant="secondary" onClick={clearFilters}>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={clearFilters}
+                >
                   Limpiar filtros
                 </Button>
               ) : undefined
@@ -317,10 +342,16 @@ export function OrdersPage() {
                     <th scope="col">Comprador</th>
                     <th scope="col">Campaña</th>
                     <th scope="col">Estado</th>
-                    <th scope="col" className="numeric-cell">Títulos</th>
-                    <th scope="col" className="numeric-cell">Total</th>
+                    <th scope="col" className="numeric-cell">
+                      Títulos
+                    </th>
+                    <th scope="col" className="numeric-cell">
+                      Total
+                    </th>
                     <th scope="col">Creada</th>
-                    <th scope="col"><span className="sr-only">Acciones</span></th>
+                    <th scope="col">
+                      <span className="sr-only">Acciones</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -349,19 +380,27 @@ export function OrdersPage() {
                           <span>{campaignName(campaign)}</span>
                           <small>{compactId(relationId(campaign))}</small>
                         </td>
-                        <td><StatusBadge status={order.status} /></td>
+                        <td>
+                          <StatusBadge status={order.status} />
+                        </td>
                         <td className="numeric-cell">
                           {formatInteger(order.allocatedQuantity)}
                           {order.bonusQuantity > 0 ? (
-                            <small>+{formatInteger(order.bonusQuantity)} bonus</small>
+                            <small>
+                              +{formatInteger(order.bonusQuantity)} bonus
+                            </small>
                           ) : null}
                         </td>
                         <td className="numeric-cell">
-                          <strong>{formatMoney(order.total, order.currency)}</strong>
+                          <strong>
+                            {formatMoney(order.total, order.currency)}
+                          </strong>
                         </td>
                         <td>
                           {formatDateTime(order.createdAt ?? order.reservedAt)}
-                          {order.paidAt ? <small>Pagada {formatDateTime(order.paidAt)}</small> : null}
+                          {order.paidAt ? (
+                            <small>Pagada {formatDateTime(order.paidAt)}</small>
+                          ) : null}
                         </td>
                         <td className="table-actions">
                           <Link

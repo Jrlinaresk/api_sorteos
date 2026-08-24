@@ -1,6 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRight, CalendarClock, RefreshCw, Trash2, Trophy } from 'lucide-react';
-import { useMemo, useState, type FormEvent } from 'react';
+import {
+  ArrowRight,
+  CalendarClock,
+  RefreshCw,
+  Trash2,
+  Trophy,
+} from 'lucide-react';
+import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Button,
@@ -41,7 +47,9 @@ function errorMessage(error: unknown): string {
       ? `${error.message} · Referencia ${error.correlationId}`
       : error.message;
   }
-  return error instanceof Error ? error.message : 'Ocurrió un error inesperado.';
+  return error instanceof Error
+    ? error.message
+    : 'Ocurrió un error inesperado.';
 }
 
 export function campaignIdentifier(campaign: Campaign | string): string {
@@ -61,9 +69,8 @@ export function CampaignLifecyclePanel({
   const queryClient = useQueryClient();
   const { can } = useAuth();
   const { showToast } = useToast();
-  const [pendingTransition, setPendingTransition] = useState<CampaignStatus | null>(
-    null,
-  );
+  const [pendingTransition, setPendingTransition] =
+    useState<CampaignStatus | null>(null);
   const [extensionDate, setExtensionDate] = useState('');
   const [extensionReason, setExtensionReason] = useState('');
   const [extensionError, setExtensionError] = useState('');
@@ -167,20 +174,14 @@ export function CampaignLifecyclePanel({
   });
 
   const allowedTransitions =
-    transitionsQuery.data?.allowedTransitions ?? campaign.allowedTransitions ?? [];
+    transitionsQuery.data?.allowedTransitions ??
+    campaign.allowedTransitions ??
+    [];
   const hasActivity =
     (campaign.allocationCursor ?? 0) > 0 ||
     campaign.soldCount > 0 ||
     campaign.reservedCount > 0;
   const isAdmin = can('admin');
-  const minimumExtension = useMemo(
-    () =>
-      new Date(Date.now() + 5 * 60_000 - new Date().getTimezoneOffset() * 60_000)
-        .toISOString()
-        .slice(0, 16),
-    [],
-  );
-
   const prepareExtension = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const closesAt = fromDateTimeLocal(extensionDate);
@@ -202,10 +203,17 @@ export function CampaignLifecyclePanel({
       <SectionCard
         title="Ciclo de vida"
         description="Las acciones se calculan en el servidor para el estado actual."
-        actions={<StatusBadge status={transitionsQuery.data?.status ?? campaign.status} />}
+        actions={
+          <StatusBadge
+            status={transitionsQuery.data?.status ?? campaign.status}
+          />
+        }
       >
         {transitionsQuery.isError ? (
-          <InlineAlert tone="danger" title="No se pudieron consultar las acciones">
+          <InlineAlert
+            tone="danger"
+            title="No se pudieron consultar las acciones"
+          >
             <p>{errorMessage(transitionsQuery.error)}</p>
             <Button
               type="button"
@@ -218,7 +226,10 @@ export function CampaignLifecyclePanel({
           </InlineAlert>
         ) : null}
 
-        <div className="lifecycle-actions" aria-label="Transiciones disponibles">
+        <div
+          className="lifecycle-actions"
+          aria-label="Transiciones disponibles"
+        >
           {transitionsQuery.isLoading ? (
             <p className="muted-text" role="status">
               Consultando acciones disponibles…
@@ -237,7 +248,9 @@ export function CampaignLifecyclePanel({
               </Button>
             ))
           ) : (
-            <p className="muted-text">No hay transiciones manuales disponibles.</p>
+            <p className="muted-text">
+              No hay transiciones manuales disponibles.
+            </p>
           )}
           <Link
             className="button button--ghost"
@@ -260,11 +273,12 @@ export function CampaignLifecyclePanel({
                 <span>Nueva fecha de cierre</span>
                 <input
                   type="datetime-local"
-                  min={minimumExtension}
                   value={extensionDate}
                   onChange={(event) => setExtensionDate(event.target.value)}
                   required
-                  aria-describedby={extensionError ? 'campaign-extension-error' : undefined}
+                  aria-describedby={
+                    extensionError ? 'campaign-extension-error' : undefined
+                  }
                 />
               </label>
               <label className="field field--wide">
@@ -275,11 +289,17 @@ export function CampaignLifecyclePanel({
                   value={extensionReason}
                   onChange={(event) => setExtensionReason(event.target.value)}
                   required
-                  aria-describedby={extensionError ? 'campaign-extension-error' : undefined}
+                  aria-describedby={
+                    extensionError ? 'campaign-extension-error' : undefined
+                  }
                 />
               </label>
               {extensionError ? (
-                <p id="campaign-extension-error" className="field-error" role="alert">
+                <p
+                  id="campaign-extension-error"
+                  className="field-error"
+                  role="alert"
+                >
                   {extensionError}
                 </p>
               ) : null}
@@ -292,7 +312,8 @@ export function CampaignLifecyclePanel({
             </form>
           ) : (
             <InlineAlert tone="info" title="Acción reservada a administradores">
-              Un operador puede consultar la campaña, pero no reabrir sus ventas.
+              Un operador puede consultar la campaña, pero no reabrir sus
+              ventas.
             </InlineAlert>
           )}
         </SectionCard>
@@ -304,7 +325,8 @@ export function CampaignLifecyclePanel({
       >
         {hasActivity ? (
           <InlineAlert tone="warning" title="Esta campaña ya tiene actividad">
-            No puede eliminarse. Utiliza el ciclo de cancelación y reembolso que corresponda.
+            No puede eliminarse. Utiliza el ciclo de cancelación y reembolso que
+            corresponda.
           </InlineAlert>
         ) : null}
         <Button
@@ -325,13 +347,15 @@ export function CampaignLifecyclePanel({
           <p>
             Vas a cambiar <strong>{campaign.name}</strong> de{' '}
             <strong>{statusLabel(campaign.status)}</strong> a{' '}
-            <strong>{statusLabel(pendingTransition ?? undefined)}</strong>. El servidor volverá a
-            validar ventas, reservas y configuración.
+            <strong>{statusLabel(pendingTransition ?? undefined)}</strong>. El
+            servidor volverá a validar ventas, reservas y configuración.
           </p>
         }
         confirmLabel="Cambiar estado"
         danger={pendingTransition === 'cancelled'}
-        confirmationText={pendingTransition === 'cancelled' ? campaign.slug : undefined}
+        confirmationText={
+          pendingTransition === 'cancelled' ? campaign.slug : undefined
+        }
         busy={transitionMutation.isPending}
         onClose={() => setPendingTransition(null)}
         onConfirm={() => {
@@ -368,7 +392,8 @@ export function CampaignLifecyclePanel({
         title="Eliminar campaña definitivamente"
         description={
           <p>
-            Esta acción elimina <strong>{campaign.name}</strong> y no puede deshacerse.
+            Esta acción elimina <strong>{campaign.name}</strong> y no puede
+            deshacerse.
           </p>
         }
         confirmLabel="Eliminar definitivamente"

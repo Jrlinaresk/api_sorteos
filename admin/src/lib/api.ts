@@ -1,6 +1,7 @@
 import type { AdminSession, ApiErrorBody } from './types';
 
 const API_ROOT = '/api/v1';
+export const SESSION_EXPIRED_EVENT = 'sorteos:admin-session-expired';
 let accessToken: string | null = null;
 let refreshInFlight: Promise<AdminSession> | null = null;
 
@@ -96,6 +97,7 @@ async function execute<T>(
       return execute<T>(path, options, false);
     } catch {
       accessToken = null;
+      window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
     }
   }
   if (!response.ok) throw await parseError(response);
@@ -169,12 +171,23 @@ export async function downloadFile(
   filename: string,
   query?: ApiRequestOptions['query'],
 ): Promise<void> {
-  const response = await fetch(urlFor(path, query), {
-    headers: accessToken
-      ? { Authorization: `Bearer ${accessToken}` }
-      : undefined,
-    credentials: 'include',
-  });
+  const request = () =>
+    fetch(urlFor(path, query), {
+      headers: accessToken
+        ? { Authorization: `Bearer ${accessToken}` }
+        : undefined,
+      credentials: 'include',
+    });
+  let response = await request();
+  if (response.status === 401) {
+    try {
+      await refreshSession();
+      response = await request();
+    } catch {
+      setAccessToken(null);
+      window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+    }
+  }
   if (!response.ok) throw await parseError(response);
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
