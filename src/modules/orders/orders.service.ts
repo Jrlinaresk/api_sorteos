@@ -13,6 +13,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { Readable } from 'stream';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { ListOrdersDto } from './dto/list-orders.dto';
+import { ListMyTitlesDto } from './dto/list-my-titles.dto';
 import { Order, OrderDocument, OrderStatus } from './schemas/order.schema';
 import { Quota, QuotaDocument, QuotaStatus } from './schemas/quota.schema';
 import {
@@ -301,6 +302,7 @@ export class OrdersService {
     const [rows, total] = await Promise.all([
       this.orderModel
         .find(filter)
+        .select('-titleNumbers -quotas -instantPrizes -statusHistory')
         .populate('campaign', 'name slug status prizeTitle media imageUrl')
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
@@ -325,6 +327,7 @@ export class OrdersService {
     const [data, total] = await Promise.all([
       this.orderModel
         .find(filter)
+        .select('-titleNumbers -quotas -instantPrizes -statusHistory')
         .populate('campaign', 'name slug status')
         .populate('user', 'phone nickname firstName lastName email cpf')
         .sort({ createdAt: -1 })
@@ -640,25 +643,46 @@ export class OrdersService {
     return result;
   }
 
-  async getMyTitles(userId: string, campaignId?: string) {
+  async getMyTitles(userId: string, query: ListMyTitlesDto) {
     if (!Types.ObjectId.isValid(userId))
       throw new BadRequestException('Usuario inválido');
+    const page = query.page || 1;
+    const limit = query.limit || 100;
     const filter: FilterQuery<QuotaDocument> = {
       user: new Types.ObjectId(userId),
       status: { $in: [QuotaStatus.Paid, QuotaStatus.Awarded] },
     };
-    if (campaignId) filter.campaign = new Types.ObjectId(campaignId);
-    return this.quotaModel
-      .find(filter)
-      .select('number status isBonus instantPrize paidAt campaign order')
-      .populate(
-        'campaign',
-        'name slug status prizeTitle media imageUrl drawDate winningQuotaNumber',
-      )
-      .populate('instantPrize')
-      .sort({ campaign: 1, number: 1 })
-      .lean()
-      .exec();
+    if (query.campaignId) {
+      if (!Types.ObjectId.isValid(query.campaignId)) {
+        throw new BadRequestException('Campaña inválida');
+      }
+      filter.campaign = new Types.ObjectId(query.campaignId);
+    }
+    const [data, total] = await Promise.all([
+      this.quotaModel
+        .find(filter)
+        .select('number status isBonus instantPrize paidAt campaign order')
+        .populate(
+          'campaign',
+          'name slug status prizeTitle media imageUrl drawDate winningQuotaNumber',
+        )
+        .populate('instantPrize')
+        .sort({ campaign: 1, number: 1, _id: 1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean()
+        .exec(),
+      this.quotaModel.countDocuments(filter).exec(),
+    ]);
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      },
+    };
   }
 
   async listPublicParticipants(campaignId: string, page = 1, limit = 100) {
@@ -1172,7 +1196,13 @@ export class OrdersService {
     order: OrderDocument | Record<string, any>,
     accessToken: string,
   ) {
-    return this.toOwnerView(order, accessToken);
+    const view = this.toOwnerView(order, accessToken) as Record<string, any>;
+    const titlesCount = Number(view.allocatedQuantity || 0);
+    delete view.titleNumbers;
+    delete view.quotas;
+    delete view.instantPrizes;
+    delete view.statusHistory;
+    return { ...view, titlesCount };
   }
 
   private maskPhone(phone?: string): string | undefined {

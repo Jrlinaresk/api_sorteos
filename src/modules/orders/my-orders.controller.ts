@@ -4,6 +4,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PublicUserDto } from '../users/dto/public-user.dto';
 import { ListOrdersDto } from './dto/list-orders.dto';
+import { ListMyTitlesDto } from './dto/list-my-titles.dto';
 import { OrdersService } from './orders.service';
 
 @ApiTags('My participation')
@@ -19,12 +20,15 @@ export class MyOrdersController {
   }
 
   @Get('orders/:publicId')
-  find(@CurrentUser() user: PublicUserDto, @Param('publicId') publicId: string) {
+  find(
+    @CurrentUser() user: PublicUserDto,
+    @Param('publicId') publicId: string,
+  ) {
     return this.orders.findByPublicId(publicId, undefined, user.id);
   }
 
   @Get('titles')
-  titles(@CurrentUser() user: PublicUserDto, @Query('campaignId') campaignId?: string) {
-    return this.orders.getMyTitles(user.id, campaignId);
+  titles(@CurrentUser() user: PublicUserDto, @Query() query: ListMyTitlesDto) {
+    return this.orders.getMyTitles(user.id, query);
   }
 }

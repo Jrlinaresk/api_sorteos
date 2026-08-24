@@ -38,6 +38,30 @@ describe('validateEnvironment', () => {
     });
   });
 
+  it('valida el selector y el límite de suscripciones push en todos los entornos', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        NOTIFICATION_PUSH_PROVIDER: 'automatic',
+      }),
+    ).toThrow('NOTIFICATION_PUSH_PROVIDER debe ser noop o webpush');
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER: '51',
+      }),
+    ).toThrow('WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER');
+  });
+
+  it('exige las tres variables VAPID al seleccionar webpush', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        NOTIFICATION_PUSH_PROVIDER: 'webpush',
+      }),
+    ).toThrow('WEB_PUSH_VAPID_SUBJECT');
+  });
+
   it('acepta una configuración de producción transaccional y completa', () => {
     const environment = productionEnvironment();
     expect(validateEnvironment(environment)).toEqual(environment);

@@ -70,12 +70,14 @@ son:
 | Pagos     | `PAYMENTS_PROVIDER`, `PAYMENTS_PUBLIC_SECRET_KEY`, `EFI_PIX_*`, `EFI_WEBHOOK_*`        |
 | Sorteos   | `CAIXA_FEDERAL_*`, flags `DRAW_*` y baliza NIST allowlisted                            |
 | Medios    | `MEDIA_LOCAL_ROOT`, límites de imagen/video y directorio temporal                      |
-| Push      | las tres variables `WEB_PUSH_VAPID_*` y sus límites opcionales                         |
+| Push      | `NOTIFICATION_PUSH_PROVIDER`, las tres `WEB_PUSH_VAPID_*` y límites opcionales          |
 
 En producción, los secretos de aplicación deben tener al menos 32 caracteres.
-Las tres variables VAPID (`SUBJECT`, `PUBLIC_KEY`, `PRIVATE_KEY`) son opcionales,
-pero si se configura una deben configurarse las tres. Sin ellas permanece
-operativo el inbox interno, sin envío Web Push.
+`NOTIFICATION_PUSH_PROVIDER` selecciona explícitamente `noop` (predeterminado)
+o `webpush`. El modo `noop` mantiene operativo el inbox interno y no se activa
+por la mera presencia de claves. `webpush` exige las tres variables VAPID
+(`SUBJECT`, `PUBLIC_KEY`, `PRIVATE_KEY`). Cada usuario admite como máximo 10
+suscripciones activas por defecto, configurable entre 1 y 50.
 
 Las campañas que usan Lotería Federal deben fijar `closesAt`, número de concurso
 y una `drawDate` de un día posterior antes de programarse o abrir ventas. La API confirma dos veces que CAIXA lo

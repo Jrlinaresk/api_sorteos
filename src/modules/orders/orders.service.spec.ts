@@ -517,7 +517,7 @@ describe('OrdersService titles and CSV exports', () => {
 
   beforeEach(() => {
     orderModel = {};
-    quotaModel = { find: jest.fn() };
+    quotaModel = { find: jest.fn(), countDocuments: jest.fn() };
     campaignModel = { findById: jest.fn() };
     service = new OrdersService(
       orderModel as any,
@@ -553,8 +553,18 @@ describe('OrdersService titles and CSV exports', () => {
     const query = executable([{ number: '000123' }]);
     query.lean.mockReturnValue(query);
     quotaModel.find.mockReturnValue(query);
+    quotaModel.countDocuments.mockReturnValue(executable(1));
 
-    await service.getMyTitles(userId, campaignId);
+    await expect(
+      service.getMyTitles(userId, {
+        campaignId,
+        page: 2,
+        limit: 50,
+      }),
+    ).resolves.toEqual({
+      data: [{ number: '000123' }],
+      meta: { page: 2, limit: 50, total: 1, pages: 1 },
+    });
 
     expect(quotaModel.find).toHaveBeenCalledWith({
       user: new Types.ObjectId(userId),
@@ -564,6 +574,8 @@ describe('OrdersService titles and CSV exports', () => {
     expect(query.select).toHaveBeenCalledWith(
       'number status isBonus instantPrize paidAt campaign order',
     );
+    expect(query.skip).toHaveBeenCalledWith(50);
+    expect(query.limit).toHaveBeenCalledWith(50);
   });
 
   it('exporta CSV administrativo completo, con BOM, comillas y neutralización de fórmulas', async () => {

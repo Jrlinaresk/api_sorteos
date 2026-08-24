@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ClientSession, Connection, FilterQuery, Model, Types } from 'mongoose';
+import { RafflesService } from '../riffles/raffles.service';
+import { UsersService } from '../users/users.service';
 import { CaptureReferralClickDto } from './dto/capture-referral-click.dto';
 import { CreateReferralCodeDto } from './dto/create-referral-code.dto';
 import {
@@ -72,6 +74,8 @@ export class ReferralsService {
     @Optional()
     @InjectConnection()
     private readonly connection?: Connection,
+    @Optional() private readonly users?: UsersService,
+    @Optional() private readonly campaigns?: RafflesService,
   ) {}
 
   async createCode(dto: CreateReferralCodeDto): Promise<ReferralCodeDocument> {
@@ -79,6 +83,12 @@ export class ReferralsService {
     const beneficiaryUser = dto.beneficiaryUserId
       ? this.toObjectId(dto.beneficiaryUserId, 'beneficiario')
       : undefined;
+    const commissionRateBps = dto.commissionRateBps ?? 0;
+    await this.assertCodeTargets(
+      beneficiaryUser,
+      commissionRateBps,
+      dto.campaignId,
+    );
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const code = normalizeReferralCode(dto.code ?? generateReferralCode());
@@ -87,7 +97,7 @@ export class ReferralsService {
           code,
           beneficiaryUser,
           label: dto.label,
-          commissionRateBps: dto.commissionRateBps ?? 0,
+          commissionRateBps,
           currency: (dto.currency ?? 'BRL').toUpperCase(),
           campaignId: dto.campaignId,
           validFrom: dto.validFrom ? new Date(dto.validFrom) : undefined,
@@ -119,6 +129,14 @@ export class ReferralsService {
     const validFrom = dto.validFrom ?? current.validFrom?.toISOString();
     const validUntil = dto.validUntil ?? current.validUntil?.toISOString();
     this.validateValidityWindow(validFrom, validUntil);
+    const beneficiaryUser = dto.beneficiaryUserId
+      ? this.toObjectId(dto.beneficiaryUserId, 'beneficiario')
+      : current.beneficiaryUser;
+    await this.assertCodeTargets(
+      beneficiaryUser,
+      dto.commissionRateBps ?? current.commissionRateBps,
+      dto.campaignId ?? current.campaignId,
+    );
 
     const update: Record<string, unknown> = { ...dto };
     delete update.beneficiaryUserId;
@@ -127,10 +145,7 @@ export class ReferralsService {
     if (dto.validFrom) update.validFrom = new Date(dto.validFrom);
     if (dto.validUntil) update.validUntil = new Date(dto.validUntil);
     if (dto.beneficiaryUserId) {
-      update.beneficiaryUser = this.toObjectId(
-        dto.beneficiaryUserId,
-        'beneficiario',
-      );
+      update.beneficiaryUser = beneficiaryUser;
     }
 
     try {
@@ -481,6 +496,38 @@ export class ReferralsService {
       throw new BadRequestException(
         'validUntil debe ser posterior a validFrom',
       );
+    }
+  }
+
+  private async assertCodeTargets(
+    beneficiaryUser: Types.ObjectId | undefined,
+    commissionRateBps: number,
+    campaignId?: string,
+  ): Promise<void> {
+    if (commissionRateBps > 0 && !beneficiaryUser) {
+      throw new BadRequestException(
+        'Un código con comisión necesita un beneficiario',
+      );
+    }
+    if (beneficiaryUser) {
+      if (!this.users) {
+        throw new ServiceUnavailableException(
+          'No se pudo validar el beneficiario',
+        );
+      }
+      const user = await this.users.findOneOrNull(beneficiaryUser.toString());
+      if (!user || !user.isActive) {
+        throw new BadRequestException('Beneficiario inexistente o inactivo');
+      }
+    }
+    if (campaignId) {
+      if (!Types.ObjectId.isValid(campaignId)) {
+        throw new BadRequestException('ID de campaña inválido');
+      }
+      if (!this.campaigns) {
+        throw new ServiceUnavailableException('No se pudo validar la campaña');
+      }
+      await this.campaigns.findOne(campaignId);
     }
   }
 

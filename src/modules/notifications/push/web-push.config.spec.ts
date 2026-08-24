@@ -13,7 +13,7 @@ describe('Web Push configuration', () => {
     return new ConfigService(values);
   }
 
-  it('selects and clearly marks no-op only when VAPID variables are absent', async () => {
+  it('selects and clearly marks no-op by default', async () => {
     const config = configured();
     expect(readWebPushConfiguration(config)).toBeNull();
     const provider = createConfiguredNotificationPushProvider(config);
@@ -46,6 +46,50 @@ describe('Web Push configuration', () => {
     });
   });
 
+  it('keeps no-op explicitly selected even when a complete VAPID pair exists', () => {
+    const provider = createConfiguredNotificationPushProvider(
+      configured({
+        NOTIFICATION_PUSH_PROVIDER: 'noop',
+        WEB_PUSH_VAPID_SUBJECT: 'mailto:push@example.com',
+        WEB_PUSH_VAPID_PUBLIC_KEY: firstKeys.publicKey,
+        WEB_PUSH_VAPID_PRIVATE_KEY: firstKeys.privateKey,
+      }),
+    );
+    expect(provider).toBeInstanceOf(NoopNotificationPushProvider);
+    expect(provider.getPublicConfiguration()).toEqual({
+      enabled: false,
+      provider: 'noop',
+    });
+  });
+
+  it('does not parse Web Push-only settings while no-op is selected', () => {
+    expect(() =>
+      createConfiguredNotificationPushProvider(
+        configured({
+          NOTIFICATION_PUSH_PROVIDER: 'noop',
+          WEB_PUSH_ALLOWED_ENDPOINT_HOSTS: '*',
+          WEB_PUSH_VAPID_PRIVATE_KEY: 'incomplete-but-disabled',
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it('requires complete VAPID configuration when webpush is selected', () => {
+    expect(() =>
+      createConfiguredNotificationPushProvider(
+        configured({ NOTIFICATION_PUSH_PROVIDER: 'webpush' }),
+      ),
+    ).toThrow('NOTIFICATION_PUSH_PROVIDER=webpush requiere');
+  });
+
+  it('rejects unknown provider selectors', () => {
+    expect(() =>
+      createConfiguredNotificationPushProvider(
+        configured({ NOTIFICATION_PUSH_PROVIDER: 'automatic' }),
+      ),
+    ).toThrow('debe ser noop o webpush');
+  });
+
   it('fails fast on a partial configuration without echoing secrets', () => {
     const secret = 'private-value-that-must-not-leak';
     const config = configured({ WEB_PUSH_VAPID_PRIVATE_KEY: secret });
@@ -61,6 +105,7 @@ describe('Web Push configuration', () => {
 
   it('validates the VAPID pair and exposes only the public key', () => {
     const config = configured({
+      NOTIFICATION_PUSH_PROVIDER: 'webpush',
       WEB_PUSH_VAPID_SUBJECT: 'mailto:push@example.com',
       WEB_PUSH_VAPID_PUBLIC_KEY: firstKeys.publicKey,
       WEB_PUSH_VAPID_PRIVATE_KEY: firstKeys.privateKey,

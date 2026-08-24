@@ -32,6 +32,18 @@ export class CreateNotificationDto {
   @IsEnum(NotificationType)
   type?: NotificationType;
 
+  @ApiPropertyOptional({
+    description:
+      'Clave estable del evento interno; reintentos con el mismo usuario y clave reutilizan el inbox existente',
+    example: 'payment:66c123456789012345678901:paid',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z0-9._:-]{8,160}$/, {
+    message: 'eventKey debe tener 8-160 caracteres alfanuméricos o . _ : -',
+  })
+  eventKey?: string;
+
   @ApiPropertyOptional()
   @IsOptional()
   @IsObject()

@@ -49,8 +49,7 @@ export class CreateReferralCodeDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
-  @MaxLength(120)
+  @IsMongoId()
   campaignId?: string;
 
   @ApiPropertyOptional()

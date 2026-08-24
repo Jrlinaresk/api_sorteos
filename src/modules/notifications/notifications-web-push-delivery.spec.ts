@@ -54,8 +54,12 @@ describe('NotificationsService Web Push delivery', () => {
     const subscriptionModel = {
       updateMany,
       find: jest.fn().mockReturnValue({
-        lean: jest.fn().mockReturnValue({
-          exec: jest.fn().mockResolvedValue(subscriptions),
+        sort: jest.fn().mockReturnValue({
+          limit: jest.fn().mockReturnValue({
+            lean: jest.fn().mockReturnValue({
+              exec: jest.fn().mockResolvedValue(subscriptions),
+            }),
+          }),
         }),
       }),
     };
@@ -83,6 +87,7 @@ describe('NotificationsService Web Push delivery', () => {
       expiredId,
       invalidId,
       updateMany,
+      subscriptionModel,
     };
   }
 
@@ -129,6 +134,29 @@ describe('NotificationsService Web Push delivery', () => {
           }),
         }),
       ]),
+    );
+  });
+
+  it('sorts and bounds legacy subscription delivery to the configured cap', async () => {
+    const provider = {
+      providerName: 'web-push',
+      isConfigured: true,
+      getPublicConfiguration: () => ({ enabled: true, provider: 'web-push' }),
+      send: jest.fn().mockResolvedValue({
+        provider: 'web-push',
+        accepted: 1,
+        rejected: 0,
+      }),
+    } as NotificationPushProvider;
+    const setup = buildService(provider);
+
+    await setup.service.deliverPush(setup.notificationId.toString());
+
+    const query = setup.subscriptionModel.find.mock.results[0].value;
+    expect(query.sort).toHaveBeenCalledWith({ lastSeenAt: -1, _id: -1 });
+    expect(query.sort.mock.results[0].value.limit).toHaveBeenCalledWith(10);
+    expect(setup.subscriptionModel.find).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: PushProviderKind.WebPush }),
     );
   });
 

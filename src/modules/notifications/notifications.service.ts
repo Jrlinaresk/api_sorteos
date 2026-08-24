@@ -5,7 +5,9 @@ import {
   Injectable,
   NotFoundException,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { FilterQuery, Model, Types } from 'mongoose';
 import { CreateNotificationDto } from './dto/create-notification.dto';
@@ -31,6 +33,7 @@ import {
   InvalidWebPushSubscriptionError,
   validateWebPushSubscription,
 } from './push/web-push-subscription';
+import { readWebPushMaxSubscriptionsPerUser } from './push/web-push.config';
 import {
   Notification,
   NotificationDeliveryCode,
@@ -77,6 +80,8 @@ export class NotificationsService {
     @Optional()
     @Inject(NOTIFICATION_PUSH_PROVIDER)
     private readonly pushProvider?: NotificationPushProvider,
+    @Optional()
+    private readonly config?: ConfigService,
   ) {}
 
   getPushPublicConfiguration(): PushPublicConfiguration {
@@ -92,16 +97,38 @@ export class NotificationsService {
     dto: CreateNotificationDto,
     createdBy?: string,
   ): Promise<NotificationDocument> {
-    const { userId, deliverPush = false, expiresAt, ...content } = dto;
+    const {
+      userId,
+      deliverPush = false,
+      expiresAt,
+      eventKey,
+      ...content
+    } = dto;
     const user = this.toObjectId(userId, 'usuario');
+    const normalizedEventKey = eventKey?.trim();
 
-    const notification = await this.notificationModel.create({
-      ...content,
-      user,
-      type: dto.type ?? NotificationType.General,
-      createdBy: createdBy?.slice(0, 120),
-      expiresAt: expiresAt ? new Date(expiresAt) : undefined,
-    });
+    if (normalizedEventKey) {
+      const existing = await this.findByEventKey(user, normalizedEventKey);
+      if (existing) return existing;
+    }
+
+    let notification: NotificationDocument;
+    try {
+      notification = await this.notificationModel.create({
+        ...content,
+        user,
+        eventKey: normalizedEventKey,
+        type: dto.type ?? NotificationType.General,
+        createdBy: createdBy?.slice(0, 120),
+        expiresAt: expiresAt ? new Date(expiresAt) : undefined,
+      });
+    } catch (error) {
+      if (normalizedEventKey && this.isDuplicateKey(error)) {
+        const existing = await this.findByEventKey(user, normalizedEventKey);
+        if (existing) return existing;
+      }
+      throw error;
+    }
 
     if (deliverPush) {
       await this.deliverPush(notification.id);
@@ -210,6 +237,7 @@ export class NotificationsService {
     dto: RegisterPushSubscriptionDto,
   ): Promise<PushSubscriptionView> {
     const user = this.toObjectId(userId, 'usuario');
+    this.assertProviderSupports(dto.provider);
     const originalAddress = dto.address.trim();
     let address = originalAddress;
     let credentials = this.sanitizeCredentials(dto.credentials);
@@ -244,51 +272,90 @@ export class NotificationsService {
       }
     }
 
-    const owner = await this.subscriptionModel
-      .findOne({
-        provider: dto.provider,
-        address: { $in: [...new Set([originalAddress, address])] },
-      })
-      .select('user address')
-      .lean()
-      .exec();
+    let owner = await this.findSubscriptionOwner(
+      dto.provider,
+      originalAddress,
+      address,
+    );
     if (owner && owner.user.toString() !== user.toString()) {
       throw new ConflictException(
         'La suscripción push ya pertenece a otro usuario',
       );
     }
 
-    let subscription: PushSubscriptionDocument;
-    try {
-      subscription = await this.subscriptionModel
-        .findOneAndUpdate(
-          owner?._id
-            ? { _id: owner._id, user }
-            : { provider: dto.provider, address, user },
-          {
-            $set: {
-              user,
-              address,
-              credentials,
-              deviceId: dto.deviceId,
-              locale: dto.locale,
-              timezone: dto.timezone,
-              expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
-              enabled: true,
-              lastSeenAt: new Date(),
+    const maxSubscriptions = readWebPushMaxSubscriptionsPerUser(this.config);
+    await this.normalizeSubscriptionCapacity(user, maxSubscriptions);
+    const candidateSlots = Array.from(
+      { length: maxSubscriptions },
+      (_, slot) => slot,
+    );
+    if (
+      owner?.enabled &&
+      Number.isInteger(owner.activeSlot) &&
+      owner.activeSlot! >= 0 &&
+      owner.activeSlot! < maxSubscriptions
+    ) {
+      candidateSlots.splice(candidateSlots.indexOf(owner.activeSlot!), 1);
+      candidateSlots.unshift(owner.activeSlot!);
+    }
+
+    let subscription: PushSubscriptionDocument | null = null;
+    for (const activeSlot of candidateSlots) {
+      try {
+        subscription = await this.subscriptionModel
+          .findOneAndUpdate(
+            owner?._id
+              ? { _id: owner._id, user }
+              : { provider: dto.provider, address, user },
+            {
+              $set: {
+                user,
+                provider: dto.provider,
+                address,
+                credentials,
+                deviceId: dto.deviceId,
+                locale: dto.locale,
+                timezone: dto.timezone,
+                expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
+                enabled: true,
+                activeSlot,
+                lastSeenAt: new Date(),
+              },
+              $unset: { disabledAt: '', disableReason: '' },
             },
-            $unset: { disabledAt: '', disableReason: '' },
-          },
-          { new: true, upsert: true, setDefaultsOnInsert: true },
-        )
-        .exec();
-    } catch (error) {
-      if (this.isDuplicateKey(error)) {
-        throw new ConflictException(
-          'La suscripción push ya pertenece a otro usuario',
+            {
+              new: true,
+              upsert: !owner,
+              setDefaultsOnInsert: true,
+            },
+          )
+          .exec();
+        if (subscription) break;
+        owner = null;
+      } catch (error) {
+        if (!this.isDuplicateKey(error)) throw error;
+
+        const concurrentOwner = await this.findSubscriptionOwner(
+          dto.provider,
+          originalAddress,
+          address,
         );
+        if (
+          concurrentOwner &&
+          concurrentOwner.user.toString() !== user.toString()
+        ) {
+          throw new ConflictException(
+            'La suscripción push ya pertenece a otro usuario',
+          );
+        }
+        owner = concurrentOwner;
       }
-      throw error;
+    }
+
+    if (!subscription) {
+      throw new ConflictException(
+        `El usuario alcanzó el máximo de ${maxSubscriptions} suscripciones push activas`,
+      );
     }
 
     await this.preferenceModel
@@ -317,6 +384,7 @@ export class NotificationsService {
             disabledAt: new Date(),
             disableReason: PushSubscriptionDisableReason.UserUnregistered,
           },
+          $unset: { activeSlot: '' },
         },
       )
       .exec();
@@ -404,19 +472,28 @@ export class NotificationsService {
             disabledAt: deliveryNow,
             disableReason: PushSubscriptionDisableReason.Expired,
           },
+          $unset: { activeSlot: '' },
         },
       )
       .exec();
 
+    const providerFilter =
+      this.pushProvider.providerName === 'web-push'
+        ? { provider: PushProviderKind.WebPush }
+        : {};
+    const maxSubscriptions = readWebPushMaxSubscriptionsPerUser(this.config);
     const subscriptions = await this.subscriptionModel
       .find({
         user: notification.user,
         enabled: true,
+        ...providerFilter,
         $or: [
           { expiresAt: { $exists: false } },
           { expiresAt: { $gt: new Date() } },
         ],
       })
+      .sort({ lastSeenAt: -1, _id: -1 })
+      .limit(maxSubscriptions)
       .lean()
       .exec();
 
@@ -506,6 +583,13 @@ export class NotificationsService {
     return notification;
   }
 
+  private findByEventKey(
+    user: Types.ObjectId,
+    eventKey: string,
+  ): Promise<NotificationDocument | null> {
+    return this.notificationModel.findOne({ user, eventKey }).exec();
+  }
+
   private async setDeliveryState(
     notification: NotificationDocument,
     status: NotificationDeliveryStatus,
@@ -546,6 +630,7 @@ export class NotificationsService {
                 disabledAt: now,
                 disableReason: PushSubscriptionDisableReason.Expired,
               },
+              $unset: { activeSlot: '' },
             },
           )
           .exec(),
@@ -562,6 +647,7 @@ export class NotificationsService {
                 disabledAt: now,
                 disableReason: PushSubscriptionDisableReason.Invalid,
               },
+              $unset: { activeSlot: '' },
             },
           )
           .exec(),
@@ -619,6 +705,66 @@ export class NotificationsService {
       sanitized[key] = value;
     }
     return sanitized;
+  }
+
+  private assertProviderSupports(provider: PushProviderKind): void {
+    if (!this.pushProvider || this.pushProvider.isConfigured === false) {
+      throw new ServiceUnavailableException(
+        'El registro push no está disponible porque el proveedor está desactivado',
+      );
+    }
+    if (
+      this.pushProvider.providerName === 'web-push' &&
+      provider !== PushProviderKind.WebPush
+    ) {
+      throw new BadRequestException(
+        'El proveedor configurado solo admite suscripciones web_push',
+      );
+    }
+  }
+
+  private findSubscriptionOwner(
+    provider: PushProviderKind,
+    originalAddress: string,
+    normalizedAddress: string,
+  ) {
+    return this.subscriptionModel
+      .findOne({
+        provider,
+        address: {
+          $in: [...new Set([originalAddress, normalizedAddress])],
+        },
+      })
+      .select('user address enabled activeSlot')
+      .lean()
+      .exec();
+  }
+
+  private async normalizeSubscriptionCapacity(
+    user: Types.ObjectId,
+    maxSubscriptions: number,
+  ): Promise<void> {
+    const now = new Date();
+    await this.subscriptionModel
+      .updateMany(
+        {
+          user,
+          enabled: true,
+          $or: [
+            { activeSlot: null },
+            { activeSlot: { $gte: maxSubscriptions } },
+          ],
+        },
+        {
+          $set: {
+            enabled: false,
+            disabledAt: now,
+            disableReason: PushSubscriptionDisableReason.CapacityExceeded,
+          },
+          $unset: { activeSlot: '' },
+        },
+      )
+      .exec();
   }
 
   private isDuplicateKey(error: unknown): boolean {

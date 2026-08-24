@@ -99,21 +99,24 @@ describe('PrizesService inventory and lifecycle', () => {
     prizeModel.find = jest.fn();
     prizeModel.findById = jest.fn();
     prizeModel.updateOne = jest.fn();
-    prizeModel.exists = jest.fn().mockResolvedValue(null);
+    prizeModel.exists = jest.fn().mockReturnValue(executable(null));
     attemptModel = jest.fn() as jest.Mock & Record<string, jest.Mock>;
     attemptModel.find = jest.fn();
     attemptModel.findOne = jest.fn();
     attemptModel.updateMany = jest.fn().mockResolvedValue({ modifiedCount: 0 });
-    attemptModel.exists = jest.fn().mockResolvedValue(null);
+    attemptModel.exists = jest.fn().mockReturnValue(executable(null));
     awardModel = jest.fn() as jest.Mock & Record<string, jest.Mock>;
     awardModel.find = jest.fn();
     awardModel.findOne = jest.fn();
-    awardModel.exists = jest.fn().mockResolvedValue(null);
-    campaignModel = { findById: jest.fn() };
+    awardModel.exists = jest.fn().mockReturnValue(executable(null));
+    campaignModel = {
+      findById: jest.fn(),
+      findOneAndUpdate: jest.fn(),
+    };
     orderModel = {
       findById: jest.fn(),
       updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
-      exists: jest.fn().mockResolvedValue(null),
+      exists: jest.fn().mockReturnValue(executable(null)),
     };
     quotaModel = { find: jest.fn() };
     session = {
@@ -144,15 +147,18 @@ describe('PrizesService inventory and lifecycle', () => {
 
   it('normaliza un título premiado, fuerza stock unitario y reserva inventario', async () => {
     const campaignId = new Types.ObjectId();
-    campaignModel.findById.mockReturnValue(
-      executable({
-        _id: campaignId,
-        status: CampaignStatus.Draft,
-        reservedCount: 0,
-        soldCount: 0,
-        quotaDigits: 3,
-        totalTitles: 1_000,
-      }),
+    const campaign = {
+      _id: campaignId,
+      status: CampaignStatus.Draft,
+      reservedCount: 0,
+      soldCount: 0,
+      contractRevision: 0,
+      quotaDigits: 3,
+      totalTitles: 1_000,
+    };
+    campaignModel.findById.mockReturnValue(executable(campaign));
+    campaignModel.findOneAndUpdate.mockReturnValue(
+      executable({ ...campaign, contractRevision: 1 }),
     );
     prizeModel.mockImplementation((payload: Record<string, unknown>) =>
       document({ ...payload, _id: new Types.ObjectId(), awardedCount: 0 }),
@@ -174,20 +180,68 @@ describe('PrizesService inventory and lifecycle', () => {
         stock: 1,
       }),
     );
-    expect(result.save).toHaveBeenCalledTimes(1);
+    expect(campaignModel.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _id: campaignId,
+        status: CampaignStatus.Draft,
+      }),
+      { $inc: { contractRevision: 1 } },
+      { new: true, runValidators: true, session },
+    );
+    expect(result.save).toHaveBeenCalledWith({ session });
   });
 
-  it('rechaza números fuera de campaña y quotaNumber en mecánicas aleatorias', async () => {
+  it('aborta y compensa el medio si la campaña se publica concurrentemente', async () => {
     const campaignId = new Types.ObjectId();
+    const mediaId = new Types.ObjectId().toString();
     campaignModel.findById.mockReturnValue(
       executable({
         _id: campaignId,
         status: CampaignStatus.Draft,
+        contractRevision: 3,
         reservedCount: 0,
         soldCount: 0,
-        quotaDigits: 2,
-        totalTitles: 100,
       }),
+    );
+    campaignModel.findOneAndUpdate.mockReturnValue(executable(null));
+
+    await expect(
+      service.create({
+        campaignId: campaignId.toString(),
+        title: 'Premio en carrera',
+        mechanic: PrizeMechanic.Roulette,
+        stock: 1,
+        weight: 1,
+        mediaId,
+      }),
+    ).rejects.toThrow('El contrato cambió');
+
+    expect(prizeModel).not.toHaveBeenCalled();
+    expect(media.addReference).toHaveBeenCalledWith(
+      mediaId,
+      expect.stringMatching(/^prize:/),
+    );
+    expect(media.removeReference).toHaveBeenCalledWith(
+      mediaId,
+      expect.stringMatching(/^prize:/),
+    );
+    expect(session.endSession).toHaveBeenCalled();
+  });
+
+  it('rechaza números fuera de campaña y quotaNumber en mecánicas aleatorias', async () => {
+    const campaignId = new Types.ObjectId();
+    const campaign = {
+      _id: campaignId,
+      status: CampaignStatus.Draft,
+      reservedCount: 0,
+      soldCount: 0,
+      contractRevision: 0,
+      quotaDigits: 2,
+      totalTitles: 100,
+    };
+    campaignModel.findById.mockReturnValue(executable(campaign));
+    campaignModel.findOneAndUpdate.mockReturnValue(
+      executable({ ...campaign, contractRevision: 1 }),
     );
 
     await expect(
@@ -270,7 +324,20 @@ describe('PrizesService inventory and lifecycle', () => {
         totalTitles: 1_000_000,
       }),
     );
-    orderModel.exists.mockResolvedValue({ _id: new Types.ObjectId() });
+    campaignModel.findOneAndUpdate.mockReturnValue(
+      executable({
+        _id: campaignId,
+        status: CampaignStatus.Draft,
+        reservedCount: 0,
+        soldCount: 0,
+        contractRevision: 1,
+        quotaDigits: 6,
+        totalTitles: 1_000_000,
+      }),
+    );
+    orderModel.exists.mockReturnValue(
+      executable({ _id: new Types.ObjectId() }),
+    );
 
     await expect(
       service.create({

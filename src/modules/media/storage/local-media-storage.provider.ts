@@ -7,6 +7,8 @@ import { pipeline } from 'node:stream/promises';
 import { resolveStoragePath } from '../media-security';
 import { getMediaStorageRoot } from '../media-upload.config';
 import {
+  MediaObjectMetadata,
+  MediaObjectRange,
   MediaStorageProvider,
   OpenedMediaObject,
   StoredMediaObject,
@@ -46,21 +48,65 @@ export class LocalMediaStorageProvider implements MediaStorageProvider {
     return { key: input.key, size: source.size };
   }
 
-  async open(key: string): Promise<OpenedMediaObject> {
+  async stat(key: string): Promise<MediaObjectMetadata> {
+    const handle = await this.openRegularObject(key);
+    try {
+      const stat = await handle.stat();
+      return { size: stat.size, lastModified: stat.mtime };
+    } finally {
+      await handle.close();
+    }
+  }
+
+  async open(
+    key: string,
+    range?: MediaObjectRange,
+  ): Promise<OpenedMediaObject> {
+    const handle = await this.openRegularObject(key);
+    try {
+      const stat = await handle.stat();
+      this.assertRange(range, stat.size);
+      const contentLength = range ? range.end - range.start + 1 : stat.size;
+      const stream = handle.createReadStream({
+        autoClose: true,
+        ...(range ? { start: range.start, end: range.end } : {}),
+      });
+      return {
+        stream,
+        size: stat.size,
+        contentLength,
+        lastModified: stat.mtime,
+      };
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+  }
+
+  private async openRegularObject(key: string) {
     const path = resolveStoragePath(this.root, key);
     const noFollow = constants.O_NOFOLLOW ?? 0;
     const handle = await open(path, constants.O_RDONLY | noFollow);
     try {
       const stat = await handle.stat();
       if (!stat.isFile()) throw new Error('El objeto no es un archivo regular');
-      return {
-        stream: handle.createReadStream({ autoClose: true }),
-        size: stat.size,
-        lastModified: stat.mtime,
-      };
+      return handle;
     } catch (error) {
       await handle.close();
       throw error;
+    }
+  }
+
+  private assertRange(range: MediaObjectRange | undefined, size: number): void {
+    if (!range) return;
+    if (
+      !Number.isSafeInteger(range.start) ||
+      !Number.isSafeInteger(range.end) ||
+      range.start < 0 ||
+      range.end < range.start ||
+      range.end >= size
+    ) {
+      throw new Error('Rango de objeto inválido');
     }
   }
 

@@ -35,8 +35,7 @@ export class ListReferralCodesQueryDto extends ReferralPaginationQueryDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
-  @MaxLength(120)
+  @IsMongoId()
   campaignId?: string;
 }
 

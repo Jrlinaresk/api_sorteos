@@ -2,17 +2,21 @@ import {
   BadRequestException,
   Controller,
   Delete,
+  Get,
   Param,
   Post,
+  Query,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { Throttle } from '@nestjs/throttler';
 import {
   ApiBearerAuth,
   ApiBody,
   ApiConsumes,
+  ApiOkResponse,
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
@@ -22,7 +26,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { PublicUserDto } from '../users/dto/public-user.dto';
 import { UserRole } from '../users/enums/user-role.enum';
-import { MediaService } from './media.service';
+import { ListMediaAssetsDto } from './dto/list-media-assets.dto';
+import { MediaService, PaginatedMediaAssets } from './media.service';
 
 @ApiTags('Admin Media')
 @ApiBearerAuth()
@@ -32,7 +37,31 @@ import { MediaService } from './media.service';
 export class MediaAdminController {
   constructor(private readonly mediaService: MediaService) {}
 
+  @Get()
+  @ApiOperation({ summary: 'Consultar la biblioteca de medios paginada' })
+  @ApiOkResponse({
+    description:
+      'Medios ordenados por fecha, con referencias y metadatos administrativos',
+  })
+  list(@Query() query: ListMediaAssetsDto): Promise<PaginatedMediaAssets> {
+    return this.mediaService.list(query);
+  }
+
+  @Get('storage-usage')
+  @ApiOperation({ summary: 'Consultar cuotas y uso del almacenamiento' })
+  @ApiOkResponse({ description: 'Uso global y del operador autenticado' })
+  storageUsage(@CurrentUser() user: PublicUserDto) {
+    return this.mediaService.getStorageUsage(user.id);
+  }
+
   @Post()
+  @Throttle({
+    default: {
+      limit: 20,
+      ttl: 60 * 60 * 1_000,
+      blockDuration: 60 * 60 * 1_000,
+    },
+  })
   @UseInterceptors(FileInterceptor('file'))
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -49,6 +78,15 @@ export class MediaAdminController {
   ) {
     if (!file) throw new BadRequestException('Archivo obligatorio');
     return this.mediaService.createFromUpload(file, user.id);
+  }
+
+  @Delete(':mediaId/purge')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Purgar físicamente un medio tras el periodo de retención',
+  })
+  purge(@Param('mediaId') mediaId: string, @CurrentUser() user: PublicUserDto) {
+    return this.mediaService.purgeDeleted(mediaId, user.id);
   }
 
   @Delete(':mediaId')

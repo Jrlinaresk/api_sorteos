@@ -82,99 +82,152 @@ export class ReferralAttributionService {
       );
     }
 
-    const existing = await this.commissionModel.findOne({ orderId }).exec();
-    if (existing) return existing;
-
-    let click: ReferralClickDocument | null = null;
-    if (input.clickId) {
-      const clickId = this.toObjectId(input.clickId, 'click');
-      click = await this.clickModel.findById(clickId).exec();
-      if (!click)
-        throw new NotFoundException('Click de referido no encontrado');
-    }
-
-    const codeValue = input.referralCode
-      ? normalizeReferralCode(input.referralCode)
-      : click?.code;
-    if (!codeValue) return null;
-    if (click && input.referralCode && click.code !== codeValue) {
-      throw new ConflictException('El click no pertenece al código indicado');
-    }
-
-    const code = await this.codeModel.findOne({ code: codeValue }).exec();
-    if (!code || !isReferralCodeUsable(code, new Date(), input.campaignId)) {
-      throw new ConflictException('Código de referido no atribuible');
-    }
-    if (click && click.referralCode.toString() !== code.id) {
-      throw new ConflictException('El click no pertenece al código indicado');
-    }
-
-    const buyerUser = input.buyerUserId
-      ? this.toObjectId(input.buyerUserId, 'comprador')
-      : undefined;
-    if (
-      buyerUser &&
-      code.beneficiaryUser &&
-      buyerUser.equals(code.beneficiaryUser)
-    ) {
-      throw new ConflictException('No se permite la autorreferencia');
-    }
-    await this.assertGuestIsNotBeneficiary(code, input);
-
     const currency = input.currency.trim().toUpperCase();
     if (!/^[A-Z]{3}$/.test(currency)) {
       throw new BadRequestException('Moneda inválida');
     }
-    if (currency !== code.currency) {
-      throw new ConflictException(
-        `La orden está en ${currency} y el código liquida en ${code.currency}`,
+    if (!input.referralCode && !input.clickId) return null;
+    if (!this.connection) {
+      throw new ServiceUnavailableException(
+        'La atribución de comisiones requiere transacciones',
       );
     }
 
-    const claimedCode = await this.claimConversion(code, input.campaignId);
-    if (!claimedCode) {
-      throw new ConflictException('El código ya no admite conversiones');
-    }
-
-    const commissionAmount = calculateCommissionAmount(
-      commissionBase,
-      claimedCode.commissionRateBps,
-    );
-
+    const session = await this.connection.startSession();
+    let result: ReferralCommissionDocument | null | undefined;
     try {
-      const commission = await this.commissionModel.create({
-        referralCode: claimedCode._id,
-        code: claimedCode.code,
-        orderId,
-        click: click?._id,
-        beneficiaryUser: claimedCode.beneficiaryUser,
-        buyerUser,
-        orderAmount: input.orderAmount,
-        commissionBase,
-        commissionRateBps: claimedCode.commissionRateBps,
-        commissionAmount,
-        currency,
-        status: ReferralCommissionStatus.Pending,
-        statusChangedAt: new Date(),
-        metadata: input.metadata ?? {},
-      });
-
-      if (click) {
-        await this.clickModel
-          .updateOne(
-            { _id: click._id },
-            {
-              $set: {
-                attributedOrderId: orderId,
-                convertedAt: new Date(),
-              },
-            },
-          )
+      await session.withTransaction(async () => {
+        result = undefined;
+        const existing = await this.commissionModel
+          .findOne({ orderId })
+          .session(session)
           .exec();
-      }
-      return commission;
+        if (existing) {
+          result = existing;
+          return;
+        }
+
+        let click: ReferralClickDocument | null = null;
+        if (input.clickId) {
+          const clickId = this.toObjectId(input.clickId, 'click');
+          click = await this.clickModel
+            .findById(clickId)
+            .session(session)
+            .exec();
+          if (!click) {
+            throw new NotFoundException('Click de referido no encontrado');
+          }
+        }
+
+        const codeValue = input.referralCode
+          ? normalizeReferralCode(input.referralCode)
+          : click?.code;
+        if (!codeValue) {
+          result = null;
+          return;
+        }
+        if (click && input.referralCode && click.code !== codeValue) {
+          throw new ConflictException(
+            'El click no pertenece al código indicado',
+          );
+        }
+
+        const code = await this.codeModel
+          .findOne({ code: codeValue })
+          .session(session)
+          .exec();
+        if (
+          !code ||
+          !isReferralCodeUsable(code, new Date(), input.campaignId)
+        ) {
+          throw new ConflictException('Código de referido no atribuible');
+        }
+        if (click && click.referralCode.toString() !== code.id) {
+          throw new ConflictException(
+            'El click no pertenece al código indicado',
+          );
+        }
+
+        const buyerUser = input.buyerUserId
+          ? this.toObjectId(input.buyerUserId, 'comprador')
+          : undefined;
+        if (
+          buyerUser &&
+          code.beneficiaryUser &&
+          buyerUser.equals(code.beneficiaryUser)
+        ) {
+          throw new ConflictException('No se permite la autorreferencia');
+        }
+        await this.assertGuestIsNotBeneficiary(code, input, session);
+        if (currency !== code.currency) {
+          throw new ConflictException(
+            `La orden está en ${currency} y el código liquida en ${code.currency}`,
+          );
+        }
+
+        const claimedCode = await this.claimConversion(
+          code,
+          input.campaignId,
+          session,
+        );
+        if (!claimedCode) {
+          throw new ConflictException('El código ya no admite conversiones');
+        }
+
+        const commissionAmount = calculateCommissionAmount(
+          commissionBase,
+          claimedCode.commissionRateBps,
+        );
+        const [commission] = await this.commissionModel.create(
+          [
+            {
+              referralCode: claimedCode._id,
+              code: claimedCode.code,
+              orderId,
+              click: click?._id,
+              beneficiaryUser: claimedCode.beneficiaryUser,
+              buyerUser,
+              orderAmount: input.orderAmount,
+              commissionBase,
+              commissionRateBps: claimedCode.commissionRateBps,
+              commissionAmount,
+              currency,
+              status: ReferralCommissionStatus.Pending,
+              statusChangedAt: new Date(),
+              metadata: input.metadata ?? {},
+            },
+          ],
+          { session },
+        );
+
+        if (click) {
+          const clickUpdate = await this.clickModel
+            .updateOne(
+              {
+                _id: click._id,
+                $or: [
+                  { attributedOrderId: { $exists: false } },
+                  { attributedOrderId: orderId },
+                ],
+              },
+              {
+                $set: {
+                  attributedOrderId: orderId,
+                  convertedAt: new Date(),
+                },
+              },
+              { session },
+            )
+            .exec();
+          if (!clickUpdate.matchedCount) {
+            throw new ConflictException(
+              'El click ya fue atribuido a otro pedido',
+            );
+          }
+        }
+        result = commission;
+      });
     } catch (error) {
-      await this.releaseConversion(claimedCode._id);
       if (this.isDuplicateKey(error)) {
         const duplicate = await this.commissionModel
           .findOne({ orderId })
@@ -182,7 +235,14 @@ export class ReferralAttributionService {
         if (duplicate) return duplicate;
       }
       throw error;
+    } finally {
+      await session.endSession();
     }
+
+    if (result === undefined) {
+      throw new ConflictException('No se pudo atribuir la comisión');
+    }
+    return result;
   }
 
   async approveOrder(
@@ -280,6 +340,7 @@ export class ReferralAttributionService {
   private async claimConversion(
     code: ReferralCodeDocument,
     campaignId?: string,
+    session?: ClientSession,
   ): Promise<ReferralCodeDocument | null> {
     const now = new Date();
     const clauses: Record<string, unknown>[] = [
@@ -304,7 +365,7 @@ export class ReferralAttributionService {
       .findOneAndUpdate(
         { $and: clauses },
         { $inc: { conversionsCount: 1 } },
-        { new: true },
+        { new: true, session },
       )
       .exec();
   }
@@ -331,10 +392,12 @@ export class ReferralAttributionService {
   private async assertGuestIsNotBeneficiary(
     code: ReferralCodeDocument,
     input: AttributeReferralOrderInput,
+    session?: ClientSession,
   ): Promise<void> {
     if (!code.beneficiaryUser || !this.users) return;
     const beneficiary = await this.users.findOneOrNull(
       code.beneficiaryUser.toString(),
+      session,
     );
     if (!beneficiary) return;
 

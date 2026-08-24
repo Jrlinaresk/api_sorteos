@@ -91,6 +91,13 @@ export function validateEnvironment(input: Environment): Environment {
     environment.DRAW_CRYPTOGRAPHIC_ENABLED,
     'DRAW_CRYPTOGRAPHIC_ENABLED',
   );
+  validateInteger(
+    environment.WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER,
+    'WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER',
+    1,
+    50,
+  );
+  validateNotificationPush(environment);
 
   if (nodeEnvironment !== 'production') return environment;
 
@@ -118,6 +125,25 @@ export function validateEnvironment(input: Environment): Environment {
   }
 
   return environment;
+}
+
+function validateNotificationPush(environment: Environment): void {
+  const provider =
+    text(environment.NOTIFICATION_PUSH_PROVIDER).toLowerCase() || 'noop';
+  if (!['noop', 'webpush'].includes(provider)) {
+    fail('NOTIFICATION_PUSH_PROVIDER debe ser noop o webpush');
+  }
+  if (provider !== 'webpush') return;
+
+  for (const name of [
+    'WEB_PUSH_VAPID_SUBJECT',
+    'WEB_PUSH_VAPID_PUBLIC_KEY',
+    'WEB_PUSH_VAPID_PRIVATE_KEY',
+  ]) {
+    if (!text(environment[name])) {
+      fail(`${name} es obligatorio con NOTIFICATION_PUSH_PROVIDER=webpush`);
+    }
+  }
 }
 
 function validateEntropyBeacon(environment: Environment): void {

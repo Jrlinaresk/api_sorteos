@@ -8,6 +8,10 @@ import { MediaPublicController } from './media-public.controller';
 import { MediaService } from './media.service';
 import { createMediaMulterOptions } from './media-upload.config';
 import { MediaAsset, MediaAssetSchema } from './schemas/media-asset.schema';
+import {
+  MediaStorageUsage,
+  MediaStorageUsageSchema,
+} from './schemas/media-storage-usage.schema';
 import { LocalMediaStorageProvider } from './storage/local-media-storage.provider';
 import {
   MEDIA_STORAGE_PROVIDER,
@@ -35,6 +39,7 @@ export interface MediaModuleOptions {
     AuthModule,
     MongooseModule.forFeature([
       { name: MediaAsset.name, schema: MediaAssetSchema },
+      { name: MediaStorageUsage.name, schema: MediaStorageUsageSchema },
     ]),
     MulterModule.registerAsync({
       imports: [ConfigModule],

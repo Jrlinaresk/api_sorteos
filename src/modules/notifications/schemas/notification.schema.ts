@@ -53,6 +53,10 @@ export class Notification {
   })
   type: NotificationType;
 
+  /** Clave interna estable para hacer idempotentes los eventos de negocio. */
+  @Prop({ trim: true, maxlength: 160 })
+  eventKey?: string;
+
   @ApiPropertyOptional({ description: 'Datos estructurados para navegación' })
   @Prop({ type: Object, default: {} })
   data: Record<string, unknown>;
@@ -117,6 +121,13 @@ export class Notification {
 export const NotificationSchema = SchemaFactory.createForClass(Notification);
 
 NotificationSchema.index({ user: 1, createdAt: -1 });
+NotificationSchema.index(
+  { user: 1, eventKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { eventKey: { $type: 'string' } },
+  },
+);
 NotificationSchema.index({ user: 1, readAt: 1, createdAt: -1 });
 NotificationSchema.index({ user: 1, type: 1, createdAt: -1 });
 NotificationSchema.index(

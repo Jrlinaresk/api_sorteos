@@ -68,32 +68,50 @@ export class PrizesService {
   ) {}
 
   async create(dto: CreateInstantPrizeDto) {
-    const campaign = await this.campaignModel.findById(dto.campaignId).exec();
-    if (!campaign) throw new NotFoundException('Campaña no encontrada');
-    await this.assertPrizePlanEditable(campaign);
-    const payload: Record<string, unknown> = { ...dto, campaign: campaign._id };
-    delete payload.campaignId;
-    if (dto.mechanic === PrizeMechanic.WinningTitle) {
-      if (!dto.quotaNumber) {
-        throw new BadRequestException(
-          'Los títulos premiados necesitan quotaNumber',
-        );
-      }
-      payload.quotaNumber = this.normalizeWinningTitle(
-        dto.quotaNumber,
-        campaign,
-      );
-      payload.stock = 1;
-    } else if (dto.quotaNumber) {
-      throw new BadRequestException(
-        'quotaNumber solo corresponde a winning_title',
-      );
+    if (!Types.ObjectId.isValid(dto.campaignId)) {
+      throw new BadRequestException('Campaña inválida');
     }
-    const prize = new this.prizeModel(payload);
-    const reference = `prize:${prize._id.toString()}`;
+    const prizeId = new Types.ObjectId();
+    const reference = `prize:${prizeId.toString()}`;
     if (dto.mediaId) await this.media.addReference(dto.mediaId, reference);
+    const session = await this.connection.startSession();
+    let created: InstantPrizeDocument | undefined;
     try {
-      return await prize.save();
+      await session.withTransaction(async () => {
+        created = undefined;
+        const campaign = await this.campaignModel
+          .findById(dto.campaignId)
+          .session(session)
+          .exec();
+        if (!campaign) throw new NotFoundException('Campaña no encontrada');
+        const [editableCampaign] = await this.lockPrizePlanCampaigns(
+          [campaign],
+          session,
+        );
+        const payload: Record<string, unknown> = {
+          ...dto,
+          _id: prizeId,
+          campaign: editableCampaign._id,
+        };
+        delete payload.campaignId;
+        if (dto.mechanic === PrizeMechanic.WinningTitle) {
+          if (!dto.quotaNumber) {
+            throw new BadRequestException(
+              'Los títulos premiados necesitan quotaNumber',
+            );
+          }
+          payload.quotaNumber = this.normalizeWinningTitle(
+            dto.quotaNumber,
+            editableCampaign,
+          );
+          payload.stock = 1;
+        } else if (dto.quotaNumber) {
+          throw new BadRequestException(
+            'quotaNumber solo corresponde a winning_title',
+          );
+        }
+        created = await new this.prizeModel(payload).save({ session });
+      });
     } catch (error) {
       if (dto.mediaId) {
         await this.media
@@ -101,71 +119,101 @@ export class PrizesService {
           .catch(() => undefined);
       }
       throw error;
+    } finally {
+      await session.endSession();
     }
+    if (!created) throw new ConflictException('No se pudo crear el premio');
+    return created;
   }
 
   async update(id: string, dto: UpdateInstantPrizeDto) {
     if (!Types.ObjectId.isValid(id))
       throw new BadRequestException('Premio inválido');
-    const existing = await this.prizeModel.findById(id).exec();
-    if (!existing) throw new NotFoundException('Premio no encontrado');
-    const sourceCampaign = await this.campaignModel
-      .findById(existing.campaign)
-      .exec();
-    if (!sourceCampaign) throw new NotFoundException('Campaña no encontrada');
-    await this.assertPrizePlanEditable(sourceCampaign);
-
-    let targetCampaign = sourceCampaign;
-    if (dto.campaignId && dto.campaignId !== existing.campaign.toString()) {
-      const destinationCampaign = await this.campaignModel
-        .findById(dto.campaignId)
-        .exec();
-      if (!destinationCampaign)
-        throw new NotFoundException('Campaña de destino no encontrada');
-      await this.assertPrizePlanEditable(destinationCampaign);
-      targetCampaign = destinationCampaign;
+    if (dto.campaignId && !Types.ObjectId.isValid(dto.campaignId)) {
+      throw new BadRequestException('Campaña de destino inválida');
     }
-
-    const payload: Record<string, unknown> = { ...dto };
-    if (dto.campaignId) payload.campaign = new Types.ObjectId(dto.campaignId);
-    delete payload.campaignId;
-    const mechanic = dto.mechanic ?? existing.mechanic;
-    const quotaNumber =
-      dto.quotaNumber === undefined ? existing.quotaNumber : dto.quotaNumber;
-    if (mechanic === PrizeMechanic.WinningTitle) {
-      if (!quotaNumber) {
-        throw new BadRequestException(
-          'Los títulos premiados necesitan quotaNumber',
-        );
-      }
-      payload.quotaNumber = this.normalizeWinningTitle(
-        quotaNumber,
-        targetCampaign,
-      );
-      payload.stock = 1;
-    } else {
-      if (dto.quotaNumber) {
-        throw new BadRequestException(
-          'quotaNumber solo corresponde a winning_title',
-        );
-      }
-      payload.quotaNumber = undefined;
-    }
-    const oldMediaId = existing.mediaId?.toString();
+    const snapshot = await this.prizeModel.findById(id).exec();
+    if (!snapshot) throw new NotFoundException('Premio no encontrado');
+    const oldMediaId = snapshot.mediaId?.toString();
     const newMediaId = dto.mediaId === undefined ? oldMediaId : dto.mediaId;
-    const reference = `prize:${existing._id.toString()}`;
+    const reference = `prize:${snapshot._id.toString()}`;
     if (newMediaId && newMediaId !== oldMediaId) {
       await this.media.addReference(newMediaId, reference);
     }
+    const session = await this.connection.startSession();
+    let saved: InstantPrizeDocument | undefined;
     try {
-      Object.assign(existing, payload);
-      const saved = await existing.save();
-      if (oldMediaId && oldMediaId !== newMediaId) {
-        await this.media
-          .removeReference(oldMediaId, reference)
-          .catch(() => undefined);
-      }
-      return saved;
+      await session.withTransaction(async () => {
+        saved = undefined;
+        const existing = await this.prizeModel
+          .findById(id)
+          .session(session)
+          .exec();
+        if (!existing) throw new NotFoundException('Premio no encontrado');
+        if (existing.mediaId?.toString() !== oldMediaId) {
+          throw new ConflictException(
+            'El premio cambió mientras se preparaba la actualización',
+          );
+        }
+        const sourceCampaign = await this.campaignModel
+          .findById(existing.campaign)
+          .session(session)
+          .exec();
+        if (!sourceCampaign) {
+          throw new NotFoundException('Campaña no encontrada');
+        }
+
+        let destinationCampaign = sourceCampaign;
+        if (dto.campaignId && dto.campaignId !== existing.campaign.toString()) {
+          const destination = await this.campaignModel
+            .findById(dto.campaignId)
+            .session(session)
+            .exec();
+          if (!destination) {
+            throw new NotFoundException('Campaña de destino no encontrada');
+          }
+          destinationCampaign = destination;
+        }
+        const locked = await this.lockPrizePlanCampaigns(
+          [sourceCampaign, destinationCampaign],
+          session,
+        );
+        const editableTarget =
+          locked.find(
+            (campaign) =>
+              campaign._id.toString() === destinationCampaign._id.toString(),
+          ) ?? locked[0];
+
+        const payload: Record<string, unknown> = { ...dto };
+        if (dto.campaignId) payload.campaign = editableTarget._id;
+        delete payload.campaignId;
+        const mechanic = dto.mechanic ?? existing.mechanic;
+        const quotaNumber =
+          dto.quotaNumber === undefined
+            ? existing.quotaNumber
+            : dto.quotaNumber;
+        if (mechanic === PrizeMechanic.WinningTitle) {
+          if (!quotaNumber) {
+            throw new BadRequestException(
+              'Los títulos premiados necesitan quotaNumber',
+            );
+          }
+          payload.quotaNumber = this.normalizeWinningTitle(
+            quotaNumber,
+            editableTarget,
+          );
+          payload.stock = 1;
+        } else {
+          if (dto.quotaNumber) {
+            throw new BadRequestException(
+              'quotaNumber solo corresponde a winning_title',
+            );
+          }
+          payload.quotaNumber = undefined;
+        }
+        Object.assign(existing, payload);
+        saved = await existing.save({ session });
+      });
     } catch (error) {
       if (newMediaId && newMediaId !== oldMediaId) {
         await this.media
@@ -173,23 +221,51 @@ export class PrizesService {
           .catch(() => undefined);
       }
       throw error;
+    } finally {
+      await session.endSession();
     }
+    if (!saved) throw new ConflictException('No se pudo actualizar el premio');
+    if (oldMediaId && oldMediaId !== newMediaId) {
+      await this.media
+        .removeReference(oldMediaId, reference)
+        .catch(() => undefined);
+    }
+    return saved;
   }
 
   async remove(id: string) {
     if (!Types.ObjectId.isValid(id))
       throw new BadRequestException('Premio inválido');
-    const prize = await this.prizeModel.findById(id).exec();
-    if (!prize) throw new NotFoundException('Premio no encontrado');
-    const campaign = await this.campaignModel.findById(prize.campaign).exec();
-    if (!campaign) throw new NotFoundException('Campaña no encontrada');
-    await this.assertPrizePlanEditable(campaign);
-    const mediaId = prize.mediaId?.toString();
-    const reference = `prize:${prize._id.toString()}`;
-    await prize.deleteOne();
+    const session = await this.connection.startSession();
+    let mediaId: string | undefined;
+    let reference: string | undefined;
+    let deleted = false;
+    try {
+      await session.withTransaction(async () => {
+        deleted = false;
+        const prize = await this.prizeModel
+          .findById(id)
+          .session(session)
+          .exec();
+        if (!prize) throw new NotFoundException('Premio no encontrado');
+        const campaign = await this.campaignModel
+          .findById(prize.campaign)
+          .session(session)
+          .exec();
+        if (!campaign) throw new NotFoundException('Campaña no encontrada');
+        await this.lockPrizePlanCampaigns([campaign], session);
+        mediaId = prize.mediaId?.toString();
+        reference = `prize:${prize._id.toString()}`;
+        await prize.deleteOne({ session });
+        deleted = true;
+      });
+    } finally {
+      await session.endSession();
+    }
+    if (!deleted) throw new ConflictException('No se pudo eliminar el premio');
     if (mediaId)
       await this.media
-        .removeReference(mediaId, reference)
+        .removeReference(mediaId, reference!)
         .catch(() => undefined);
     return { deleted: true };
   }
@@ -755,7 +831,80 @@ export class PrizesService {
     return award.save(session ? { session } : undefined);
   }
 
-  private async assertPrizePlanEditable(campaign: RaffleDocument) {
+  private async lockPrizePlanCampaigns(
+    campaigns: RaffleDocument[],
+    session: ClientSession,
+  ): Promise<RaffleDocument[]> {
+    const unique = new Map(
+      campaigns.map((campaign) => [campaign._id.toString(), campaign]),
+    );
+    const sorted = [...unique.values()].sort((left, right) =>
+      left._id.toString().localeCompare(right._id.toString()),
+    );
+    const locked: RaffleDocument[] = [];
+    for (const campaign of sorted) {
+      if (
+        campaign.status !== CampaignStatus.Draft ||
+        campaign.contractLockedAt ||
+        (campaign.reservedCount ?? 0) > 0 ||
+        (campaign.soldCount ?? 0) > 0
+      ) {
+        throw new ConflictException(
+          'El plan de premios solo puede modificarse antes de publicar la campaña',
+        );
+      }
+      const revision = campaign.contractRevision ?? 0;
+      const revisionFilter = revision
+        ? { contractRevision: revision }
+        : {
+            $or: [
+              { contractRevision: 0 },
+              { contractRevision: { $exists: false } },
+            ],
+          };
+      const updated = await this.campaignModel
+        .findOneAndUpdate(
+          {
+            _id: campaign._id,
+            status: CampaignStatus.Draft,
+            $and: [
+              {
+                $or: [
+                  { contractLockedAt: { $exists: false } },
+                  { contractLockedAt: null },
+                ],
+              },
+              {
+                $or: [
+                  { reservedCount: 0 },
+                  { reservedCount: { $exists: false } },
+                ],
+              },
+              {
+                $or: [{ soldCount: 0 }, { soldCount: { $exists: false } }],
+              },
+              revisionFilter,
+            ],
+          },
+          { $inc: { contractRevision: 1 } },
+          { new: true, runValidators: true, session },
+        )
+        .exec();
+      if (!updated) {
+        throw new ConflictException(
+          'El contrato cambió mientras se editaba el plan de premios; reintente',
+        );
+      }
+      await this.assertPrizePlanEditable(updated, session);
+      locked.push(updated);
+    }
+    return locked;
+  }
+
+  private async assertPrizePlanEditable(
+    campaign: RaffleDocument,
+    session: ClientSession,
+  ) {
     if (campaign.status !== CampaignStatus.Draft || campaign.contractLockedAt) {
       throw new ConflictException(
         'El plan de premios solo puede modificarse antes de publicar la campaña',
@@ -768,13 +917,16 @@ export class PrizesService {
     }
     const campaignId = campaign._id;
     const [order, attempt, award, adjudicatedPrize] = await Promise.all([
-      this.orderModel.exists({ campaign: campaignId }),
-      this.attemptModel.exists({ campaign: campaignId }),
-      this.awardModel.exists({ campaign: campaignId }),
-      this.prizeModel.exists({
-        campaign: campaignId,
-        awardedCount: { $gt: 0 },
-      }),
+      this.orderModel.exists({ campaign: campaignId }).session(session).exec(),
+      this.attemptModel
+        .exists({ campaign: campaignId })
+        .session(session)
+        .exec(),
+      this.awardModel.exists({ campaign: campaignId }).session(session).exec(),
+      this.prizeModel
+        .exists({ campaign: campaignId, awardedCount: { $gt: 0 } })
+        .session(session)
+        .exec(),
     ]);
     if (order || attempt || award || adjudicatedPrize) {
       throw new ConflictException(

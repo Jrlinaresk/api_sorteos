@@ -91,6 +91,27 @@ describe('Sorteos API transaction journey (e2e)', () => {
       .expect(200);
     const authorization = `Bearer ${login.body.accessToken}`;
 
+    const publisherRegistration = await request(http)
+      .post('/api/v1/auth/register')
+      .send({
+        phone: '+5511966666666',
+        password: 'PublisherE2e9Secure',
+        name: 'Publisher E2E',
+        nickname: 'publisher-e2e',
+        cpf: '11144477735',
+        email: 'publisher-e2e@example.test',
+      })
+      .expect(201);
+    await users.updateOne(
+      { _id: publisherRegistration.body.user.id },
+      { $set: { role: UserRole.ADMIN } },
+    );
+    const publisherLogin = await request(http)
+      .post('/api/v1/auth/login')
+      .send({ phone: '+5511966666666', password: 'PublisherE2e9Secure' })
+      .expect(200);
+    const publisherAuthorization = `Bearer ${publisherLogin.body.accessToken}`;
+
     const createdCampaign = await request(http)
       .post('/api/v1/admin/campaigns')
       .set('Authorization', authorization)
@@ -100,7 +121,7 @@ describe('Sorteos API transaction journey (e2e)', () => {
         shortDescription: 'Prueba integral',
         regulationHtml: '<p>Reglamento E2E inmutable</p>',
         termsVersion: 'v1',
-        status: 'active',
+        status: 'draft',
         totalTitles: 20,
         quotaDigits: 2,
         itemPrice: 15000,
@@ -117,6 +138,13 @@ describe('Sorteos API transaction journey (e2e)', () => {
       createdCampaign.body._id ?? createdCampaign.body.id,
     );
     expect(campaignId).toMatch(/^[a-f0-9]{24}$/);
+
+    await request(http)
+      .patch(`/api/v1/admin/campaigns/${campaignId}/status`)
+      .set('Authorization', authorization)
+      .send({ status: 'active' })
+      .expect(200)
+      .expect(({ body }) => expect(body.status).toBe('active'));
 
     const checkout = await request(http)
       .post('/api/v1/checkout')
@@ -183,8 +211,11 @@ describe('Sorteos API transaction journey (e2e)', () => {
       .set('Authorization', authorization)
       .expect(200)
       .expect(({ body }) => {
-        expect(body).toHaveLength(10);
-        expect(body).toEqual(
+        expect(body.meta).toEqual(
+          expect.objectContaining({ total: 10, page: 1 }),
+        );
+        expect(body.data).toHaveLength(10);
+        expect(body.data).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ number: winningNumber, status: 'paid' }),
           ]),
@@ -268,7 +299,7 @@ describe('Sorteos API transaction journey (e2e)', () => {
 
     await request(http)
       .post(`/api/v1/admin/campaigns/${campaignId}/draw/publish`)
-      .set('Authorization', authorization)
+      .set('Authorization', publisherAuthorization)
       .expect(201)
       .expect(({ body }) => {
         expect(body.status).toBe('published');

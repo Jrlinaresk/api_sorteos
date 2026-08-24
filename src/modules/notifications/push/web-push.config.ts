@@ -9,6 +9,14 @@ export const DEFAULT_WEB_PUSH_ENDPOINT_HOSTS = [
   '*.notify.windows.com',
 ] as const;
 
+export const DEFAULT_WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER = 10;
+export const MAX_WEB_PUSH_SUBSCRIPTIONS_PER_USER = 50;
+
+export enum ConfiguredNotificationPushProvider {
+  Noop = 'noop',
+  WebPush = 'webpush',
+}
+
 interface ConfigurationReader {
   get<T = unknown>(key: string): T | undefined;
 }
@@ -44,6 +52,35 @@ function readInteger(
     throw new Error(`${key} debe ser un entero entre ${minimum} y ${maximum}`);
   }
   return parsed;
+}
+
+export function readConfiguredNotificationPushProvider(
+  config: ConfigurationReader,
+): ConfiguredNotificationPushProvider {
+  const value =
+    readString(config, 'NOTIFICATION_PUSH_PROVIDER').toLowerCase() ||
+    ConfiguredNotificationPushProvider.Noop;
+  if (
+    !Object.values(ConfiguredNotificationPushProvider).includes(
+      value as ConfiguredNotificationPushProvider,
+    )
+  ) {
+    throw new Error('NOTIFICATION_PUSH_PROVIDER debe ser noop o webpush');
+  }
+  return value as ConfiguredNotificationPushProvider;
+}
+
+export function readWebPushMaxSubscriptionsPerUser(
+  config?: ConfigurationReader,
+): number {
+  if (!config) return DEFAULT_WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER;
+  return readInteger(
+    config,
+    'WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER',
+    DEFAULT_WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER,
+    1,
+    MAX_WEB_PUSH_SUBSCRIPTIONS_PER_USER,
+  );
 }
 
 function validateVapidKey(

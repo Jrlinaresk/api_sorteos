@@ -13,6 +13,10 @@ import {
 export const DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_MAX_VIDEO_BYTES = 250 * 1024 * 1024;
 const MAX_CONFIGURABLE_BYTES = 2 * 1024 * 1024 * 1024;
+export const DEFAULT_MAX_TOTAL_STORED_BYTES = 50 * 1024 * 1024 * 1024;
+export const DEFAULT_MAX_STORED_BYTES_PER_USER = 10 * 1024 * 1024 * 1024;
+export const DEFAULT_DELETED_RETENTION_DAYS = 30;
+const MAX_CONFIGURABLE_STORAGE_BYTES = 10 * 1024 * 1024 * 1024 * 1024;
 
 interface ConfigurationReader {
   get<T = unknown>(key: string): T | undefined;
@@ -21,6 +25,12 @@ interface ConfigurationReader {
 export interface MediaUploadLimits {
   imageBytes: number;
   videoBytes: number;
+}
+
+export interface MediaStoragePolicy {
+  maxTotalBytes: number;
+  maxBytesPerUser: number;
+  deletedRetentionDays: number;
 }
 
 function configuredPositiveInteger(
@@ -51,6 +61,30 @@ export function getMediaUploadLimits(
       config,
       'MEDIA_MAX_VIDEO_BYTES',
       DEFAULT_MAX_VIDEO_BYTES,
+    ),
+  };
+}
+
+export function getMediaStoragePolicy(
+  config: ConfigurationReader,
+): MediaStoragePolicy {
+  return {
+    maxTotalBytes: configuredStorageInteger(
+      config,
+      'MEDIA_MAX_TOTAL_STORED_BYTES',
+      DEFAULT_MAX_TOTAL_STORED_BYTES,
+    ),
+    maxBytesPerUser: configuredStorageInteger(
+      config,
+      'MEDIA_MAX_STORED_BYTES_PER_USER',
+      DEFAULT_MAX_STORED_BYTES_PER_USER,
+    ),
+    deletedRetentionDays: configuredBoundedInteger(
+      config,
+      'MEDIA_DELETED_RETENTION_DAYS',
+      DEFAULT_DELETED_RETENTION_DAYS,
+      1,
+      3_650,
     ),
   };
 }
@@ -101,4 +135,33 @@ export function createMediaMulterOptions(
     },
     preservePath: false,
   };
+}
+
+function configuredStorageInteger(
+  config: ConfigurationReader,
+  key: string,
+  fallback: number,
+): number {
+  return configuredBoundedInteger(
+    config,
+    key,
+    fallback,
+    1,
+    MAX_CONFIGURABLE_STORAGE_BYTES,
+  );
+}
+
+function configuredBoundedInteger(
+  config: ConfigurationReader,
+  key: string,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const raw = config.get<string | number>(key);
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum
+    ? parsed
+    : fallback;
 }

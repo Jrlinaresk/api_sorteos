@@ -12,8 +12,12 @@ import {
   sanitizeOriginalFilename,
 } from './media-security';
 import {
+  DEFAULT_DELETED_RETENTION_DAYS,
   DEFAULT_MAX_IMAGE_BYTES,
+  DEFAULT_MAX_STORED_BYTES_PER_USER,
+  DEFAULT_MAX_TOTAL_STORED_BYTES,
   DEFAULT_MAX_VIDEO_BYTES,
+  getMediaStoragePolicy,
   getMediaUploadLimits,
 } from './media-upload.config';
 
@@ -94,6 +98,11 @@ describe('media security', () => {
     expect(getMediaUploadLimits(config)).toEqual({
       imageBytes: DEFAULT_MAX_IMAGE_BYTES,
       videoBytes: DEFAULT_MAX_VIDEO_BYTES,
+    });
+    expect(getMediaStoragePolicy(config)).toEqual({
+      maxTotalBytes: DEFAULT_MAX_TOTAL_STORED_BYTES,
+      maxBytesPerUser: DEFAULT_MAX_STORED_BYTES_PER_USER,
+      deletedRetentionDays: DEFAULT_DELETED_RETENTION_DAYS,
     });
   });
 });

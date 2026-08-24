@@ -37,6 +37,7 @@ export class ReferralsAdminController {
   constructor(private readonly referralsService: ReferralsService) {}
 
   @Post('codes')
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Crear un código de referido' })
   async createCode(@Body() dto: CreateReferralCodeDto) {
     return toAdminReferralCode(await this.referralsService.createCode(dto));
@@ -49,6 +50,7 @@ export class ReferralsAdminController {
   }
 
   @Patch('codes/:codeId')
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Editar, pausar o desactivar un código' })
   async updateCode(
     @Param('codeId') codeId: string,

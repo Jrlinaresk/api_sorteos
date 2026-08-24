@@ -22,6 +22,13 @@ export interface MediaAssetView {
   updatedAt: Date;
 }
 
+export interface AdminMediaAssetView extends MediaAssetView {
+  uploadedBy: string;
+  references: string[];
+  deletedAt?: Date;
+  deletedBy?: string;
+}
+
 export function toMediaAssetView(
   asset: WithDocumentId<MediaAsset>,
 ): MediaAssetView {
@@ -36,8 +43,20 @@ export function toMediaAssetView(
     checksumSha256: asset.checksumSha256,
     status: asset.status,
     referenceCount: asset.references?.length ?? 0,
-    publicUrl: `/media/${id}`,
+    publicUrl: `/api/v1/media/${id}`,
     createdAt: asset.createdAt,
     updatedAt: asset.updatedAt,
+  };
+}
+
+export function toAdminMediaAssetView(
+  asset: WithDocumentId<MediaAsset>,
+): AdminMediaAssetView {
+  return {
+    ...toMediaAssetView(asset),
+    uploadedBy: asset.uploadedBy?.toString() ?? '',
+    references: [...(asset.references ?? [])],
+    ...(asset.deletedAt ? { deletedAt: asset.deletedAt } : {}),
+    ...(asset.deletedBy ? { deletedBy: asset.deletedBy.toString() } : {}),
   };
 }

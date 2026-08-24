@@ -25,18 +25,27 @@ describe('media authorization', () => {
 
   it('derives the uploader and deleter from CurrentUser', () => {
     const service = {
+      list: jest.fn(),
+      getStorageUsage: jest.fn(),
       createFromUpload: jest.fn(),
       softDelete: jest.fn(),
+      purgeDeleted: jest.fn(),
     } as unknown as MediaService;
     const controller = new MediaAdminController(service);
     const user = { id: 'jwt-user-id' } as PublicUserDto;
     const file = { path: '/tmp/opaque.upload' } as Express.Multer.File;
 
+    controller.list({ page: 1, limit: 25 });
+    controller.storageUsage(user);
     controller.upload(file, user);
     controller.remove('media-id', user);
+    controller.purge('purge-id', user);
 
+    expect(service.list).toHaveBeenCalledWith({ page: 1, limit: 25 });
+    expect(service.getStorageUsage).toHaveBeenCalledWith(user.id);
     expect(service.createFromUpload).toHaveBeenCalledWith(file, user.id);
     expect(service.softDelete).toHaveBeenCalledWith('media-id', user.id);
+    expect(service.purgeDeleted).toHaveBeenCalledWith('purge-id', user.id);
   });
 
   it('keeps the read controller public', () => {

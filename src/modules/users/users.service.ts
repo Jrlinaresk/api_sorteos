@@ -11,7 +11,7 @@ import { User, UserDocument } from './schemas/user.schema';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserMessages } from './enums/user-messages.enum';
-import { Model, Types } from 'mongoose';
+import { ClientSession, Model, Types } from 'mongoose';
 import { UserRole } from './enums/user-role.enum';
 import { PublicUserDto } from './dto/public-user.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
@@ -31,7 +31,10 @@ const LOGIN_LOCK_MILLISECONDS = 15 * 60 * 1000;
 export class UsersService {
   constructor(@InjectModel(User.name) private userModel: Model<UserDocument>) {}
 
-  async create(dto: CreateUserDto): Promise<UserDocument> {
+  async create(
+    dto: CreateUserDto,
+    session?: ClientSession,
+  ): Promise<UserDocument> {
     const phone = normalizePhone(dto.phone);
     const email = normalizeEmail(dto.email);
     const cpf = normalizeCpf(dto.cpf);
@@ -48,11 +51,12 @@ export class UsersService {
     ];
     if (email) duplicateFilters.push({ email });
     if (cpf) duplicateFilters.push({ cpf });
-    const duplicate = await this.userModel
+    const duplicateQuery = this.userModel
       .findOne({ $or: duplicateFilters })
       .select('_id phone email cpf')
-      .lean()
-      .exec();
+      .lean();
+    if (session) duplicateQuery.session(session);
+    const duplicate = await duplicateQuery.exec();
 
     if (duplicate) {
       this.throwDuplicateConflict(duplicate, {
@@ -68,7 +72,7 @@ export class UsersService {
       : undefined;
 
     try {
-      return await this.userModel.create({
+      const payload = {
         ...dto,
         phone,
         email,
@@ -78,7 +82,12 @@ export class UsersService {
         password: undefined,
         passwordHash,
         role: dto.role ?? UserRole.CUSTOMER,
-      });
+      };
+      if (session) {
+        const [created] = await this.userModel.create([payload], { session });
+        return created;
+      }
+      return await this.userModel.create(payload);
     } catch (error) {
       this.rethrowMongoDuplicate(error);
       throw error;
@@ -89,9 +98,14 @@ export class UsersService {
     return this.userModel.find().exec();
   }
 
-  async findOneOrNull(id: string): Promise<UserDocument | null> {
+  async findOneOrNull(
+    id: string,
+    session?: ClientSession,
+  ): Promise<UserDocument | null> {
     if (!Types.ObjectId.isValid(id)) return null;
-    return this.userModel.findById(id).exec();
+    const query = this.userModel.findById(id);
+    if (session) query.session(session);
+    return query.exec();
   }
 
   async findOne(id: string): Promise<UserDocument> {

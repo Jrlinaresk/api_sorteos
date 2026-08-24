@@ -133,12 +133,13 @@ La aplicación se niega a iniciar si falta alguna garantía esencial:
   certificado existe dentro del contenedor.
 - El webhook tiene `EFI_WEBHOOK_HMAC` de al menos 24 caracteres o mTLS activo.
 
-Web Push es opcional. `WEB_PUSH_VAPID_SUBJECT`,
-`WEB_PUSH_VAPID_PUBLIC_KEY` y `WEB_PUSH_VAPID_PRIVATE_KEY` deben estar las tres
-presentes o las tres ausentes. Sin ellas, las notificaciones siguen disponibles
-en el inbox pero no se envían al navegador. TTL, timeout, urgencia, tamaño,
-concurrencia y hosts permitidos se ajustan con las variables `WEB_PUSH_*` de la
-plantilla.
+Web Push es opcional y se selecciona explícitamente con
+`NOTIFICATION_PUSH_PROVIDER=noop|webpush`. `noop` nunca envía ni se activa por
+detectar claves VAPID. `webpush` requiere `WEB_PUSH_VAPID_SUBJECT`,
+`WEB_PUSH_VAPID_PUBLIC_KEY` y `WEB_PUSH_VAPID_PRIVATE_KEY` completas y válidas.
+TTL, timeout, urgencia, tamaño, concurrencia, hosts permitidos y el máximo de
+suscripciones activas por usuario (10 por defecto, máximo 50) se ajustan con las
+variables `WEB_PUSH_*` de la plantilla.
 
 No ejecute `docker compose config` sin `--quiet` en CI o tickets: la salida
 expandida contiene secretos. No muestre ni adjunte `.env.server`.

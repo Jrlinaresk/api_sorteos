@@ -13,6 +13,7 @@ export enum PushSubscriptionDisableReason {
   UserUnregistered = 'user_unregistered',
   Expired = 'expired',
   Invalid = 'invalid',
+  CapacityExceeded = 'capacity_exceeded',
 }
 
 export type PushSubscriptionDocument = HydratedDocument<PushSubscription>;
@@ -52,6 +53,13 @@ export class PushSubscription {
   @Prop({ required: true, default: true })
   enabled: boolean;
 
+  /**
+   * Cupo reservado mientras la suscripción está activa. El índice único hace
+   * que el límite por usuario se mantenga incluso con registros concurrentes.
+   */
+  @Prop({ min: 0, max: 49 })
+  activeSlot?: number;
+
   @Prop()
   disabledAt?: Date;
 
@@ -75,5 +83,12 @@ export const PushSubscriptionSchema =
   SchemaFactory.createForClass(PushSubscription);
 
 PushSubscriptionSchema.index({ provider: 1, address: 1 }, { unique: true });
+PushSubscriptionSchema.index(
+  { user: 1, activeSlot: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { activeSlot: { $type: 'number' } },
+  },
+);
 PushSubscriptionSchema.index({ user: 1, enabled: 1, updatedAt: -1 });
 PushSubscriptionSchema.index({ deviceId: 1, user: 1 });

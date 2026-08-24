@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from '../auth/auth.module';
 import { UsersModule } from '../users/users.module';
+import { RafflesModule } from '../riffles/riffles.module';
 import { ReferralAttributionService } from './referral-attribution.service';
 import { ReferralClickRateLimitGuard } from './referral-click-rate-limit.guard';
 import { ReferralsAdminController } from './referrals-admin.controller';
@@ -25,6 +26,7 @@ import {
   imports: [
     AuthModule,
     UsersModule,
+    RafflesModule,
     MongooseModule.forFeature([
       { name: ReferralCode.name, schema: ReferralCodeSchema },
       { name: ReferralClick.name, schema: ReferralClickSchema },

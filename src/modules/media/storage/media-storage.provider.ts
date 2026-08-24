@@ -14,17 +14,27 @@ export interface StoredMediaObject {
   etag?: string;
 }
 
-export interface OpenedMediaObject {
-  stream: Readable;
+export interface MediaObjectMetadata {
   size: number;
   etag?: string;
   lastModified?: Date;
+}
+
+export interface MediaObjectRange {
+  start: number;
+  end: number;
+}
+
+export interface OpenedMediaObject extends MediaObjectMetadata {
+  stream: Readable;
+  contentLength: number;
 }
 
 /** Implementable con disco local, S3, R2 u otro object storage. */
 export interface MediaStorageProvider {
   readonly providerName: string;
   put(input: StoreMediaObjectInput): Promise<StoredMediaObject>;
-  open(key: string): Promise<OpenedMediaObject>;
+  stat(key: string): Promise<MediaObjectMetadata>;
+  open(key: string, range?: MediaObjectRange): Promise<OpenedMediaObject>;
   delete(key: string): Promise<void>;
 }

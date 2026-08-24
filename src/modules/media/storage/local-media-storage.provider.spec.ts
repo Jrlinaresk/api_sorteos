@@ -37,7 +37,43 @@ describe('LocalMediaStorageProvider', () => {
       key: '2026/08/opaque.png',
       size: contents.length,
     });
+    expect(opened.contentLength).toBe(contents.length);
     expect(Buffer.concat(chunks)).toEqual(contents);
+  });
+
+  it('stats without streaming and opens only the requested byte interval', async () => {
+    const source = join(testRoot, 'source.mp4');
+    await writeFile(source, Buffer.from('0123456789'));
+    const stored = await provider.put({
+      sourcePath: source,
+      key: '2026/08/opaque.mp4',
+      contentType: 'video/mp4',
+    });
+
+    const metadata = await provider.stat(stored.key);
+    const opened = await provider.open(stored.key, { start: 3, end: 6 });
+    const chunks: Buffer[] = [];
+    for await (const chunk of opened.stream) chunks.push(Buffer.from(chunk));
+
+    expect(metadata.size).toBe(10);
+    expect(metadata.lastModified?.getTime()).toEqual(expect.any(Number));
+    expect(opened.size).toBe(10);
+    expect(opened.contentLength).toBe(4);
+    expect(Buffer.concat(chunks).toString()).toBe('3456');
+  });
+
+  it('rejects an out-of-bounds range before creating a stream', async () => {
+    const source = join(testRoot, 'source.mp4');
+    await writeFile(source, Buffer.from('0123456789'));
+    const stored = await provider.put({
+      sourcePath: source,
+      key: '2026/08/opaque.mp4',
+      contentType: 'video/mp4',
+    });
+
+    await expect(
+      provider.open(stored.key, { start: 8, end: 12 }),
+    ).rejects.toThrow('Rango de objeto inválido');
   });
 
   it('rejects traversal before writing outside its root', async () => {

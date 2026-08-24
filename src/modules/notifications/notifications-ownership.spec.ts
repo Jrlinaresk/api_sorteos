@@ -53,6 +53,15 @@ describe('NotificationsService ownership', () => {
       {} as never,
       subscriptionModel as never,
       {} as never,
+      {
+        providerName: 'web-push',
+        isConfigured: true,
+        getPublicConfiguration: () => ({
+          enabled: true,
+          provider: 'web-push',
+        }),
+        send: jest.fn(),
+      },
     );
     const browserCurve = createECDH('prime256v1');
     browserCurve.generateKeys();

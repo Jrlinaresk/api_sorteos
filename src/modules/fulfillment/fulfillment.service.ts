@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/schemas/notification.schema';
 import { OrderDocument, OrderStatus } from '../orders/schemas/order.schema';
@@ -36,7 +41,10 @@ export class FulfillmentService
   }
 
   async onPaymentPaid(event: PaymentLifecycleEvent) {
-    const order = await this.orders.markPaidByPayment(event.paymentId, new Date());
+    const order = await this.orders.markPaidByPayment(
+      event.paymentId,
+      new Date(),
+    );
     if (!order) return;
 
     await this.prizes.awardForPaidOrder(order._id);
@@ -51,15 +59,22 @@ export class FulfillmentService
   async onPaymentCancelled(event: PaymentLifecycleEvent) {
     const order = await this.orders.markPaymentCancelled(
       event.paymentId,
-      event.status === PaymentStatus.Expired ? OrderStatus.Expired : OrderStatus.Cancelled,
+      event.status === PaymentStatus.Expired
+        ? OrderStatus.Expired
+        : OrderStatus.Cancelled,
       `Pago ${event.status}`,
     );
     if (!order) return;
     await this.referrals
       .reverseOrder(order.publicId, `Pedido ${order.status}`)
-      .catch((error: unknown) => this.logNonCritical('referido cancelado', error));
+      .catch((error: unknown) =>
+        this.logNonCritical('referido cancelado', error),
+      );
     await this.notify(order, {
-      title: event.status === PaymentStatus.Expired ? 'Reserva vencida' : 'Pedido cancelado',
+      title:
+        event.status === PaymentStatus.Expired
+          ? 'Reserva vencida'
+          : 'Pedido cancelado',
       body: 'Las cuotas reservadas fueron liberadas.',
       type: NotificationType.Order,
     });
@@ -67,10 +82,11 @@ export class FulfillmentService
 
   async onPaymentRefunded(event: PaymentLifecycleEvent) {
     if (event.status !== PaymentStatus.Refunded) return;
-    const order: OrderDocument | null = (await this.orders.markRefundedByPayment(
-      event.paymentId,
-      'Devolución total confirmada por el proveedor',
-    )) as OrderDocument | null;
+    const order: OrderDocument | null =
+      (await this.orders.markRefundedByPayment(
+        event.paymentId,
+        'Devolución total confirmada por el proveedor',
+      )) as OrderDocument | null;
     if (!order) return;
     await this.prizes.reverseForOrder(order._id);
     await this.referrals.reverseOrder(order.publicId, 'Pedido reembolsado');
@@ -91,6 +107,9 @@ export class FulfillmentService
         referralCode,
         clickId,
         buyerUserId: order.user?.toString(),
+        buyerPhone: order.buyer.phone,
+        buyerEmail: order.buyer.email,
+        buyerCpf: order.buyer.cpf,
         campaignId: order.campaign.toString(),
         orderAmount: order.total,
         commissionBase: order.subtotal,
@@ -111,7 +130,10 @@ export class FulfillmentService
       .create({
         userId: order.user.toString(),
         ...message,
-        data: { orderId: order.publicId, campaignId: order.campaign.toString() },
+        data: {
+          orderId: order.publicId,
+          campaignId: order.campaign.toString(),
+        },
         actionUrl: `/pedidos/${order.publicId}`,
         deliverPush: true,
       })

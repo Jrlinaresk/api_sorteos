@@ -206,8 +206,8 @@ export class OrderAccessService {
             $or: [{ user: { $exists: false } }, { user: null }],
           })
           .select('+accessSecret')
+          .select('-titleNumbers -quotas -instantPrizes -statusHistory')
           .populate('campaign', 'name slug status prizeTitle media imageUrl')
-          .populate('quotas', 'number status isBonus instantPrize paidAt')
           .populate(
             'payment',
             'status provider txid amount currency qrCode qrCodeImage pixCopyPaste checkoutUrl expiresAt paidAt cancelledAt refundedAt refundedAmount createdAt updatedAt',

@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsOptional,
+  IsMongoId,
   IsString,
   Matches,
   MaxLength,
@@ -29,8 +30,7 @@ export class CaptureReferralClickDto {
     description: 'Necesario cuando el código está restringido a una campaña',
   })
   @IsOptional()
-  @IsString()
-  @MaxLength(120)
+  @IsMongoId()
   campaignId?: string;
 
   @ApiPropertyOptional()

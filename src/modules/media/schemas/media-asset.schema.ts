@@ -5,6 +5,7 @@ import { MediaKind, SAFE_MEDIA_TYPES } from '../media-types';
 export enum MediaAssetStatus {
   Active = 'active',
   Deleted = 'deleted',
+  Purging = 'purging',
 }
 
 export type MediaAssetDocument = HydratedDocument<MediaAsset>;
@@ -54,6 +55,12 @@ export class MediaAsset {
 
   @Prop({ type: Types.ObjectId, ref: 'User' })
   deletedBy?: Types.ObjectId;
+
+  @Prop()
+  purgeRequestedAt?: Date;
+
+  @Prop({ type: Types.ObjectId, ref: 'User' })
+  purgeRequestedBy?: Types.ObjectId;
 
   createdAt: Date;
   updatedAt: Date;
