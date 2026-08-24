@@ -1,4 +1,4 @@
-import sanitizeHtml = require('sanitize-html');
+import * as sanitizeHtml from 'sanitize-html';
 
 const ALLOWED_TAGS = [
   'p',

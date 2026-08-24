@@ -12,15 +12,29 @@ export enum PrizeAwardStatus {
   Reversed = 'reversed',
 }
 
-@Schema({ timestamps: true, collection: 'prize_awards', optimisticConcurrency: true })
+@Schema({
+  timestamps: true,
+  collection: 'prize_awards',
+  optimisticConcurrency: true,
+})
 export class PrizeAward {
-  @Prop({ required: true, unique: true, index: true, default: () => randomUUID() })
+  @Prop({
+    required: true,
+    unique: true,
+    index: true,
+    default: () => randomUUID(),
+  })
   publicId: string;
 
   @Prop({ type: Types.ObjectId, ref: 'Raffle', required: true, index: true })
   campaign: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'InstantPrize', required: true, index: true })
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'InstantPrize',
+    required: true,
+    index: true,
+  })
   prize: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, ref: 'Order', required: true, index: true })

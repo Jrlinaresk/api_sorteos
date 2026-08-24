@@ -14,7 +14,12 @@ export class MyProfileController {
   constructor(private readonly users: UsersService) {}
 
   @Patch()
-  async update(@CurrentUser() user: PublicUserDto, @Body() dto: UpdateMyProfileDto) {
-    return this.users.toPublicUser(await this.users.updateProfile(user.id, dto));
+  async update(
+    @CurrentUser() user: PublicUserDto,
+    @Body() dto: UpdateMyProfileDto,
+  ) {
+    return this.users.toPublicUser(
+      await this.users.updateProfile(user.id, dto),
+    );
   }
 }

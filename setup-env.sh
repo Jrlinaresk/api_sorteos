@@ -100,7 +100,6 @@ set_value EMAIL_CODE_SECRET "$(random_secret)"
 set_value CHECKOUT_ACCESS_SECRET_KEY "$(random_secret)"
 set_value ORDER_ACCESS_CODE_SECRET "$(random_secret)"
 set_value PAYMENTS_PUBLIC_SECRET_KEY "$(random_secret)"
-set_value EFI_WEBHOOK_HMAC "$(random_secret)"
 set_value REFERRAL_IP_HASH_SECRET "$(random_secret)"
 
 if [[ "${development_mode}" == true ]]; then
@@ -113,6 +112,14 @@ if [[ "${development_mode}" == true ]]; then
   set_value PAYMENTS_ALLOW_MOCK true
   set_value EFI_PIX_ENV sandbox
   set_value EFI_PIX_CERTIFICATE_PATH ''
+  set_value EFI_WEBHOOK_HMAC ''
+  set_value EFI_WEBHOOK_REQUIRE_MTLS false
+else
+  # Efí autentica su webhook nativo mediante certificado cliente. Un token en
+  # cabecera solo es válido como defensa adicional cuando un gateway confiable
+  # lo inyecta; no puede sustituir mTLS en producción.
+  set_value EFI_WEBHOOK_HMAC ''
+  set_value EFI_WEBHOOK_REQUIRE_MTLS true
 fi
 
 chmod 600 "${output_path}"
@@ -122,5 +129,5 @@ printf 'Entorno creado en %s con permisos 0600.\n' "${output_path}"
 if [[ "${development_mode}" == true ]]; then
   printf '%s\n' 'Entorno de desarrollo listo para Docker Compose; los pagos usan el proveedor mock.'
 else
-  printf '%s\n' 'Complete CORS_ORIGINS, SMTP_*, EFI_PIX_* y copie el certificado en runtime/efi antes de desplegar.'
+  printf '%s\n' 'Complete CORS_ORIGINS, SMTP_*, EFI_PIX_*, configure mTLS de Efí en el proxy TLS y copie el certificado en runtime/efi antes de desplegar.'
 fi

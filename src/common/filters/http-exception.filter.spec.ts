@@ -103,8 +103,9 @@ describe('AllExceptionsFilter structured errors', () => {
 
   it('también registra HttpException 5xx y no registra errores esperados 4xx', () => {
     const logger = { error: jest.fn() };
+    const json = jest.fn();
     const response = {
-      status: jest.fn().mockReturnValue({ json: jest.fn() }),
+      status: jest.fn().mockReturnValue({ json }),
       setHeader: jest.fn(),
     };
     const host = httpHost({ method: 'GET', path: '/health' }, response);
@@ -119,5 +120,14 @@ describe('AllExceptionsFilter structured errors', () => {
     );
 
     expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(json.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        statusCode: 500,
+        message: 'Internal server error',
+      }),
+    );
+    expect(JSON.stringify(json.mock.calls[0][0])).not.toContain(
+      'fallo controlado',
+    );
   });
 });

@@ -20,6 +20,15 @@ export class PaymentsWebhookGuard implements CanActivate {
     const isProduction =
       (this.config.get<string>('NODE_ENV') ?? process.env.NODE_ENV) ===
       'production';
+    const provider = this.config
+      .get<string>('PAYMENTS_PROVIDER')
+      ?.toLowerCase();
+
+    if (isProduction && provider === 'efi' && !requireMtls) {
+      throw new UnauthorizedException(
+        'El webhook de Efí requiere certificado mTLS',
+      );
+    }
 
     if (!expectedHmac && !requireMtls) {
       if (!isProduction) return true;

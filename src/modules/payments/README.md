@@ -53,17 +53,19 @@ EFI_PIX_CERTIFICATE_PASSPHRASE=
 # EFI_PIX_KEY_PATH=/run/secrets/efi/private-key.pem
 EFI_PIX_TIMEOUT_MS=15000
 
-# Webhook: activar HMAC, mTLS o ambos en producción
+# Webhook: mTLS es obligatorio con Efí en producción
 EFI_WEBHOOK_HMAC=
 EFI_WEBHOOK_REQUIRE_MTLS=true
 EFI_WEBHOOK_MTLS_HEADER=x-ssl-client-verify
 EFI_WEBHOOK_MTLS_SUCCESS_VALUE=SUCCESS
 ```
 
-Si se usa el secreto HMAC, debe llegar exclusivamente en la cabecera
-`x-efi-webhook-token`, normalmente inyectada por el proxy confiable. Nunca se
-acepta en la URL: los query strings suelen terminar en logs, historiales y
-herramientas de observabilidad. Con Efí, la opción preferida es mTLS en el proxy.
+El proxy TLS debe validar la cadena CA oficial de webhook de Efí, rechazar el
+callback si la verificación no devuelve `SUCCESS` y sobrescribir siempre la
+cabecera mTLS antes de reenviarla a Nest. Si se usa además el secreto HMAC, debe
+llegar exclusivamente en `x-efi-webhook-token`, inyectado por un proxy
+confiable. Nunca se acepta en la URL: los query strings suelen terminar en logs,
+historiales y herramientas de observabilidad. El HMAC no sustituye mTLS.
 
 ## Integridad financiera
 
@@ -80,8 +82,8 @@ herramientas de observabilidad. Con Efí, la opción preferida es mTLS en el pro
   `pending`, `succeeded` y `failed` evitan que solicitudes concurrentes superen
   el saldo aunque usen claves diferentes.
 
-Para evitar que Efí agregue `/pix`, registrar la URL con `?ignorar=`. El
-controller acepta tanto `/webhooks/efi` como `/webhooks/efi/pix`.
+Registre `/api/v1/payments/webhooks/efi`; Efí agrega `/pix` al callback y el
+controller acepta de forma explícita ambas rutas.
 
 ## Referencias oficiales consultadas
 

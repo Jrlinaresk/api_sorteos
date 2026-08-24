@@ -17,6 +17,12 @@ export function validateEnvironment(input: Environment): Environment {
     120,
   );
   validateInteger(
+    environment.ORDER_MAX_ALLOCATED_TITLES,
+    'ORDER_MAX_ALLOCATED_TITLES',
+    1,
+    10_000,
+  );
+  validateInteger(
     environment.ORDER_ACCESS_MAX_ORDERS,
     'ORDER_ACCESS_MAX_ORDERS',
     1,
@@ -114,6 +120,10 @@ export function validateEnvironment(input: Environment): Environment {
   validateBoolean(
     environment.DRAW_CRYPTOGRAPHIC_ENABLED,
     'DRAW_CRYPTOGRAPHIC_ENABLED',
+  );
+  validateBoolean(
+    environment.EFI_WEBHOOK_REQUIRE_MTLS,
+    'EFI_WEBHOOK_REQUIRE_MTLS',
   );
   validateInteger(
     environment.WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER,
@@ -316,8 +326,22 @@ function validatePayments(environment: Environment): void {
 
   const hmac = text(environment.EFI_WEBHOOK_HMAC);
   const requireMtls = text(environment.EFI_WEBHOOK_REQUIRE_MTLS) === 'true';
-  if (!requireMtls && hmac.length < 24) {
-    fail('Configure mTLS o un EFI_WEBHOOK_HMAC de al menos 24 caracteres');
+  if (!requireMtls) {
+    fail('EFI_WEBHOOK_REQUIRE_MTLS=true es obligatorio con Efí en producción');
+  }
+  if (hmac && hmac.length < 24) {
+    fail('EFI_WEBHOOK_HMAC debe tener al menos 24 caracteres si se configura');
+  }
+
+  const mtlsHeader =
+    text(environment.EFI_WEBHOOK_MTLS_HEADER) || 'x-ssl-client-verify';
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(mtlsHeader)) {
+    fail('EFI_WEBHOOK_MTLS_HEADER no es un nombre de cabecera HTTP válido');
+  }
+  const mtlsSuccess =
+    text(environment.EFI_WEBHOOK_MTLS_SUCCESS_VALUE) || 'SUCCESS';
+  if (mtlsSuccess.length > 128 || /[\r\n]/.test(mtlsSuccess)) {
+    fail('EFI_WEBHOOK_MTLS_SUCCESS_VALUE no es válido');
   }
 }
 

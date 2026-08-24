@@ -418,6 +418,61 @@ describe('OrdersService reservations and lifecycle', () => {
   });
 
   it.each([
+    {
+      label: 'reabre ventas si las ventanas siguen vigentes',
+      closesAt: new Date(Date.now() + 60 * 60_000),
+      drawDate: new Date(Date.now() + 2 * 60 * 60_000),
+      expected: CampaignStatus.Active,
+    },
+    {
+      label: 'queda vencida si ya no existe una ventana de venta segura',
+      closesAt: new Date(Date.now() - 60_000),
+      drawDate: new Date(Date.now() + 60 * 60_000),
+      expected: CampaignStatus.Expired,
+    },
+  ])(
+    'un reembolso desde awaiting_draw $label',
+    async ({ closesAt, drawDate, expected }) => {
+      const paymentId = new Types.ObjectId();
+      const campaignId = new Types.ObjectId();
+      const order = plainDocument({
+        _id: new Types.ObjectId(),
+        campaign: campaignId,
+        status: OrderStatus.Paid,
+        allocatedQuantity: 2,
+        titleNumbers: ['01', '02'],
+        statusHistory: [],
+      });
+      const campaign = plainDocument({
+        _id: campaignId,
+        status: CampaignStatus.AwaitingDraw,
+        soldCount: 10,
+        reservedCount: 0,
+        totalTitles: 10,
+        closesAt,
+        drawDate,
+        salesClosedAt: new Date(),
+      });
+      orderModel.findOne = jest.fn().mockReturnValue(executable(order));
+      campaignModel.findById.mockReturnValue(executable(campaign));
+      quotaModel.updateMany.mockResolvedValue({ modifiedCount: 2 });
+
+      const result = await service.markRefundedByPayment(
+        paymentId,
+        'devolución administrativa',
+      );
+
+      expect(campaign.soldCount).toBe(8);
+      expect(campaign.status).toBe(expected);
+      expect(campaign.salesClosedAt).toBeUndefined();
+      expect(order.status).toBe(OrderStatus.Refunded);
+      expect(result).toBe(order);
+      expect(campaign.save).toHaveBeenCalledWith({ session });
+      expect(order.save).toHaveBeenCalledWith({ session });
+    },
+  );
+
+  it.each([
     [OrderStatus.Expired, false],
     [OrderStatus.Cancelled, true],
   ])(
@@ -497,6 +552,13 @@ describe('OrdersService reservations and lifecycle', () => {
       .mockRejectedValueOnce(new Error('concurrent update'));
 
     await expect(service.releaseExpiredReservations()).resolves.toBe(2);
+    expect(orderModel.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: {
+          $in: [OrderStatus.Reserved, OrderStatus.PendingPayment],
+        },
+      }),
+    );
     expect(release).toHaveBeenNthCalledWith(
       1,
       expired[0]._id,

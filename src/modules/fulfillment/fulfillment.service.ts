@@ -165,7 +165,14 @@ export class FulfillmentService
   }
 
   private logNonCritical(context: string, error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    this.logger.warn(`No se completó ${context}: ${message}`);
+    const label =
+      error instanceof HttpException
+        ? `${error.name}:http-${error.getStatus()}`
+        : error instanceof Error
+          ? error.name
+          : 'UnknownError';
+    this.logger.warn(
+      `No se completó ${context} (${label.replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 80) || 'UnknownError'})`,
+    );
   }
 }

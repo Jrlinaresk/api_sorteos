@@ -48,4 +48,21 @@ describe('PaymentsWebhookGuard', () => {
     expect(() => mtls.canActivate(context())).toThrow(UnauthorizedException);
     expect(mtls.canActivate(context({ 'x-client-verified': 'OK' }))).toBe(true);
   });
+
+  it('no permite que un HMAC sustituya mTLS con Efí en producción', () => {
+    const instance = guard({
+      NODE_ENV: 'production',
+      PAYMENTS_PROVIDER: 'efi',
+      EFI_WEBHOOK_HMAC: 'header-only-secret-long-enough',
+      EFI_WEBHOOK_REQUIRE_MTLS: 'false',
+    });
+
+    expect(() =>
+      instance.canActivate(
+        context({
+          'x-efi-webhook-token': 'header-only-secret-long-enough',
+        }),
+      ),
+    ).toThrow(UnauthorizedException);
+  });
 });

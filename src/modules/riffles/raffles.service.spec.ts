@@ -305,6 +305,8 @@ describe('RafflesService domain rules', () => {
         currency: 'BRL',
         promotion: { quantity: 100, totalPrice: 7.99, label: 'Oferta' },
         doubleChanceMultiplier: 3,
+        maxSelectableQuantity: 500,
+        maxAllocatedTitles: 2_000,
       });
     });
 
@@ -346,6 +348,49 @@ describe('RafflesService domain rules', () => {
       input.minimumOrderAmount = 8;
       expect(() => service.calculatePrice(input, 100)).toThrow(
         'La compra mínima es BRL 8.00',
+      );
+    });
+
+    it('aplica en quote el límite operativo sobre cuotas pagadas y bonus', () => {
+      const previous = process.env.ORDER_MAX_ALLOCATED_TITLES;
+      process.env.ORDER_MAX_ALLOCATED_TITLES = '2000';
+      try {
+        const input = campaign();
+        input.maxTitlesPerOrder = 1_000;
+        input.doubleChance = { enabled: true, multiplier: 3 };
+
+        expect(() => service.calculatePrice(input, 667)).toThrow(
+          'más de 2000 títulos, incluidos los bonus',
+        );
+        expect(service.calculatePrice(input, 666)).toEqual(
+          expect.objectContaining({
+            allocatedQuantity: 1_998,
+            maxSelectableQuantity: 666,
+            maxAllocatedTitles: 2_000,
+          }),
+        );
+      } finally {
+        if (previous === undefined)
+          delete process.env.ORDER_MAX_ALLOCATED_TITLES;
+        else process.env.ORDER_MAX_ALLOCATED_TITLES = previous;
+      }
+    });
+
+    it('no cotiza más títulos asignados que el stock que checkout puede reservar', () => {
+      const input = campaign();
+      input.totalTitles = 100;
+      input.soldCount = 94;
+      input.reservedCount = 2;
+      input.doubleChance = { enabled: true, multiplier: 2 };
+
+      expect(() => service.calculatePrice(input, 3)).toThrow(
+        'No quedan suficientes cuotas disponibles',
+      );
+      expect(service.calculatePrice(input, 2)).toEqual(
+        expect.objectContaining({
+          allocatedQuantity: 4,
+          maxSelectableQuantity: 2,
+        }),
       );
     });
   });
@@ -406,6 +451,47 @@ describe('RafflesService domain rules', () => {
         true,
       );
       expect(view.isPurchasable).toBe(false);
+    });
+
+    it('publica sugerencias y promociones solo dentro del límite efectivo con bonus', () => {
+      const previous = process.env.ORDER_MAX_ALLOCATED_TITLES;
+      process.env.ORDER_MAX_ALLOCATED_TITLES = '2';
+      try {
+        const view = (service as any).toPublicView(
+          {
+            _id: new Types.ObjectId(),
+            status: CampaignStatus.Active,
+            totalTitles: 100,
+            soldCount: 0,
+            reservedCount: 0,
+            maxTitlesPerOrder: 10,
+            quantitySuggestions: [1, 2],
+            promotionTiers: [
+              { quantity: 1, totalPrice: 1, active: true },
+              { quantity: 2, totalPrice: 2, active: true },
+            ],
+            doubleChance: { enabled: true, multiplier: 2 },
+            media: [],
+            regulationHistory: [],
+          },
+          true,
+        );
+
+        expect(view.maxTitlesPerOrder).toBe(1);
+        expect(view.quantitySuggestions).toEqual([1]);
+        expect(view.promotionTiers).toEqual([
+          expect.objectContaining({ quantity: 1 }),
+        ]);
+        expect(view.purchaseLimits).toEqual({
+          maxSelectedTitles: 1,
+          maxAllocatedTitles: 2,
+          allocationMultiplier: 2,
+        });
+      } finally {
+        if (previous === undefined)
+          delete process.env.ORDER_MAX_ALLOCATED_TITLES;
+        else process.env.ORDER_MAX_ALLOCATED_TITLES = previous;
+      }
     });
 
     it('no activa una campaña Federal sin concurso fijado', async () => {
@@ -520,11 +606,90 @@ describe('RafflesService domain rules', () => {
       expect(raffleModel.updateMany).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({
+          status: { $in: [CampaignStatus.Active, CampaignStatus.Open] },
+          closesAt: { $lte: at },
+          $expr: { $lt: ['$soldCount', '$totalTitles'] },
+        }),
+        { $set: { status: CampaignStatus.Expired } },
+      );
+      expect(raffleModel.updateMany).toHaveBeenNthCalledWith(
+        3,
+        expect.objectContaining({
           status: CampaignStatus.SoldOut,
           $expr: { $eq: ['$soldCount', '$totalTitles'] },
           reservedCount: 0,
         }),
         { $set: { status: CampaignStatus.AwaitingDraw } },
+      );
+    });
+
+    it('prorroga con CAS una campaña vencida parcial y conserva actor y motivo', async () => {
+      const campaignId = new Types.ObjectId();
+      const actorId = new Types.ObjectId();
+      const previousClosesAt = new Date(Date.now() - 60_000);
+      const closesAt = new Date(Date.now() + 60 * 60_000);
+      const drawDate = new Date(Date.now() + 2 * 60 * 60_000);
+      const campaign = {
+        _id: campaignId,
+        __v: 4,
+        status: CampaignStatus.Expired,
+        closesAt: previousClosesAt,
+        drawDate,
+        launchAt: new Date(Date.now() - 2 * 60 * 60_000),
+        soldCount: 40,
+        reservedCount: 0,
+        totalTitles: 100,
+        drawMethod: DrawMethod.ManualExternal,
+        regulationHtml: '<p>Reglas</p>',
+        regulationHistory: [
+          {
+            version: '1',
+            html: '<p>Reglas</p>',
+            sha256: createHash('sha256').update('<p>Reglas</p>').digest('hex'),
+          },
+        ],
+        termsVersion: '1',
+      } as any;
+      raffleModel.findById.mockReturnValue({
+        exec: jest.fn().mockResolvedValue(campaign),
+      });
+      raffleModel.findOneAndUpdate.mockResolvedValue({
+        ...campaign,
+        status: CampaignStatus.Active,
+      });
+
+      await service.extendExpiredCampaign(
+        campaignId.toString(),
+        { closesAt: closesAt.toISOString(), reason: ' Demanda comprobada ' },
+        actorId.toString(),
+      );
+
+      expect(raffleModel.findOneAndUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          _id: campaignId,
+          __v: 4,
+          status: CampaignStatus.Expired,
+          closesAt: previousClosesAt,
+        }),
+        expect.objectContaining({
+          $set: { status: CampaignStatus.Active, closesAt },
+          $unset: { salesClosedAt: 1 },
+          $push: {
+            lifecycleExtensions: expect.objectContaining({
+              $each: [
+                expect.objectContaining({
+                  previousClosesAt,
+                  closesAt,
+                  reason: 'Demanda comprobada',
+                  extendedBy: actorId,
+                }),
+              ],
+              $slice: -50,
+            }),
+          },
+          $inc: { contractRevision: 1, __v: 1 },
+        }),
+        { new: true, runValidators: true },
       );
     });
 

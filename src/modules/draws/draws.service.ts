@@ -3,11 +3,12 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'crypto';
-import { Connection, Model, Types } from 'mongoose';
+import { ClientSession, Connection, Model, Types } from 'mongoose';
 import { VerifyFederalDrawDto } from './dto/verify-federal-draw.dto';
 import { VerifyManualDrawDto } from './dto/verify-manual-draw.dto';
 import {
@@ -30,11 +31,46 @@ import {
   QuotaDocument,
   QuotaStatus,
 } from '../orders/schemas/quota.schema';
-import { Order, OrderDocument } from '../orders/schemas/order.schema';
+import {
+  Order,
+  OrderDocument,
+  OrderStatus,
+} from '../orders/schemas/order.schema';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/schemas/notification.schema';
 import { CaixaFederalLotteryService } from './caixa-federal-lottery.service';
 import { EntropyBeaconService } from './entropy-beacon.service';
+import { MainPrizeAwardsService } from '../main-awards/main-prize-awards.service';
+import { PaymentStatus } from '../payments/payment.enums';
+import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
+import {
+  RefundOperation,
+  RefundOperationDocument,
+  RefundOperationStatus,
+} from '../payments/schemas/refund-operation.schema';
+
+const FINANCIALLY_UNSETTLED_ORDER_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.Reserved,
+  OrderStatus.PendingPayment,
+  OrderStatus.InReview,
+  OrderStatus.Disputed,
+];
+
+const FINANCIALLY_UNSETTLED_PAYMENT_STATUSES: readonly PaymentStatus[] = [
+  PaymentStatus.Created,
+  PaymentStatus.Pending,
+  PaymentStatus.Active,
+  PaymentStatus.UnderReview,
+  PaymentStatus.RefundPending,
+  PaymentStatus.PartiallyRefunded,
+  PaymentStatus.Disputed,
+  PaymentStatus.Chargeback,
+];
+
+const PENDING_REFUND_OPERATION_STATUSES = [
+  RefundOperationStatus.Pending,
+  'processing',
+];
 
 @Injectable()
 export class DrawsService {
@@ -47,11 +83,17 @@ export class DrawsService {
     private readonly quotaModel: Model<QuotaDocument>,
     @InjectModel(Order.name)
     private readonly orderModel: Model<OrderDocument>,
+    @InjectModel(Payment.name)
+    private readonly paymentModel: Model<PaymentDocument>,
+    @InjectModel(RefundOperation.name)
+    private readonly refundOperationModel: Model<RefundOperationDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly notifications: NotificationsService,
     private readonly caixaFederal: CaixaFederalLotteryService,
     private readonly entropyBeacon: EntropyBeaconService,
     private readonly config: ConfigService,
+    @Optional()
+    private readonly mainPrizeAwards?: MainPrizeAwardsService,
   ) {}
 
   async commitCryptographic(
@@ -289,6 +331,7 @@ export class DrawsService {
     let published: DrawResultDocument | undefined;
     let campaignSlug: string | undefined;
     let notifyWinner = false;
+    let mainAwardId: string | undefined;
     try {
       await session.withTransaction(async () => {
         const result = await this.resultModel
@@ -328,6 +371,22 @@ export class DrawsService {
         if (!campaign) throw new NotFoundException('Campaña no encontrada');
 
         if (result.status === DrawResultStatus.Verified) {
+          if (
+            campaign.status !== CampaignStatus.AwaitingDraw ||
+            campaign.soldCount !== campaign.totalTitles ||
+            (campaign.reservedCount || 0) !== 0
+          ) {
+            throw new ConflictException(
+              'El resultado no puede publicarse sin el 100% de títulos pagados y sin reservas',
+            );
+          }
+          await this.assertFinanciallySettled(campaign._id, session);
+          await this.assertWinningOutcomeEligible(
+            campaign._id,
+            result.outcomes[0],
+            session,
+            true,
+          );
           result.status = DrawResultStatus.Published;
           result.publishedBy = new Types.ObjectId(actorId);
           result.publishedAt = new Date();
@@ -351,6 +410,14 @@ export class DrawsService {
           campaign.federalLottery.sourceUrl = result.sourceUrl;
           campaign.federalLottery.publishedAt = result.sourcePublishedAt;
         }
+        if (this.mainPrizeAwards) {
+          const award = await this.mainPrizeAwards.ensureForPublishedResult(
+            result,
+            campaign,
+            session,
+          );
+          mainAwardId = award._id.toString();
+        }
         await campaign.save({ session });
         campaignSlug = campaign.slug;
         published = result;
@@ -363,7 +430,9 @@ export class DrawsService {
       throw new ConflictException('No se pudo publicar el resultado');
     }
     const main = published.outcomes[0];
-    if (notifyWinner && main.user) {
+    if (mainAwardId && this.mainPrizeAwards) {
+      await this.mainPrizeAwards.tryNotifyAward(mainAwardId);
+    } else if (notifyWinner && main.user) {
       await this.notifications
         .create({
           userId: main.user.toString(),
@@ -459,6 +528,7 @@ export class DrawsService {
         'El resultado no puede verificarse con cuotas aún reservadas',
       );
     }
+    await this.assertFinanciallySettled(campaign._id);
     return campaign;
   }
 
@@ -484,6 +554,7 @@ export class DrawsService {
             'El resultado ya fue verificado y no puede sustituirse',
           );
         }
+        await this.assertFinanciallySettled(campaign._id, session);
         const inputs = [
           {
             position: 1,
@@ -502,28 +573,21 @@ export class DrawsService {
         }> = [];
         for (const input of inputs) {
           this.assertNumberInCampaign(campaign, input.winningNumber);
-          const quota = await this.quotaModel
-            .findOne({
-              campaign: campaign._id,
-              number: input.winningNumber,
-              status: { $in: [QuotaStatus.Paid, QuotaStatus.Awarded] },
-            })
-            .session(session)
-            .lean();
-          const order = quota?.order
-            ? ((await this.orderModel
-                .findById(quota.order)
-                .session(session)
-                .lean()) as OrderDocument | null)
-            : null;
+          const { quota, order } = await this.assertWinningOutcomeEligible(
+            campaign._id,
+            { winningNumber: input.winningNumber },
+            session,
+            true,
+          );
           outcomes.push({
             ...input,
-            quota: quota?._id,
-            order: quota?.order,
-            user: quota?.user,
-            winnerSnapshot: order
-              ? { name: order.buyer.name, phone: order.buyer.phone }
-              : undefined,
+            quota: quota._id,
+            order: order._id,
+            user: quota.user,
+            winnerSnapshot: {
+              name: order.buyer.name,
+              phone: order.buyer.phone,
+            },
           });
         }
         const payload = {
@@ -551,6 +615,233 @@ export class DrawsService {
     if (!stored)
       throw new ConflictException('No se pudo verificar el resultado');
     return stored;
+  }
+
+  private async assertFinanciallySettled(
+    campaignId: Types.ObjectId,
+    session?: ClientSession,
+  ): Promise<void> {
+    const orderQuery = this.orderModel
+      .findOne({
+        campaign: campaignId,
+        status: { $in: FINANCIALLY_UNSETTLED_ORDER_STATUSES },
+      })
+      .select('_id status');
+    if (session) orderQuery.session(session);
+    const unsettledOrder = await orderQuery.lean().exec();
+    if (unsettledOrder) {
+      throw new ConflictException(
+        'El sorteo está bloqueado por pedidos con liquidación pendiente o en revisión',
+      );
+    }
+
+    const paymentQuery = this.paymentModel
+      .findOne({
+        campaign: campaignId,
+        $or: [
+          { status: { $in: FINANCIALLY_UNSETTLED_PAYMENT_STATUSES } },
+          { refundReservedAmountCents: { $gt: 0 } },
+          { 'providerRefunds.status': PaymentStatus.RefundPending },
+          { 'refunds.status': PaymentStatus.RefundPending },
+        ],
+      })
+      .select('_id status');
+    if (session) paymentQuery.session(session);
+    const unsettledPayment = await paymentQuery.lean().exec();
+    if (unsettledPayment) {
+      throw new ConflictException(
+        'El sorteo está bloqueado por pagos no conciliados, disputados o con devolución pendiente',
+      );
+    }
+
+    const pendingRefundQuery = this.refundOperationModel.aggregate([
+      {
+        $match: {
+          status: { $in: PENDING_REFUND_OPERATION_STATUSES },
+        },
+      },
+      {
+        $lookup: {
+          from: 'payments',
+          localField: 'payment',
+          foreignField: '_id',
+          as: 'paymentDocument',
+        },
+      },
+      { $unwind: '$paymentDocument' },
+      { $match: { 'paymentDocument.campaign': campaignId } },
+      { $limit: 1 },
+      { $project: { _id: 1 } },
+    ]);
+    if (session) pendingRefundQuery.session(session);
+    const pendingRefund = await pendingRefundQuery.exec();
+    if (pendingRefund.length) {
+      throw new ConflictException(
+        'El sorteo está bloqueado por una devolución Pix aún en procesamiento',
+      );
+    }
+  }
+
+  private async assertWinningOutcomeEligible(
+    campaignId: Types.ObjectId,
+    outcome: {
+      winningNumber: string;
+      quota?: Types.ObjectId;
+      order?: Types.ObjectId;
+      user?: Types.ObjectId;
+    },
+    session: ClientSession,
+    lockFinancialState: boolean,
+  ): Promise<{
+    quota: QuotaDocument;
+    order: OrderDocument;
+    payment: PaymentDocument;
+  }> {
+    const quotaQuery = outcome.quota
+      ? this.quotaModel.findOne({
+          _id: outcome.quota,
+          campaign: campaignId,
+          number: outcome.winningNumber,
+          status: { $in: [QuotaStatus.Paid, QuotaStatus.Awarded] },
+        })
+      : this.quotaModel.findOne({
+          campaign: campaignId,
+          number: outcome.winningNumber,
+          status: { $in: [QuotaStatus.Paid, QuotaStatus.Awarded] },
+        });
+    const quota = await quotaQuery.session(session).exec();
+    if (
+      !quota?.order ||
+      (outcome.order && quota.order.toString() !== outcome.order.toString()) ||
+      (outcome.user && quota.user?.toString() !== outcome.user.toString())
+    ) {
+      throw new ConflictException(
+        'La cuota ganadora ya no pertenece al pedido verificado',
+      );
+    }
+
+    const order = await this.orderModel
+      .findById(quota.order)
+      .select('+prizeLifecycleVersion')
+      .session(session)
+      .exec();
+    if (
+      !order ||
+      order.status !== OrderStatus.Paid ||
+      !order.payment ||
+      order.campaign.toString() !== campaignId.toString()
+    ) {
+      throw new ConflictException(
+        'El pedido de la cuota ganadora ya no está pagado o elegible',
+      );
+    }
+
+    const payment = await this.paymentModel
+      .findById(order.payment)
+      .session(session)
+      .exec();
+    if (
+      !payment ||
+      payment.status !== PaymentStatus.Paid ||
+      payment.order.toString() !== order._id.toString() ||
+      payment.campaign.toString() !== campaignId.toString() ||
+      (payment.refundedAmountCents ?? 0) > 0 ||
+      (payment.refundReservedAmountCents ?? 0) > 0 ||
+      payment.providerRefunds?.some((refund) =>
+        [PaymentStatus.RefundPending, PaymentStatus.Refunded].includes(
+          refund.status,
+        ),
+      ) ||
+      payment.refunds?.some((refund) =>
+        [
+          PaymentStatus.RefundPending,
+          PaymentStatus.PartiallyRefunded,
+          PaymentStatus.Refunded,
+        ].includes(refund.status),
+      )
+    ) {
+      throw new ConflictException(
+        'El pago de la cuota ganadora ya no está íntegramente pagado o tiene una devolución',
+      );
+    }
+
+    const pendingRefund = await this.refundOperationModel
+      .findOne({
+        payment: payment._id,
+        status: { $in: PENDING_REFUND_OPERATION_STATUSES },
+      })
+      .session(session)
+      .lean()
+      .exec();
+    if (pendingRefund) {
+      throw new ConflictException(
+        'El pago ganador tiene una devolución Pix aún en procesamiento',
+      );
+    }
+
+    if (lockFinancialState) {
+      const quotaLock = await this.quotaModel.updateOne(
+        {
+          _id: quota._id,
+          order: order._id,
+          campaign: campaignId,
+          number: outcome.winningNumber,
+          status: { $in: [QuotaStatus.Paid, QuotaStatus.Awarded] },
+        },
+        { $inc: { __v: 1 } },
+        { session },
+      );
+      const orderLock = await this.orderModel.updateOne(
+        {
+          _id: order._id,
+          campaign: campaignId,
+          payment: payment._id,
+          status: OrderStatus.Paid,
+        },
+        { $inc: { prizeLifecycleVersion: 1, __v: 1 } },
+        { session },
+      );
+      const paymentLock = await this.paymentModel.updateOne(
+        {
+          _id: payment._id,
+          order: order._id,
+          campaign: campaignId,
+          status: PaymentStatus.Paid,
+          refundedAmountCents: { $in: [0, null] },
+          refundReservedAmountCents: { $in: [0, null] },
+          'providerRefunds.status': {
+            $nin: [PaymentStatus.RefundPending, PaymentStatus.Refunded],
+          },
+          'refunds.status': {
+            $nin: [
+              PaymentStatus.RefundPending,
+              PaymentStatus.PartiallyRefunded,
+              PaymentStatus.Refunded,
+            ],
+          },
+        },
+        { $inc: { __v: 1 } },
+        { session },
+      );
+      if (
+        !this.matchedExactlyOne(quotaLock) ||
+        !this.matchedExactlyOne(orderLock) ||
+        !this.matchedExactlyOne(paymentLock)
+      ) {
+        throw new ConflictException(
+          'El estado financiero del ganador cambió durante la operación; vuelva a conciliar antes de publicar',
+        );
+      }
+    }
+
+    return { quota, order, payment };
+  }
+
+  private matchedExactlyOne(result: {
+    matchedCount?: number;
+    modifiedCount?: number;
+  }): boolean {
+    return (result.matchedCount ?? result.modifiedCount ?? 0) === 1;
   }
 
   private assertFederalTiming(campaign: Raffle, officialDrawAt: Date): void {

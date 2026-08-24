@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Headers, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiHeader, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -50,7 +58,11 @@ export class PrizesController {
     @Headers('x-order-token') orderToken: string,
     @Body() dto: ClaimPrizeDto,
   ) {
-    return this.prizes.claimWithOrderToken(publicId, dto.orderPublicId, orderToken);
+    return this.prizes.claimWithOrderToken(
+      publicId,
+      dto.orderPublicId,
+      orderToken,
+    );
   }
 
   @Get('me/prize-awards')
@@ -63,7 +75,10 @@ export class PrizesController {
   @Post('me/prize-awards/:publicId/claim')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  claim(@Param('publicId') publicId: string, @CurrentUser() user: PublicUserDto) {
+  claim(
+    @Param('publicId') publicId: string,
+    @CurrentUser() user: PublicUserDto,
+  ) {
     return this.prizes.claimAsUser(publicId, user.id);
   }
 }

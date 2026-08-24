@@ -71,4 +71,36 @@ describe('PaymentsService provider creation', () => {
       expect.not.objectContaining({ user: expect.anything() }),
     );
   });
+
+  it('redacta evidencia cruda y metadata del PSP en la vista administrativa', () => {
+    const service = new PaymentsService({} as any, {} as any, {} as any);
+    const view = service.toAdminView({
+      toObject: () => ({
+        _id: new Types.ObjectId(),
+        status: PaymentStatus.Paid,
+        publicSecretHash: 'hash-secreto',
+        providerPayload: { devedor: { cpf: '52998224725' } },
+        webhookPayloads: [{ payload: { chave: 'pix-secreta' } }],
+        statusHistory: [
+          {
+            status: PaymentStatus.Paid,
+            metadata: { payer: 'Maria', cpf: '52998224725' },
+          },
+        ],
+        refunds: [
+          {
+            amount: 10,
+            providerPayload: { cpf: '52998224725' },
+          },
+        ],
+      }),
+    } as never);
+
+    const serialized = JSON.stringify(view);
+    expect(serialized).not.toContain('52998224725');
+    expect(serialized).not.toContain('pix-secreta');
+    expect(serialized).not.toContain('hash-secreto');
+    expect(view.statusHistory).toEqual([{ status: PaymentStatus.Paid }]);
+    expect(view.refunds).toEqual([{ amount: 10 }]);
+  });
 });

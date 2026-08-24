@@ -5,7 +5,9 @@ import { IsBoolean, IsOptional } from 'class-validator';
 import { CreateUserDto } from './create-user.dto';
 
 export class UpdateUserDto extends PartialType(CreateUserDto) {
-  @ApiPropertyOptional({ description: 'Activa o bloquea el acceso de la cuenta' })
+  @ApiPropertyOptional({
+    description: 'Activa o bloquea el acceso de la cuenta',
+  })
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;

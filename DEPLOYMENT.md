@@ -52,7 +52,8 @@ Los datos viven en cuatro volúmenes:
    - `SMTP_HOST`, `SMTP_PORT` y `SMTP_FROM`. Si SMTP requiere autenticación,
      configure juntos `SMTP_USER` y `SMTP_PASS`.
    - `EFI_PIX_CLIENT_ID`, `EFI_PIX_CLIENT_SECRET`, `EFI_PIX_KEY` y el entorno EFI.
-   - Un HMAC de webhook o mTLS. El script genera un HMAC seguro por defecto.
+   - `EFI_WEBHOOK_REQUIRE_MTLS=true` y la cadena CA oficial de webhook de Efí
+     instalada en el proxy TLS. El script activa esta garantía por defecto.
 
 3. Copie el certificado Pix fuera de Git:
 
@@ -119,11 +120,13 @@ el perfil aunque se omita `--with-nginx`; tampoco se usa `--remove-orphans`.
 Así una actualización rutinaria no elimina accidentalmente el proxy que recibe
 tráfico.
 
-Si activa mTLS para el webhook, el proxy que termina TLS debe validar realmente
-el certificado cliente y **sobrescribir** (no reenviar) la cabecera configurada,
-por ejemplo `proxy_set_header x-ssl-client-verify $ssl_client_verify;`. Con HMAC,
-envíe el valor por `x-efi-webhook-token`; evite query params. El access log del
-Nginx incluido omite el query string para no persistir secretos heredados.
+El proxy que termina TLS debe validar el certificado cliente de Efí y
+**sobrescribir** (no reenviar) la cabecera configurada, por ejemplo
+`proxy_set_header x-ssl-client-verify $ssl_client_verify;`. Rechace esa ruta si
+`$ssl_client_verify` no vale `SUCCESS` y elimine la cabecera en el resto de las
+rutas. Un HMAC en `x-efi-webhook-token` es solo una defensa adicional para un
+gateway confiable; no sustituye mTLS. Evite secretos en query params. El access
+log del Nginx incluido omite el query string para no persistirlos.
 
 Swagger está deshabilitado por defecto en producción. Si se habilita de forma
 temporal, su ruta es `/api/docs`.
@@ -144,7 +147,8 @@ La aplicación se niega a iniciar si falta alguna garantía esencial:
   ocupen disco.
 - El proveedor de producción es EFI, sus credenciales están presentes y el
   certificado existe dentro del contenedor.
-- El webhook tiene `EFI_WEBHOOK_HMAC` de al menos 24 caracteres o mTLS activo.
+- El webhook tiene `EFI_WEBHOOK_REQUIRE_MTLS=true`. Si además se configura
+  `EFI_WEBHOOK_HMAC`, debe tener al menos 24 caracteres y llegar desde el proxy.
 
 Web Push es opcional y se selecciona explícitamente con
 `NOTIFICATION_PUSH_PROVIDER=noop|webpush`. `noop` nunca envía ni se activa por

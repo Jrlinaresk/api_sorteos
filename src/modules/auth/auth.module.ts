@@ -11,7 +11,10 @@ import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
 import { EmailModule } from '../email/email.module';
 import { MongooseModule } from '@nestjs/mongoose';
-import { RefreshSession, RefreshSessionSchema } from './schemas/refresh-session.schema';
+import {
+  RefreshSession,
+  RefreshSessionSchema,
+} from './schemas/refresh-session.schema';
 import { RefreshTokensService } from './refresh-tokens.service';
 import { OptionalJwtAuthGuard } from './guards/optional-jwt-auth.guard';
 
@@ -20,7 +23,9 @@ import { OptionalJwtAuthGuard } from './guards/optional-jwt-auth.guard';
     ConfigModule,
     UsersModule,
     EmailModule,
-    MongooseModule.forFeature([{ name: RefreshSession.name, schema: RefreshSessionSchema }]),
+    MongooseModule.forFeature([
+      { name: RefreshSession.name, schema: RefreshSessionSchema },
+    ]),
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.registerAsync({
       imports: [ConfigModule],

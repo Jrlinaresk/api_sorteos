@@ -23,6 +23,7 @@ import {
 } from '../riffles/schema/raffle.schema';
 import { RafflesService } from '../riffles/raffles.service';
 import { sanitizeCampaignRichText } from '../riffles/utils/campaign-rich-text';
+import { orderMaxAllocatedTitles } from './order-limits';
 import {
   normalizeOrderEmail,
   normalizeOrderPhone,
@@ -37,6 +38,7 @@ const PUBLIC_PARTICIPATION_STATUSES = new Set<CampaignStatus>([
   CampaignStatus.Scheduled,
   CampaignStatus.Active,
   CampaignStatus.Open,
+  CampaignStatus.Expired,
   CampaignStatus.SoldOut,
   CampaignStatus.AwaitingDraw,
   CampaignStatus.Drawn,
@@ -620,13 +622,7 @@ export class OrdersService {
             0,
             campaign.soldCount - order.allocatedQuantity,
           );
-          if (
-            campaign.status === CampaignStatus.SoldOut &&
-            campaign.soldCount + campaign.reservedCount < campaign.totalTitles
-          ) {
-            campaign.status = CampaignStatus.Active;
-            campaign.salesClosedAt = undefined;
-          }
+          this.reopenAfterCapacityReleased(campaign);
           await campaign.save({ session });
         }
         order.status = OrderStatus.Refunded;
@@ -878,11 +874,7 @@ export class OrdersService {
     const expired = await this.orderModel
       .find({
         status: {
-          $in: [
-            OrderStatus.Reserved,
-            OrderStatus.PendingPayment,
-            OrderStatus.InReview,
-          ],
+          $in: [OrderStatus.Reserved, OrderStatus.PendingPayment],
         },
         paidAt: { $exists: false },
         expiresAt: { $lte: new Date() },
@@ -947,12 +939,7 @@ export class OrdersService {
             0,
             campaign.reservedCount - order.allocatedQuantity,
           );
-          if (
-            campaign.status === CampaignStatus.SoldOut &&
-            campaign.soldCount < campaign.totalTitles
-          ) {
-            campaign.status = CampaignStatus.Active;
-          }
+          this.reopenAfterCapacityReleased(campaign);
           await campaign.save({ session });
         }
         order.status = targetStatus;
@@ -1037,10 +1024,7 @@ export class OrdersService {
   }
 
   private assertAllocationSize(allocatedQuantity: number): void {
-    const configured = Number(process.env.ORDER_MAX_ALLOCATED_TITLES || 2_000);
-    const hardLimit = Number.isSafeInteger(configured)
-      ? Math.min(10_000, Math.max(1, configured))
-      : 2_000;
+    const hardLimit = orderMaxAllocatedTitles();
     if (
       !Number.isSafeInteger(allocatedQuantity) ||
       allocatedQuantity < 1 ||
@@ -1050,6 +1034,31 @@ export class OrdersService {
         `La compra no puede asignar más de ${hardLimit} títulos`,
       );
     }
+  }
+
+  /**
+   * Un reembolso o liberación no puede dejar estados de cierre sorteables con
+   * aforo incompleto. Solo reabre ventas si sus ventanas siguen vigentes.
+   */
+  private reopenAfterCapacityReleased(campaign: Raffle): void {
+    if (
+      ![CampaignStatus.SoldOut, CampaignStatus.AwaitingDraw].includes(
+        campaign.status,
+      ) ||
+      campaign.soldCount + campaign.reservedCount >= campaign.totalTitles
+    ) {
+      return;
+    }
+    const now = new Date();
+    const launchReached =
+      !campaign.launchAt || new Date(campaign.launchAt) <= now;
+    const closingFuture =
+      !campaign.closesAt || new Date(campaign.closesAt) > now;
+    const drawFuture = !campaign.drawDate || new Date(campaign.drawDate) > now;
+    campaign.status = launchReached && closingFuture && drawFuture
+      ? CampaignStatus.Active
+      : CampaignStatus.Expired;
+    campaign.salesClosedAt = undefined;
   }
 
   private createAccessToken(dto: CreateOrderDto): string {
@@ -1127,9 +1136,9 @@ export class OrdersService {
   private isDuplicateKeyError(error: unknown): boolean {
     return Boolean(
       error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        (error as { code?: number }).code === 11000,
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: number }).code === 11000,
     );
   }
 

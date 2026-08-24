@@ -2,7 +2,6 @@
 import {
   Injectable,
   ConflictException,
-  InternalServerErrorException,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
@@ -24,8 +23,16 @@ export class CategoriesService {
     if (exists) throw new ConflictException(CategoryMessages.NAME_CONFLICT);
     try {
       return await this.categoryModel.create(dto);
-    } catch (err) {
-      throw new InternalServerErrorException(err.message);
+    } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        (error as { code?: number }).code === 11000
+      ) {
+        throw new ConflictException(CategoryMessages.NAME_CONFLICT);
+      }
+      throw error;
     }
   }
 

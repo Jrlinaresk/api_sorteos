@@ -18,7 +18,11 @@ export enum InstantPrizeStatus {
   Cancelled = 'cancelled',
 }
 
-@Schema({ timestamps: true, collection: 'instant_prizes', optimisticConcurrency: true })
+@Schema({
+  timestamps: true,
+  collection: 'instant_prizes',
+  optimisticConcurrency: true,
+})
 export class InstantPrize {
   @Prop({ type: Types.ObjectId, ref: 'Raffle', required: true, index: true })
   campaign: Types.ObjectId;
@@ -56,7 +60,11 @@ export class InstantPrize {
   @Prop({ min: 0, default: 1 })
   weight: number;
 
-  @Prop({ enum: Object.values(InstantPrizeStatus), default: InstantPrizeStatus.Active, index: true })
+  @Prop({
+    enum: Object.values(InstantPrizeStatus),
+    default: InstantPrizeStatus.Active,
+    index: true,
+  })
   status: InstantPrizeStatus;
 
   @Prop({ type: Types.ObjectId, ref: 'Order', index: true })

@@ -54,10 +54,7 @@ export class CheckoutService
     const reserved = (await this.orders.createReservation(
       dto,
       authenticatedUserId,
-    )) as Record<
-      string,
-      any
-    >;
+    )) as Record<string, any>;
     const orderId = this.objectIdOf(reserved.internalId ?? reserved._id);
     const publicId = String(reserved.publicId ?? reserved.id);
     const orderAccessToken = String(reserved.accessToken ?? '');
@@ -140,11 +137,7 @@ export class CheckoutService
     };
   }
 
-  async find(
-    publicId: string,
-    orderAccessToken: string,
-    userId?: string,
-  ) {
+  async find(publicId: string, orderAccessToken: string, userId?: string) {
     return {
       order: await this.orders.findByPublicId(
         publicId,

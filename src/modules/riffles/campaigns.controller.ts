@@ -32,6 +32,8 @@ export class CampaignsController {
   @Post(':slug/quote')
   @ApiOperation({
     summary: 'Calcula en servidor el precio y las cuotas de una selección',
+    description:
+      'La respuesta aplica el stock vigente y ORDER_MAX_ALLOCATED_TITLES sobre la asignación total, incluidas las cuotas bonus/doble oportunidad; checkout usa la misma regla.',
   })
   async quote(@Param('slug') slug: string, @Body() dto: QuoteCampaignDto) {
     const campaign = await this.campaigns.findPurchasableBySlug(slug);

@@ -9,6 +9,8 @@ export enum CampaignStatus {
   Draft = 'draft',
   Scheduled = 'scheduled',
   Active = 'active',
+  /** Ventas detenidas por vencimiento parcial; requiere prórroga o reembolsos. */
+  Expired = 'expired',
   SoldOut = 'sold_out',
   AwaitingDraw = 'awaiting_draw',
   Drawn = 'drawn',
@@ -80,6 +82,14 @@ export interface RegulationVersion {
   html: string;
   sha256: string;
   publishedAt: Date;
+}
+
+export interface CampaignExtension {
+  previousClosesAt: Date;
+  closesAt: Date;
+  reason: string;
+  extendedAt: Date;
+  extendedBy: Types.ObjectId;
 }
 
 export interface FederalLotteryConfig {
@@ -281,6 +291,21 @@ export class Raffle {
 
   @Prop()
   closesAt?: Date;
+
+  /** Historial acotado de prórrogas excepcionales de campañas vencidas. */
+  @Prop({
+    type: [
+      {
+        previousClosesAt: { type: Date, required: true },
+        closesAt: { type: Date, required: true },
+        reason: { type: String, required: true, maxlength: 500 },
+        extendedAt: { type: Date, required: true },
+        extendedBy: { type: Types.ObjectId, ref: 'User', required: true },
+      },
+    ],
+    default: [],
+  })
+  lifecycleExtensions: CampaignExtension[];
 
   @Prop()
   drawDate?: Date;

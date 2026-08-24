@@ -214,9 +214,9 @@ export class TransactionalEmailService {
   private isDuplicateKey(error: unknown): boolean {
     return Boolean(
       error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        (error as { code?: number }).code === 11000,
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: number }).code === 11000,
     );
   }
 }

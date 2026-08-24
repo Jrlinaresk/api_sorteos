@@ -46,6 +46,10 @@ import {
 } from '../orders/schemas/quota.schema';
 import { OrdersService } from '../orders/orders.service';
 import { MediaService } from '../media/media.service';
+import {
+  ListAdminPrizeAwardsDto,
+  ListAdminPrizesDto,
+} from './dto/list-admin-prizes.dto';
 
 @Injectable()
 export class PrizesService {
@@ -270,6 +274,106 @@ export class PrizesService {
     return { deleted: true };
   }
 
+  async listAdminPrizes(query: ListAdminPrizesDto) {
+    const filter: Record<string, unknown> = {};
+    if (query.campaignId)
+      filter.campaign = new Types.ObjectId(query.campaignId);
+    if (query.mechanic) filter.mechanic = query.mechanic;
+    if (query.status) filter.status = query.status;
+    if (query.search?.trim()) {
+      const search = this.escapeRegex(query.search.trim().slice(0, 120));
+      filter.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { quotaNumber: { $regex: search, $options: 'i' } },
+      ];
+    }
+    const page = query.page || 1;
+    const limit = query.limit || 50;
+    const [data, total] = await Promise.all([
+      this.prizeModel
+        .find(filter)
+        .sort({ campaign: 1, sortOrder: 1, createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean()
+        .exec(),
+      this.prizeModel.countDocuments(filter),
+    ]);
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        pages: Math.max(1, Math.ceil(total / limit)),
+        hasNextPage: page * limit < total,
+      },
+    };
+  }
+
+  async findAdminPrize(id: string) {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Premio inválido');
+    }
+    const prize = await this.prizeModel.findById(id).lean().exec();
+    if (!prize) throw new NotFoundException('Premio no encontrado');
+    return prize;
+  }
+
+  async listAdminAwards(query: ListAdminPrizeAwardsDto) {
+    const filter: Record<string, unknown> = {};
+    if (query.campaignId)
+      filter.campaign = new Types.ObjectId(query.campaignId);
+    if (query.status) filter.status = query.status;
+    if (query.search?.trim()) {
+      const search = this.escapeRegex(query.search.trim().slice(0, 120));
+      filter.$or = [
+        { publicId: { $regex: search, $options: 'i' } },
+        { title: { $regex: search, $options: 'i' } },
+        { 'winnerSnapshot.name': { $regex: search, $options: 'i' } },
+      ];
+    }
+    const page = query.page || 1;
+    const limit = query.limit || 50;
+    const [data, total] = await Promise.all([
+      this.awardModel
+        .find(filter)
+        .populate('campaign', 'name slug')
+        .populate('prize', 'title mechanic')
+        .sort({ awardedAt: -1, _id: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean()
+        .exec(),
+      this.awardModel.countDocuments(filter),
+    ]);
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        pages: Math.max(1, Math.ceil(total / limit)),
+        hasNextPage: page * limit < total,
+      },
+    };
+  }
+
+  async findAdminAward(publicId: string) {
+    if (!/^[0-9a-f-]{36}$/i.test(publicId)) {
+      throw new BadRequestException('Adjudicación inválida');
+    }
+    const award = await this.awardModel
+      .findOne({ publicId })
+      .populate('campaign', 'name slug')
+      .populate('prize', 'title mechanic')
+      .lean()
+      .exec();
+    if (!award) throw new NotFoundException('Adjudicación no encontrada');
+    return award;
+  }
+
   async listPublic(campaignId: string) {
     if (!Types.ObjectId.isValid(campaignId))
       throw new BadRequestException('Campaña inválida');
@@ -282,6 +386,7 @@ export class PrizesService {
             CampaignStatus.Scheduled,
             CampaignStatus.Active,
             CampaignStatus.Open,
+            CampaignStatus.Expired,
             CampaignStatus.SoldOut,
             CampaignStatus.AwaitingDraw,
             CampaignStatus.Drawn,
@@ -1187,6 +1292,10 @@ export class PrizesService {
 
   private hash(value: string) {
     return createHash('sha256').update(value).digest('hex');
+  }
+
+  private escapeRegex(value: string) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
   private safeHashEquals(left: string, right: string) {

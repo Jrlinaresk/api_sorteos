@@ -21,12 +21,7 @@ describe('OptionalJwtAuthGuard', () => {
   it('conserva al usuario autenticado y no degrada un token inválido a invitado', () => {
     const user = { id: 'user-id' };
     expect(
-      guard.handleRequest(
-        undefined,
-        user,
-        undefined,
-        context('Bearer valid'),
-      ),
+      guard.handleRequest(undefined, user, undefined, context('Bearer valid')),
     ).toBe(user);
     expect(() =>
       guard.handleRequest(

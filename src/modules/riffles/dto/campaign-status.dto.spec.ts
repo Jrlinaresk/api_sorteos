@@ -35,6 +35,7 @@ describe('campaign status DTO boundary', () => {
 
   it.each([
     CampaignStatus.Active,
+    CampaignStatus.Expired,
     CampaignStatus.AwaitingDraw,
     CampaignStatus.Drawn,
     CampaignStatus.Cancelled,

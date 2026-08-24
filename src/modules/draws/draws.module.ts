@@ -12,6 +12,12 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { ResultsController } from './results.controller';
 import { CaixaFederalLotteryModule } from './caixa-federal-lottery.module';
 import { EntropyBeaconService } from './entropy-beacon.service';
+import { MainPrizeAwardsModule } from '../main-awards/main-prize-awards.module';
+import { Payment, PaymentSchema } from '../payments/schemas/payment.schema';
+import {
+  RefundOperation,
+  RefundOperationSchema,
+} from '../payments/schemas/refund-operation.schema';
 
 @Module({
   imports: [
@@ -20,10 +26,13 @@ import { EntropyBeaconService } from './entropy-beacon.service';
       { name: Raffle.name, schema: RaffleSchema },
       { name: Quota.name, schema: QuotaSchema },
       { name: Order.name, schema: OrderSchema },
+      { name: Payment.name, schema: PaymentSchema },
+      { name: RefundOperation.name, schema: RefundOperationSchema },
     ]),
     AuthModule,
     NotificationsModule,
     CaixaFederalLotteryModule,
+    MainPrizeAwardsModule,
   ],
   controllers: [DrawsController, ResultsController, AdminDrawsController],
   providers: [DrawsService, EntropyBeaconService],

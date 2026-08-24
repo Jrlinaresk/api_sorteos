@@ -8,8 +8,14 @@ import { Raffle, RaffleSchema } from '../riffles/schema/raffle.schema';
 import { AdminPrizesController } from './admin-prizes.controller';
 import { PrizesController } from './prizes.controller';
 import { PrizesService } from './prizes.service';
-import { InstantPrize, InstantPrizeSchema } from './schemas/instant-prize.schema';
-import { PrizeAttempt, PrizeAttemptSchema } from './schemas/prize-attempt.schema';
+import {
+  InstantPrize,
+  InstantPrizeSchema,
+} from './schemas/instant-prize.schema';
+import {
+  PrizeAttempt,
+  PrizeAttemptSchema,
+} from './schemas/prize-attempt.schema';
 import { PrizeAward, PrizeAwardSchema } from './schemas/prize-award.schema';
 import { MediaModule } from '../media/media.module';
 

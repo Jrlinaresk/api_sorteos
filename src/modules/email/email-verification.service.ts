@@ -130,9 +130,9 @@ export class EmailVerificationService {
     const hashMatches = this.safeEqual(candidate, expected);
     const legacyMatches = Boolean(
       purpose === EmailVerificationPurpose.Generic &&
-        binding === '' &&
-        record.code &&
-        this.safeEqual(code, record.code),
+      binding === '' &&
+      record.code &&
+      this.safeEqual(code, record.code),
     );
     if (!hashMatches && !legacyMatches) {
       if (record.attempts >= 5) {
@@ -165,8 +165,11 @@ export class EmailVerificationService {
     await this.verificationModel
       .deleteMany({ email: rawEmail.trim().toLowerCase() })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn(`No se pudieron invalidar códigos: ${message}`);
+        const errorName =
+          error instanceof Error && error.name ? error.name : 'UnknownError';
+        this.logger.warn(
+          `No se pudieron invalidar códigos (${errorName.replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 80) || 'UnknownError'})`,
+        );
       });
   }
 
@@ -224,9 +227,9 @@ export class EmailVerificationService {
   private isDuplicateKeyError(error: unknown): boolean {
     return Boolean(
       error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        (error as { code?: number }).code === 11000,
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: number }).code === 11000,
     );
   }
 }

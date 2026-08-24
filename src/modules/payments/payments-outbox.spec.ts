@@ -95,7 +95,8 @@ describe('PaymentsService lifecycle outbox', () => {
 
     await service.retryLifecycleHooks(paymentId.toString());
     expect(outbox.outboxStatus).toBe(PaymentOutboxStatus.Pending);
-    expect(outbox.lastError).toContain('fallo transitorio');
+    expect(outbox.lastError).toBe('Error');
+    expect(outbox.lastError).not.toContain('fallo transitorio');
 
     await service.retryLifecycleHooks(paymentId.toString());
     expect(outbox.outboxStatus).toBe(PaymentOutboxStatus.Succeeded);

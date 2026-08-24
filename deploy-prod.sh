@@ -182,8 +182,10 @@ smtp_from="$(env_value SMTP_FROM)"
 
 webhook_hmac="$(env_value EFI_WEBHOOK_HMAC)"
 webhook_mtls="$(env_value EFI_WEBHOOK_REQUIRE_MTLS)"
-if [[ "${webhook_mtls}" != true && ${#webhook_hmac} -lt 24 ]]; then
-  fail 'Configure EFI_WEBHOOK_HMAC (mínimo 24 caracteres) o habilite mTLS'
+[[ "${webhook_mtls}" == true ]] \
+  || fail 'EFI_WEBHOOK_REQUIRE_MTLS=true es obligatorio con Efí en producción'
+if [[ -n "${webhook_hmac}" && ${#webhook_hmac} -lt 24 ]]; then
+  fail 'EFI_WEBHOOK_HMAC debe tener al menos 24 caracteres si se configura'
 fi
 
 certs_dir="$(env_value EFI_CERTS_DIR)"

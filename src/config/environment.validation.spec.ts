@@ -25,7 +25,10 @@ describe('validateEnvironment', () => {
     EFI_PIX_CLIENT_SECRET: 'client-secret',
     EFI_PIX_KEY: 'pix-key',
     EFI_PIX_CERTIFICATE_PATH: __filename,
-    EFI_WEBHOOK_HMAC: 'h'.repeat(24),
+    EFI_WEBHOOK_HMAC: '',
+    EFI_WEBHOOK_REQUIRE_MTLS: 'true',
+    EFI_WEBHOOK_MTLS_HEADER: 'x-ssl-client-verify',
+    EFI_WEBHOOK_MTLS_SUCCESS_VALUE: 'SUCCESS',
     CAIXA_FEDERAL_API_BASE_URL:
       'https://servicebus3.caixa.gov.br/portaldeloterias/api/federal',
     CAIXA_FEDERAL_CONFIRMATION_DELAY_MS: '250',
@@ -51,6 +54,24 @@ describe('validateEnvironment', () => {
         WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER: '51',
       }),
     ).toThrow('WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER');
+  });
+
+  it('acota el límite operativo de títulos asignados, incluidos los bonus', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        ORDER_MAX_ALLOCATED_TITLES: '10001',
+      }),
+    ).toThrow('ORDER_MAX_ALLOCATED_TITLES');
+    expect(
+      validateEnvironment({
+        NODE_ENV: 'test',
+        ORDER_MAX_ALLOCATED_TITLES: '2000',
+      }),
+    ).toEqual({
+      NODE_ENV: 'test',
+      ORDER_MAX_ALLOCATED_TITLES: '2000',
+    });
   });
 
   it('exige las tres variables VAPID al seleccionar webpush', () => {
@@ -136,6 +157,29 @@ describe('validateEnvironment', () => {
     environment.PAYMENTS_PROVIDER = 'mock';
     expect(() => validateEnvironment(environment)).toThrow(
       'PAYMENTS_ALLOW_MOCK=true',
+    );
+  });
+
+  it('exige mTLS para el webhook nativo de Efí en producción', () => {
+    const environment = productionEnvironment();
+    environment.EFI_WEBHOOK_REQUIRE_MTLS = 'false';
+    environment.EFI_WEBHOOK_HMAC = 'h'.repeat(32);
+    expect(() => validateEnvironment(environment)).toThrow(
+      'EFI_WEBHOOK_REQUIRE_MTLS=true',
+    );
+  });
+
+  it('valida la defensa HMAC adicional y la cabecera mTLS', () => {
+    const weakHmac = productionEnvironment();
+    weakHmac.EFI_WEBHOOK_HMAC = 'short';
+    expect(() => validateEnvironment(weakHmac)).toThrow(
+      'EFI_WEBHOOK_HMAC debe tener al menos 24',
+    );
+
+    const invalidHeader = productionEnvironment();
+    invalidHeader.EFI_WEBHOOK_MTLS_HEADER = 'bad header';
+    expect(() => validateEnvironment(invalidHeader)).toThrow(
+      'EFI_WEBHOOK_MTLS_HEADER',
     );
   });
 

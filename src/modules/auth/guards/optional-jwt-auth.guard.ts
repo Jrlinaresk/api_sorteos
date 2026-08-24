@@ -15,8 +15,8 @@ export class OptionalJwtAuthGuard extends AuthGuard('jwt') {
   ): TUser | undefined {
     const authorization = context
       .switchToHttp()
-      .getRequest<{ headers?: { authorization?: string } }>().headers
-      ?.authorization;
+      .getRequest<{ headers?: { authorization?: string } }>()
+      .headers?.authorization;
     if (!authorization) return undefined;
     if (error || !user) {
       if (error instanceof Error) throw error;

@@ -29,25 +29,29 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
-      const responseBody = exception.getResponse();
-      message =
-        typeof responseBody === 'string'
-          ? responseBody
-          : (responseBody as any).message || message;
-      if (responseBody && typeof responseBody === 'object') {
-        const structured = responseBody as Record<string, unknown>;
-        if (
-          typeof structured.code === 'string' &&
-          /^[A-Z0-9_]{1,80}$/.test(structured.code)
-        ) {
-          code = structured.code;
-        }
-        if (
-          structured.meta &&
-          typeof structured.meta === 'object' &&
-          !Array.isArray(structured.meta)
-        ) {
-          meta = structured.meta as Record<string, unknown>;
+      // Los mensajes 5xx suelen envolver errores de drivers o proveedores.
+      // Nunca se consideran contenido público, aunque sean HttpException.
+      if (status < HttpStatus.INTERNAL_SERVER_ERROR) {
+        const responseBody = exception.getResponse();
+        message =
+          typeof responseBody === 'string'
+            ? responseBody
+            : (responseBody as any).message || message;
+        if (responseBody && typeof responseBody === 'object') {
+          const structured = responseBody as Record<string, unknown>;
+          if (
+            typeof structured.code === 'string' &&
+            /^[A-Z0-9_]{1,80}$/.test(structured.code)
+          ) {
+            code = structured.code;
+          }
+          if (
+            structured.meta &&
+            typeof structured.meta === 'object' &&
+            !Array.isArray(structured.meta)
+          ) {
+            meta = structured.meta as Record<string, unknown>;
+          }
         }
       }
     }

@@ -245,6 +245,12 @@ const ALLOWED_TRANSITIONS: Record<PaymentStatus, ReadonlySet<PaymentStatus>> = {
   [PaymentStatus.Chargeback]: new Set(),
 };
 
+const EXPIRABLE_PAYMENT_STATUSES: readonly PaymentStatus[] = [
+  PaymentStatus.Created,
+  PaymentStatus.Pending,
+  PaymentStatus.Active,
+];
+
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
@@ -507,15 +513,17 @@ export class PaymentsService {
       txid: payment.txid,
       externalId: payment.externalId,
     });
-    if (
-      [PaymentStatus.Active, PaymentStatus.Pending].includes(result.status) &&
-      payment.expiresAt.getTime() <= Date.now()
-    ) {
-      result.status = PaymentStatus.Expired;
-    }
+    const reconciledResult = {
+      ...result,
+      status:
+        [PaymentStatus.Active, PaymentStatus.Pending].includes(result.status) &&
+        payment.expiresAt.getTime() <= Date.now()
+          ? PaymentStatus.Expired
+          : result.status,
+    };
     await this.applyProviderResult(
       payment,
-      result,
+      reconciledResult,
       PaymentEventSource.Reconciliation,
     );
     return payment;
@@ -638,8 +646,7 @@ export class PaymentsService {
       );
     }
     let reserved:
-      | { operation: RefundOperationDocument; created: boolean }
-      | undefined;
+      { operation: RefundOperationDocument; created: boolean } | undefined;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const session = await this.connection.startSession();
       try {
@@ -1202,28 +1209,34 @@ export class PaymentsService {
   async expireDuePayments(): Promise<number> {
     const due = await this.paymentModel
       .find({
-        status: {
-          $in: [
-            PaymentStatus.Created,
-            PaymentStatus.Pending,
-            PaymentStatus.Active,
-          ],
-        },
+        status: { $in: EXPIRABLE_PAYMENT_STATUSES },
         expiresAt: { $lte: new Date() },
       })
       .exec();
     let expired = 0;
     for (const payment of due) {
       try {
-        await this.transition(
-          payment,
-          PaymentStatus.Expired,
-          PaymentEventSource.Application,
-          'La ventana de pago venció',
-        );
-        if (payment.status === PaymentStatus.Expired) expired += 1;
+        const reconciled = await this.reconcile(payment._id.toString());
+        if (reconciled.status === PaymentStatus.Expired) expired += 1;
       } catch (error) {
-        if (!(error instanceof ConflictException)) throw error;
+        this.logger.warn(
+          `No se pudo confirmar el vencimiento Pix ${payment._id.toString()} (${this.operationalErrorLabel(error)})`,
+        );
+        try {
+          await this.transition(
+            payment,
+            PaymentStatus.UnderReview,
+            PaymentEventSource.Reconciliation,
+            'No se pudo confirmar con el PSP que el Pix seguía impago al vencer; la reserva queda bloqueada',
+            undefined,
+            { providerError: this.operationalErrorLabel(error) },
+            EXPIRABLE_PAYMENT_STATUSES,
+          );
+        } catch (transitionError) {
+          if (!(transitionError instanceof ConflictException)) {
+            throw transitionError;
+          }
+        }
       }
     }
     return expired;
@@ -1398,6 +1411,25 @@ export class PaymentsService {
   toAdminView(payment: PaymentDocument): Record<string, unknown> {
     const value = payment.toObject() as unknown as Record<string, unknown>;
     delete value.publicSecretHash;
+    // Las respuestas crudas de Efí y los webhooks pueden contener CPF, nombre,
+    // clave Pix u otros datos del pagador. Se conservan para conciliación
+    // interna, pero no forman parte del contrato HTTP de operación.
+    delete value.providerPayload;
+    delete value.webhookPayloads;
+    if (Array.isArray(value.statusHistory)) {
+      value.statusHistory = value.statusHistory.map((entry) => {
+        const safe = { ...(entry as Record<string, unknown>) };
+        delete safe.metadata;
+        return safe;
+      });
+    }
+    if (Array.isArray(value.refunds)) {
+      value.refunds = value.refunds.map((entry) => {
+        const safe = { ...(entry as Record<string, unknown>) };
+        delete safe.providerPayload;
+        return safe;
+      });
+    }
     return value;
   }
 
@@ -1592,8 +1624,15 @@ export class PaymentsService {
     reason?: string,
     metadata?: Record<string, unknown>,
     patch: PaymentMutationPatch = {},
+    expectedCurrentStatuses?: readonly PaymentStatus[],
   ): Promise<void> {
     if (!this.connection || !this.outboxModel) {
+      if (
+        expectedCurrentStatuses &&
+        !expectedCurrentStatuses.includes(payment.status)
+      ) {
+        return;
+      }
       const resolved = await this.prepareTransition(
         payment,
         status,
@@ -1626,6 +1665,14 @@ export class PaymentsService {
             .session(session)
             .exec();
           if (!fresh) throw new NotFoundException('Pago no encontrado');
+          if (
+            expectedCurrentStatuses &&
+            !expectedCurrentStatuses.includes(fresh.status)
+          ) {
+            persisted = fresh;
+            changed = false;
+            return;
+          }
           const previousStatus = fresh.status;
           const resolved = await this.prepareTransition(
             fresh,
@@ -2165,9 +2212,7 @@ export class PaymentsService {
         ),
       ]);
     } catch (error) {
-      const message = (
-        error instanceof Error ? error.message : String(error)
-      ).slice(0, 2000);
+      const message = this.operationalErrorLabel(error);
       const attempts = (outbox.attempts ?? 0) + 1;
       const deadLetter = attempts >= this.outboxMaxAttempts();
       const nextAttemptAt = new Date(
@@ -2194,7 +2239,7 @@ export class PaymentsService {
         ),
       ]);
       this.logger.error(
-        `Outbox ${outbox.eventKey} falló (intento ${attempts}): ${message}`,
+        `Outbox ${outbox.eventKey} falló (intento ${attempts}, ${message})`,
       );
     }
   }
@@ -2283,7 +2328,7 @@ export class PaymentsService {
         try {
           await callback();
         } catch (error) {
-          errors.push(error instanceof Error ? error.message : String(error));
+          errors.push(this.operationalErrorLabel(error));
         }
       }
     }
@@ -2507,9 +2552,9 @@ export class PaymentsService {
     };
     return Boolean(
       candidate.code === 112 ||
-        candidate.name === 'VersionError' ||
-        candidate.hasErrorLabel?.('TransientTransactionError') ||
-        candidate.hasErrorLabel?.('UnknownTransactionCommitResult'),
+      candidate.name === 'VersionError' ||
+      candidate.hasErrorLabel?.('TransientTransactionError') ||
+      candidate.hasErrorLabel?.('UnknownTransactionCommitResult'),
     );
   }
 
@@ -2570,10 +2615,27 @@ export class PaymentsService {
   }
 
   private providerErrorMessage(error: unknown): string {
+    return this.operationalErrorLabel(error);
+  }
+
+  private operationalErrorLabel(error: unknown): string {
+    const rawName =
+      error instanceof Error && error.name ? error.name : 'UnknownError';
+    const name =
+      rawName.replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 80) || 'UnknownError';
+    const rawCode =
+      error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code ?? '')
+        : '';
+    const code = /^[A-Za-z0-9_.:-]{1,64}$/.test(rawCode) ? rawCode : undefined;
     if (error instanceof PaymentProviderError) {
-      return `${error.provider}: ${error.message}`;
+      const status =
+        Number.isInteger(error.statusCode) && error.statusCode! >= 100
+          ? `:http-${error.statusCode}`
+          : '';
+      return `${name}:${error.provider}${status}${code ? `:code-${code}` : ''}`;
     }
-    return error instanceof Error ? error.message : String(error);
+    return `${name}${code ? `:code-${code}` : ''}`;
   }
 
   private boundedProviderPayload(
@@ -2637,9 +2699,9 @@ export class PaymentsService {
   private isDuplicateKeyError(error: unknown): boolean {
     return Boolean(
       error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        (error as { code?: number }).code === 11000,
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: number }).code === 11000,
     );
   }
 }

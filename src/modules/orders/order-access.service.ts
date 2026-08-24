@@ -332,8 +332,12 @@ export class OrderAccessService {
         .deleteOne({ challengeId })
         .catch(() => undefined);
       // No se registran el código ni datos personales.
+      const challengeTrace = createHash('sha256')
+        .update(challengeId)
+        .digest('hex')
+        .slice(0, 12);
       this.logger.warn(
-        `No se pudo confirmar la entrega del código del challenge ${challengeId}`,
+        `No se pudo confirmar la entrega del código del challenge ${challengeTrace}`,
       );
     }
   }
@@ -341,9 +345,9 @@ export class OrderAccessService {
   private isDuplicateKeyError(error: unknown): boolean {
     return Boolean(
       error &&
-        typeof error === 'object' &&
-        'code' in error &&
-        (error as { code?: number }).code === 11000,
+      typeof error === 'object' &&
+      'code' in error &&
+      (error as { code?: number }).code === 11000,
     );
   }
 

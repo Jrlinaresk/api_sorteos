@@ -8,7 +8,10 @@ export class DrawsController {
   constructor(private readonly draws: DrawsService) {}
 
   @Get(':campaignIdOrSlug/result')
-  @ApiOperation({ summary: 'Obtiene el resultado público y la evidencia verificable publicada' })
+  @ApiOperation({
+    summary:
+      'Obtiene el resultado público y la evidencia verificable publicada',
+  })
   result(@Param('campaignIdOrSlug') campaignIdOrSlug: string) {
     return this.draws.findPublicByCampaign(campaignIdOrSlug);
   }

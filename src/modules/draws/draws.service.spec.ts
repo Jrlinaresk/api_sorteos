@@ -4,6 +4,13 @@ import { Types } from 'mongoose';
 import { DrawsService } from './draws.service';
 import { DrawResultStatus } from './schemas/draw-result.schema';
 import { CampaignStatus, DrawMethod } from '../riffles/schema/raffle.schema';
+import { OrderStatus } from '../orders/schemas/order.schema';
+import { QuotaStatus } from '../orders/schemas/quota.schema';
+import {
+  PaymentCurrency,
+  PaymentProviderName,
+  PaymentStatus,
+} from '../payments/payment.enums';
 
 function queryResult<T>(value: T) {
   const query: Record<string, jest.Mock> = {
@@ -35,11 +42,22 @@ function document(payload: Record<string, any>) {
   return value;
 }
 
+function aggregateResult<T>(value: T) {
+  const aggregate = {
+    session: jest.fn(),
+    exec: jest.fn().mockResolvedValue(value),
+  };
+  aggregate.session.mockReturnValue(aggregate);
+  return aggregate;
+}
+
 describe('DrawsService verifiable draw workflow', () => {
   let resultModel: Record<string, jest.Mock>;
   let campaignModel: Record<string, jest.Mock>;
   let quotaModel: Record<string, jest.Mock>;
   let orderModel: Record<string, jest.Mock>;
+  let paymentModel: Record<string, jest.Mock>;
+  let refundOperationModel: Record<string, jest.Mock>;
   let connection: Record<string, jest.Mock>;
   let session: Record<string, jest.Mock>;
   let notifications: Record<string, jest.Mock>;
@@ -55,8 +73,24 @@ describe('DrawsService verifiable draw workflow', () => {
       create: jest.fn(),
     };
     campaignModel = { findById: jest.fn(), findOne: jest.fn() };
-    quotaModel = { findOne: jest.fn() };
-    orderModel = { findById: jest.fn() };
+    quotaModel = {
+      findOne: jest.fn(),
+      updateOne: jest.fn().mockResolvedValue({ matchedCount: 1 }),
+    };
+    orderModel = {
+      findById: jest.fn(),
+      findOne: jest.fn().mockImplementation(() => queryResult(null)),
+      updateOne: jest.fn().mockResolvedValue({ matchedCount: 1 }),
+    };
+    paymentModel = {
+      findById: jest.fn(),
+      findOne: jest.fn().mockImplementation(() => queryResult(null)),
+      updateOne: jest.fn().mockResolvedValue({ matchedCount: 1 }),
+    };
+    refundOperationModel = {
+      aggregate: jest.fn().mockImplementation(() => aggregateResult([])),
+      findOne: jest.fn().mockImplementation(() => queryResult(null)),
+    };
     session = {
       withTransaction: jest.fn(async (work: () => Promise<void>) => work()),
       endSession: jest.fn().mockResolvedValue(undefined),
@@ -82,6 +116,8 @@ describe('DrawsService verifiable draw workflow', () => {
       campaignModel as any,
       quotaModel as any,
       orderModel as any,
+      paymentModel as any,
+      refundOperationModel as any,
       connection as any,
       notifications as any,
       caixaFederal as any,
@@ -372,6 +408,37 @@ describe('DrawsService verifiable draw workflow', () => {
     expect(caixaFederal.reconcile).not.toHaveBeenCalled();
   });
 
+  it('bloquea la verificación antes de consultar el resultado externo si hay pedidos en revisión', async () => {
+    const campaignId = new Types.ObjectId();
+    campaignModel.findById.mockReturnValue(
+      queryResult(
+        document({
+          _id: campaignId,
+          drawMethod: DrawMethod.FederalLottery,
+          status: CampaignStatus.SoldOut,
+          soldCount: 100,
+          reservedCount: 0,
+          totalTitles: 100,
+          quotaDigits: 2,
+          federalLottery: { contest: '6020' },
+        }),
+      ),
+    );
+    orderModel.findOne.mockReturnValueOnce(
+      queryResult({ _id: new Types.ObjectId(), status: OrderStatus.InReview }),
+    );
+
+    await expect(
+      service.verifyFederal(
+        campaignId.toString(),
+        {},
+        new Types.ObjectId().toString(),
+      ),
+    ).rejects.toThrow('pedidos con liquidación pendiente o en revisión');
+
+    expect(caixaFederal.reconcile).not.toHaveBeenCalled();
+  });
+
   it('rechaza una campaña heredada que abrió ventas sin concurso Federal fijado', async () => {
     const campaignId = new Types.ObjectId();
     campaignModel.findById.mockReturnValue(
@@ -548,6 +615,8 @@ describe('DrawsService verifiable draw workflow', () => {
     const campaignId = new Types.ObjectId();
     const userId = new Types.ObjectId();
     const quotaId = new Types.ObjectId();
+    const orderId = new Types.ObjectId();
+    const paymentId = new Types.ObjectId();
     const actorId = new Types.ObjectId().toString();
     const result = document({
       campaign: campaignId,
@@ -558,6 +627,7 @@ describe('DrawsService verifiable draw workflow', () => {
           prizeTitle: 'Titan',
           winningNumber: '001234',
           quota: quotaId,
+          order: orderId,
           user: userId,
           winnerSnapshot: {
             name: 'Maria da Silva',
@@ -573,10 +643,56 @@ describe('DrawsService verifiable draw workflow', () => {
       _id: campaignId,
       slug: 'titan-160',
       status: CampaignStatus.AwaitingDraw,
+      soldCount: 100,
+      totalTitles: 100,
+      reservedCount: 0,
       winners: [],
     });
     resultModel.findOne.mockReturnValue(queryResult(result));
     campaignModel.findById.mockReturnValue(queryResult(campaign));
+    quotaModel.findOne.mockReturnValue(
+      queryResult(
+        document({
+          _id: quotaId,
+          campaign: campaignId,
+          number: '001234',
+          status: QuotaStatus.Paid,
+          order: orderId,
+          user: userId,
+        }),
+      ),
+    );
+    orderModel.findById.mockReturnValue(
+      queryResult(
+        document({
+          _id: orderId,
+          campaign: campaignId,
+          payment: paymentId,
+          status: OrderStatus.Paid,
+          buyer: { name: 'Maria da Silva', phone: '+5511999999999' },
+          prizeLifecycleVersion: 0,
+        }),
+      ),
+    );
+    paymentModel.findById.mockReturnValue(
+      queryResult(
+        document({
+          _id: paymentId,
+          order: orderId,
+          campaign: campaignId,
+          provider: PaymentProviderName.Mock,
+          status: PaymentStatus.Paid,
+          amount: 10,
+          amountCents: 1_000,
+          receivedAmountCents: 0,
+          refundedAmountCents: 0,
+          refundReservedAmountCents: 0,
+          currency: PaymentCurrency.BRL,
+          providerRefunds: [],
+          refunds: [],
+        }),
+      ),
+    );
 
     const response = await service.publish(campaignId.toString(), actorId);
 
@@ -594,6 +710,210 @@ describe('DrawsService verifiable draw workflow', () => {
     );
     expect(response).not.toHaveProperty('publishedBy');
     expect(response.outcomes[0].winner.name).toBe('Maria d. S.');
+    expect(quotaModel.updateOne).toHaveBeenCalledWith(
+      expect.objectContaining({ _id: quotaId, status: expect.any(Object) }),
+      { $inc: { __v: 1 } },
+      { session },
+    );
+    expect(orderModel.updateOne).toHaveBeenCalledWith(
+      expect.objectContaining({ _id: orderId, status: OrderStatus.Paid }),
+      { $inc: { prizeLifecycleVersion: 1, __v: 1 } },
+      { session },
+    );
+    expect(paymentModel.updateOne).toHaveBeenCalledWith(
+      expect.objectContaining({ _id: paymentId, status: PaymentStatus.Paid }),
+      { $inc: { __v: 1 } },
+      { session },
+    );
+  });
+
+  it('rechaza publicar si un reembolso parcial reabrió la campaña y redujo los títulos pagados', async () => {
+    const campaignId = new Types.ObjectId();
+    const result = document({
+      campaign: campaignId,
+      status: DrawResultStatus.Verified,
+      verifiedBy: new Types.ObjectId(),
+      outcomes: [
+        {
+          winningNumber: '001234',
+          quota: new Types.ObjectId(),
+        },
+      ],
+    });
+    resultModel.findOne.mockReturnValue(queryResult(result));
+    campaignModel.findById.mockReturnValue(
+      queryResult(
+        document({
+          _id: campaignId,
+          status: CampaignStatus.Active,
+          soldCount: 99,
+          totalTitles: 100,
+          reservedCount: 0,
+          winners: [],
+        }),
+      ),
+    );
+
+    await expect(
+      service.publish(campaignId.toString(), new Types.ObjectId().toString()),
+    ).rejects.toThrow('100% de títulos pagados');
+
+    expect(result.save).not.toHaveBeenCalled();
+    expect(paymentModel.findOne).not.toHaveBeenCalled();
+  });
+
+  it('impide publicar si un pago de la campaña quedó bajo revisión', async () => {
+    const campaignId = new Types.ObjectId();
+    const result = document({
+      campaign: campaignId,
+      status: DrawResultStatus.Verified,
+      verifiedBy: new Types.ObjectId(),
+      outcomes: [
+        {
+          winningNumber: '001234',
+          quota: new Types.ObjectId(),
+        },
+      ],
+    });
+    resultModel.findOne.mockReturnValue(queryResult(result));
+    campaignModel.findById.mockReturnValue(
+      queryResult(
+        document({
+          _id: campaignId,
+          status: CampaignStatus.AwaitingDraw,
+          soldCount: 100,
+          totalTitles: 100,
+          reservedCount: 0,
+          winners: [],
+        }),
+      ),
+    );
+    paymentModel.findOne.mockReturnValueOnce(
+      queryResult({
+        _id: new Types.ObjectId(),
+        status: PaymentStatus.UnderReview,
+      }),
+    );
+
+    await expect(
+      service.publish(campaignId.toString(), new Types.ObjectId().toString()),
+    ).rejects.toThrow('pagos no conciliados');
+
+    expect(result.save).not.toHaveBeenCalled();
+    expect(quotaModel.findOne).not.toHaveBeenCalled();
+  });
+
+  it('impide publicar mientras existe una devolución Processing aunque el pago aún figure Paid', async () => {
+    const campaignId = new Types.ObjectId();
+    const result = document({
+      campaign: campaignId,
+      status: DrawResultStatus.Verified,
+      verifiedBy: new Types.ObjectId(),
+      outcomes: [
+        {
+          winningNumber: '001234',
+          quota: new Types.ObjectId(),
+        },
+      ],
+    });
+    resultModel.findOne.mockReturnValue(queryResult(result));
+    campaignModel.findById.mockReturnValue(
+      queryResult(
+        document({
+          _id: campaignId,
+          status: CampaignStatus.AwaitingDraw,
+          soldCount: 100,
+          totalTitles: 100,
+          reservedCount: 0,
+          winners: [],
+        }),
+      ),
+    );
+    refundOperationModel.aggregate.mockReturnValueOnce(
+      aggregateResult([{ _id: new Types.ObjectId() }]),
+    );
+
+    await expect(
+      service.publish(campaignId.toString(), new Types.ObjectId().toString()),
+    ).rejects.toThrow('devolución Pix aún en procesamiento');
+
+    expect(result.save).not.toHaveBeenCalled();
+  });
+
+  it('revalida pago, pedido y cuota dentro de la publicación y bloquea un reembolso concurrente', async () => {
+    const campaignId = new Types.ObjectId();
+    const userId = new Types.ObjectId();
+    const quotaId = new Types.ObjectId();
+    const orderId = new Types.ObjectId();
+    const paymentId = new Types.ObjectId();
+    const result = document({
+      campaign: campaignId,
+      status: DrawResultStatus.Verified,
+      verifiedBy: new Types.ObjectId(),
+      outcomes: [
+        {
+          winningNumber: '001234',
+          quota: quotaId,
+          order: orderId,
+          user: userId,
+        },
+      ],
+    });
+    resultModel.findOne.mockReturnValue(queryResult(result));
+    const campaign = document({
+      _id: campaignId,
+      status: CampaignStatus.AwaitingDraw,
+      soldCount: 100,
+      totalTitles: 100,
+      reservedCount: 0,
+      winners: [],
+    });
+    campaignModel.findById.mockReturnValue(queryResult(campaign));
+    quotaModel.findOne.mockReturnValue(
+      queryResult(
+        document({
+          _id: quotaId,
+          campaign: campaignId,
+          number: '001234',
+          status: QuotaStatus.Paid,
+          order: orderId,
+          user: userId,
+        }),
+      ),
+    );
+    orderModel.findById.mockReturnValue(
+      queryResult(
+        document({
+          _id: orderId,
+          campaign: campaignId,
+          payment: paymentId,
+          status: OrderStatus.Paid,
+          buyer: { name: 'Maria', phone: '+5511999999999' },
+        }),
+      ),
+    );
+    paymentModel.findById.mockReturnValue(
+      queryResult(
+        document({
+          _id: paymentId,
+          order: orderId,
+          campaign: campaignId,
+          status: PaymentStatus.Paid,
+          refundedAmountCents: 0,
+          refundReservedAmountCents: 0,
+          providerRefunds: [],
+          refunds: [],
+        }),
+      ),
+    );
+    paymentModel.updateOne.mockResolvedValueOnce({ matchedCount: 0 });
+
+    await expect(
+      service.publish(campaignId.toString(), new Types.ObjectId().toString()),
+    ).rejects.toThrow('estado financiero del ganador cambió');
+
+    expect(result.save).not.toHaveBeenCalled();
+    expect(campaign.save).not.toHaveBeenCalled();
   });
 
   it('impide que la misma persona verifique y publique el resultado', async () => {

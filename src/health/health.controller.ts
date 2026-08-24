@@ -25,8 +25,9 @@ export class HealthController {
     try {
       await Promise.race([
         this.connection.db.admin().command({ ping: 1 }),
-        new Promise((_, reject) =>
-          (timeout = setTimeout(() => reject(new Error('timeout')), 2_000)),
+        new Promise(
+          (_, reject) =>
+            (timeout = setTimeout(() => reject(new Error('timeout')), 2_000)),
         ),
       ]);
     } catch {

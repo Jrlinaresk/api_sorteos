@@ -8,6 +8,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { createHash } from 'crypto';
 import { FilterQuery, Model, Types } from 'mongoose';
 import { CreateRaffleDto } from './dto/create-raffle.dto';
+import { ExtendCampaignDto } from './dto/extend-campaign.dto';
 import { ListCampaignsDto } from './dto/list-campaigns.dto';
 import { UpdateRaffleDto } from './enums/update-raffle.dto';
 import {
@@ -22,6 +23,10 @@ import { MediaService } from '../media/media.service';
 import { CaixaFederalLotteryService } from '../draws/caixa-federal-lottery.service';
 import { ConfigService } from '@nestjs/config';
 import { sanitizeCampaignRichText } from './utils/campaign-rich-text';
+import {
+  maxSelectedTitles,
+  orderMaxAllocatedTitles,
+} from '../orders/order-limits';
 
 export interface CampaignPriceQuote {
   selectedQuantity: number;
@@ -34,12 +39,15 @@ export interface CampaignPriceQuote {
   currency: string;
   promotion?: { quantity: number; totalPrice: number; label?: string };
   doubleChanceMultiplier: number;
+  maxSelectableQuantity: number;
+  maxAllocatedTitles: number;
 }
 
 const PUBLIC_STATUSES = [
   CampaignStatus.Scheduled,
   CampaignStatus.Active,
   CampaignStatus.Open,
+  CampaignStatus.Expired,
   CampaignStatus.SoldOut,
   CampaignStatus.AwaitingDraw,
   CampaignStatus.Drawn,
@@ -425,6 +433,9 @@ export class RafflesService {
     if (status === CampaignStatus.Cancelled) {
       this.assertCancellationSafe(campaign);
     }
+    if (status === CampaignStatus.Expired) {
+      this.assertPartiallyExpired(campaign, new Date());
+    }
     if (
       [
         CampaignStatus.Scheduled,
@@ -484,6 +495,103 @@ export class RafflesService {
       return locked;
     }
     return campaign.save();
+  }
+
+  /**
+   * Reabre exclusivamente una campaña parcial que el ciclo ya cerró por fecha.
+   * La excepción contractual queda ligada al actor y al motivo en el mismo CAS.
+   */
+  async extendExpiredCampaign(
+    id: string,
+    dto: ExtendCampaignDto,
+    actorId: string,
+  ): Promise<RaffleDocument> {
+    if (!Types.ObjectId.isValid(actorId)) {
+      throw new BadRequestException('Administrador inválido');
+    }
+    const campaign = await this.findOne(id);
+    if (campaign.status !== CampaignStatus.Expired) {
+      throw new ConflictException(
+        'Solo se puede prorrogar una campaña vencida y cerrada para ventas',
+      );
+    }
+    const now = new Date();
+    this.assertPartiallyExpired(campaign, now);
+    const previousClosesAt = campaign.closesAt
+      ? new Date(campaign.closesAt)
+      : undefined;
+    if (!previousClosesAt || !Number.isFinite(previousClosesAt.getTime())) {
+      throw new ConflictException(
+        'La campaña no conserva una fecha de cierre vencida',
+      );
+    }
+    const closesAt = new Date(dto.closesAt);
+    if (!Number.isFinite(closesAt.getTime()) || closesAt <= now) {
+      throw new BadRequestException('La nueva fecha de cierre debe ser futura');
+    }
+    if (campaign.drawDate && closesAt >= new Date(campaign.drawDate)) {
+      throw new ConflictException(
+        'La prórroga debe terminar antes de la fecha declarada del sorteo',
+      );
+    }
+    const reason = dto.reason.trim();
+    if (!reason) {
+      throw new BadRequestException('El motivo de la prórroga es obligatorio');
+    }
+    if (
+      campaign.drawMethod === DrawMethod.FederalLottery &&
+      campaign.drawDate &&
+      this.utcDateKey(closesAt) >= this.utcDateKey(new Date(campaign.drawDate))
+    ) {
+      throw new ConflictException(
+        'La prórroga Federal debe terminar en un día anterior al sorteo',
+      );
+    }
+
+    const candidate = campaign as RaffleDocument;
+    candidate.closesAt = closesAt;
+    await this.assertActivationReady(candidate, now, CampaignStatus.Active);
+
+    const version = (campaign as unknown as { __v?: number }).__v;
+    const filter: FilterQuery<RaffleDocument> = {
+      _id: campaign._id,
+      status: CampaignStatus.Expired,
+      closesAt: previousClosesAt,
+      $expr: {
+        $lt: [{ $add: ['$soldCount', '$reservedCount'] }, '$totalTitles'],
+      },
+    };
+    if (version !== undefined) filter.__v = version;
+    const extendedAt = new Date();
+    const extended = await this.raffleModel.findOneAndUpdate(
+      filter,
+      {
+        $set: { status: CampaignStatus.Active, closesAt },
+        $unset: { salesClosedAt: 1 },
+        $push: {
+          lifecycleExtensions: {
+            $each: [
+              {
+                previousClosesAt,
+                closesAt,
+                reason,
+                extendedAt,
+                extendedBy: new Types.ObjectId(actorId),
+              },
+            ],
+            $slice: -50,
+          },
+        },
+        $inc: { contractRevision: 1, __v: 1 },
+      },
+      { new: true, runValidators: true },
+    );
+    if (!extended) {
+      throw new ConflictException(
+        'La campaña cambió durante la prórroga; revise y reintente',
+      );
+    }
+    return extended;
   }
 
   async remove(id: string): Promise<void> {
@@ -564,6 +672,14 @@ export class RafflesService {
         },
       ],
     );
+    const expired = await this.raffleModel.updateMany(
+      {
+        status: { $in: [CampaignStatus.Active, CampaignStatus.Open] },
+        closesAt: { $lte: at },
+        $expr: { $lt: ['$soldCount', '$totalTitles'] },
+      },
+      { $set: { status: CampaignStatus.Expired } },
+    );
     const awaitingDraw = await this.raffleModel.updateMany(
       {
         status: CampaignStatus.SoldOut,
@@ -578,8 +694,7 @@ export class RafflesService {
       activationBlocked,
       soldOut: soldOut.modifiedCount,
       awaitingDraw: awaitingDraw.modifiedCount,
-      // Las campañas parciales vencidas permanecen cerradas por fecha, no sorteables.
-      closedForSales: 0,
+      closedForSales: expired.modifiedCount,
     };
   }
 
@@ -597,6 +712,39 @@ export class RafflesService {
       );
     }
 
+    const doubleChanceMultiplier = this.isTimedContentActive(
+      campaign.doubleChance,
+      at,
+    )
+      ? campaign.doubleChance.multiplier || 2
+      : 1;
+    const maxAllocatedTitles = orderMaxAllocatedTitles();
+    const maxSelectableByConfiguration = maxSelectedTitles(
+      campaign.maxTitlesPerOrder,
+      doubleChanceMultiplier,
+    );
+    const allocatedQuantity = selectedQuantity * doubleChanceMultiplier;
+    if (allocatedQuantity > maxAllocatedTitles) {
+      throw new BadRequestException(
+        `La compra no puede asignar más de ${maxAllocatedTitles} títulos, incluidos los bonus`,
+      );
+    }
+    const availableCount = Number.isSafeInteger(campaign.totalTitles)
+      ? Math.max(
+          0,
+          campaign.totalTitles -
+            (campaign.soldCount || 0) -
+            (campaign.reservedCount || 0),
+        )
+      : maxAllocatedTitles;
+    const maxSelectableQuantity = Math.min(
+      maxSelectableByConfiguration,
+      Math.floor(availableCount / doubleChanceMultiplier),
+    );
+    if (allocatedQuantity > availableCount) {
+      throw new ConflictException('No quedan suficientes cuotas disponibles');
+    }
+
     const unitCents = Math.round(campaign.ticketPrice * 100);
     const subtotalCents = unitCents * selectedQuantity;
     const promotion = (campaign.promotionTiers || []).find(
@@ -611,14 +759,6 @@ export class RafflesService {
         `La compra mínima es ${campaign.currency} ${(minimumCents / 100).toFixed(2)}`,
       );
     }
-
-    const doubleChanceMultiplier = this.isTimedContentActive(
-      campaign.doubleChance,
-      at,
-    )
-      ? campaign.doubleChance.multiplier || 2
-      : 1;
-    const allocatedQuantity = selectedQuantity * doubleChanceMultiplier;
 
     return {
       selectedQuantity,
@@ -637,6 +777,8 @@ export class RafflesService {
           }
         : undefined,
       doubleChanceMultiplier,
+      maxSelectableQuantity,
+      maxAllocatedTitles,
     };
   }
 
@@ -1024,6 +1166,19 @@ export class RafflesService {
     }
   }
 
+  private assertPartiallyExpired(campaign: Raffle, at: Date): void {
+    if (!campaign.closesAt || new Date(campaign.closesAt) > at) {
+      throw new ConflictException(
+        'La campaña todavía no alcanzó su fecha de cierre',
+      );
+    }
+    if (campaign.soldCount >= campaign.totalTitles) {
+      throw new ConflictException(
+        'Una campaña totalmente vendida debe continuar al sorteo',
+      );
+    }
+  }
+
   private assertFullySold(campaign: Raffle): void {
     if (campaign.soldCount !== campaign.totalTitles) {
       throw new ConflictException(
@@ -1047,6 +1202,7 @@ export class RafflesService {
     delete raw.winners;
     delete raw.mainWinner;
     delete raw.drawCommittedBy;
+    delete raw.lifecycleExtensions;
     delete raw.contractRevision;
     delete raw.__v;
     if (typeof raw.description === 'string') {
@@ -1109,6 +1265,25 @@ export class RafflesService {
         : null);
 
     const now = new Date();
+    const doubleChanceMultiplier = this.isTimedContentActive(
+      raw.doubleChance,
+      now,
+    )
+      ? raw.doubleChance.multiplier || 2
+      : 1;
+    const configuredMaxTitlesPerOrder = Number(raw.maxTitlesPerOrder || 0);
+    const effectiveMaxTitlesPerOrder = Math.min(
+      maxSelectedTitles(configuredMaxTitlesPerOrder, doubleChanceMultiplier),
+      Math.floor(availableCount / doubleChanceMultiplier),
+    );
+    raw.maxTitlesPerOrder = effectiveMaxTitlesPerOrder;
+    raw.quantitySuggestions = (raw.quantitySuggestions || []).filter(
+      (quantity: number) => quantity <= effectiveMaxTitlesPerOrder,
+    );
+    raw.promotionTiers = (raw.promotionTiers || []).filter(
+      (tier: { quantity?: number }) =>
+        Number(tier.quantity || 0) <= effectiveMaxTitlesPerOrder,
+    );
     const withinLaunchWindow =
       !raw.launchAt || new Date(raw.launchAt).getTime() <= now.getTime();
     const withinClosingWindow =
@@ -1123,11 +1298,17 @@ export class RafflesService {
         [CampaignStatus.Active, CampaignStatus.Open].includes(raw.status) &&
         withinLaunchWindow &&
         withinClosingWindow &&
-        availableCount > 0,
+        availableCount > 0 &&
+        effectiveMaxTitlesPerOrder > 0,
       currentNotice: this.isTimedContentActive(raw.notice, now)
         ? raw.notice
         : null,
-      doubleChanceActive: this.isTimedContentActive(raw.doubleChance, now),
+      doubleChanceActive: doubleChanceMultiplier > 1,
+      purchaseLimits: {
+        maxSelectedTitles: effectiveMaxTitlesPerOrder,
+        maxAllocatedTitles: orderMaxAllocatedTitles(),
+        allocationMultiplier: doubleChanceMultiplier,
+      },
     };
     if (!includeDetails) {
       delete view.regulationHtml;
@@ -1284,11 +1465,13 @@ export class RafflesService {
         CampaignStatus.Cancelled,
       ],
       [CampaignStatus.Active]: [
+        CampaignStatus.Expired,
         CampaignStatus.SoldOut,
         CampaignStatus.AwaitingDraw,
         CampaignStatus.Cancelled,
       ],
       [CampaignStatus.Open]: [
+        CampaignStatus.Expired,
         CampaignStatus.SoldOut,
         CampaignStatus.AwaitingDraw,
         CampaignStatus.Cancelled,
@@ -1299,6 +1482,7 @@ export class RafflesService {
         CampaignStatus.Cancelled,
       ],
       [CampaignStatus.AwaitingDraw]: [CampaignStatus.Drawn],
+      [CampaignStatus.Expired]: [CampaignStatus.Cancelled],
       [CampaignStatus.Drawn]: [CampaignStatus.Closed],
       [CampaignStatus.Closed]: [],
       [CampaignStatus.Cancelled]: [],

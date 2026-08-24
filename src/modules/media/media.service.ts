@@ -354,8 +354,10 @@ export class MediaService {
     try {
       await this.storage.delete(asset.storageKey);
     } catch (error) {
+      const errorName =
+        error instanceof Error && error.name ? error.name : 'UnknownError';
       this.logger.error(
-        `No se pudo purgar el objeto ${asset.id}: ${error instanceof Error ? error.message : String(error)}`,
+        `No se pudo purgar el objeto ${asset.id} (${errorName.replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 80) || 'UnknownError'})`,
       );
       throw new ServiceUnavailableException(
         'No fue posible purgar el medio; la operación puede reintentarse',

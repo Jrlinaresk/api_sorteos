@@ -1,4 +1,12 @@
-import { Controller, Get, Param, Query, Res, StreamableFile, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  Query,
+  Res,
+  StreamableFile,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -27,7 +35,12 @@ export class AdminOrdersController {
     @Res({ passthrough: true }) response: Response,
   ) {
     response.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    response.setHeader('Content-Disposition', `attachment; filename="participantes-admin-${campaignId}.csv"`);
-    return new StreamableFile(await this.orders.participantsCsv(campaignId, true));
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="participantes-admin-${campaignId}.csv"`,
+    );
+    return new StreamableFile(
+      await this.orders.participantsCsv(campaignId, true),
+    );
   }
 }

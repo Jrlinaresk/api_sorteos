@@ -25,7 +25,9 @@ export class CheckoutController {
   constructor(private readonly checkout: CheckoutService) {}
 
   @Post()
-  @Throttle({ default: { limit: 10, ttl: 60 * 1000, blockDuration: 60 * 1000 } })
+  @Throttle({
+    default: { limit: 10, ttl: 60 * 1000, blockDuration: 60 * 1000 },
+  })
   @ApiOperation({
     summary: 'Reservar cuotas y crear un cobro Pix idempotente',
   })
@@ -36,10 +38,7 @@ export class CheckoutController {
       forbidNonWhitelisted: true,
     }),
   )
-  create(
-    @Body() dto: CreateCheckoutDto,
-    @CurrentUser() user?: PublicUserDto,
-  ) {
+  create(@Body() dto: CreateCheckoutDto, @CurrentUser() user?: PublicUserDto) {
     return this.checkout.create(dto, user?.id);
   }
 

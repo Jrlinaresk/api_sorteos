@@ -1,4 +1,8 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { WinnerMessages } from './enums/winner-messages.enum';
@@ -14,7 +18,8 @@ import { Raffle, RaffleDocument } from '../riffles/schema/raffle.schema';
 @Injectable()
 export class WinnersService {
   constructor(
-    @InjectModel(Raffle.name) private readonly raffleModel: Model<RaffleDocument>,
+    @InjectModel(Raffle.name)
+    private readonly raffleModel: Model<RaffleDocument>,
   ) {}
 
   async drawWinners(raffleId: string): Promise<never> {

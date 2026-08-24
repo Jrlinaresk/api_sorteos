@@ -30,10 +30,33 @@ Estas cabeceras se sobrescriben deliberadamente. No use
 la API usa esa IP para límites de solicitudes y auditoría. Los puertos `8017`
 y `8081` deben continuar ligados exclusivamente a `127.0.0.1`.
 
-Si se habilita mTLS para el webhook EFI, CloudPanel debe validar el certificado
-cliente y sobrescribir la cabecera confiable con el resultado de Nginx (por
-ejemplo, `proxy_set_header x-ssl-client-verify $ssl_client_verify;`). Nunca se
-debe reenviar una cabecera de verificación enviada por el cliente.
+El webhook de Efí **requiere mTLS en producción**. Instale en CloudPanel/Nginx la
+cadena CA oficial publicada por Efí (es distinta del certificado cliente usado
+por la API para llamar a Pix) y verifique el certificado solo en la ruta del
+webhook. Una configuración equivalente es:
+
+```nginx
+# En el bloque server HTTPS:
+ssl_client_certificate /ruta/privada/efi-webhook-ca.pem;
+ssl_verify_client optional;
+
+location ~ ^/api/v1/payments/webhooks/efi(?:/pix)?$ {
+    if ($ssl_client_verify != SUCCESS) { return 403; }
+
+    proxy_pass http://127.0.0.1:8017;
+    proxy_set_header x-ssl-client-verify $ssl_client_verify;
+    proxy_set_header x-efi-webhook-token "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+En las demás ubicaciones elimine cualquier valor recibido del navegador con
+`proxy_set_header x-ssl-client-verify "";`. Nunca reenvíe esa cabecera sin
+sobrescribirla. `x-efi-webhook-token` es una defensa adicional opcional y solo
+debe configurarse si un gateway confiable la inyecta; no reemplaza mTLS.
 
 Si despliega con `./deploy-prod.sh --with-nginx`, use en cambio
 `http://127.0.0.1:8081` como upstream.
@@ -47,7 +70,7 @@ y validan el health atravesando `HTTP_PORT` (8081 por defecto).
 ```bash
 ./setup-env.sh
 # editar .env.server sin imprimirlo en logs ni tickets
-# copiar las credenciales/certificado EFI en runtime/efi
+# copiar las credenciales/certificado Pix en runtime/efi y la CA de webhook al proxy
 ./deploy-prod.sh
 ./diagnose.sh
 ```
