@@ -9,9 +9,9 @@ describe('summarizeAuditValue', () => {
         nested: { accessToken: 'jwt', name: 'João' },
       }),
     ).toEqual({
-      phone: '+5511999999999',
+      phone: '[REDACTED]',
       password: '[REDACTED]',
-      nested: { accessToken: '[REDACTED]', name: 'João' },
+      nested: { accessToken: '[REDACTED]', name: '[REDACTED]' },
     });
   });
 

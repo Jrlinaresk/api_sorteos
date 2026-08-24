@@ -6,7 +6,7 @@ export class VerifyManualDrawDto {
   @MaxLength(12)
   winningNumber: string;
 
-  @IsUrl({ require_tld: false })
+  @IsUrl({ protocols: ['https'], require_protocol: true })
   evidenceUrl: string;
 
   @IsString()

@@ -110,7 +110,12 @@ describe('NotificationsService event idempotency', () => {
     ).resolves.toBe(created);
 
     expect(notificationModel.create).toHaveBeenCalledWith(
-      expect.objectContaining({ user, eventKey }),
+      expect.objectContaining({
+        user,
+        eventKey,
+        pushRequested: false,
+        scheduledAt: undefined,
+      }),
     );
   });
 });

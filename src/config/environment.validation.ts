@@ -30,6 +30,12 @@ export function validateEnvironment(input: Environment): Environment {
   );
   validateInteger(environment.RATE_LIMIT_MAX, 'RATE_LIMIT_MAX', 1, 100_000);
   validateInteger(
+    environment.AUDIT_RETENTION_DAYS,
+    'AUDIT_RETENTION_DAYS',
+    1,
+    3_650,
+  );
+  validateInteger(
     environment.RATE_LIMIT_WINDOW_MS,
     'RATE_LIMIT_WINDOW_MS',
     1_000,
@@ -82,6 +88,24 @@ export function validateEnvironment(input: Environment): Environment {
     'DRAW_ENTROPY_BEACON_MAX_RESPONSE_BYTES',
     1_024,
     1_048_576,
+  );
+  validateInteger(
+    environment.MEDIA_MAX_TOTAL_STORED_BYTES,
+    'MEDIA_MAX_TOTAL_STORED_BYTES',
+    1,
+    10_995_116_277_760,
+  );
+  validateInteger(
+    environment.MEDIA_MAX_STORED_BYTES_PER_USER,
+    'MEDIA_MAX_STORED_BYTES_PER_USER',
+    1,
+    10_995_116_277_760,
+  );
+  validateInteger(
+    environment.MEDIA_DELETED_RETENTION_DAYS,
+    'MEDIA_DELETED_RETENTION_DAYS',
+    1,
+    3_650,
   );
   validateBoolean(
     environment.DRAW_MANUAL_EXTERNAL_ENABLED,

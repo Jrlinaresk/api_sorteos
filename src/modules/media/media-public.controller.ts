@@ -38,6 +38,7 @@ export class MediaPublicController {
     status: 304,
     description: 'La versión cacheada sigue vigente',
   })
+  @ApiResponse({ status: 404, description: 'Medio inactivo o no disponible' })
   async head(
     @Param('mediaId') mediaId: string,
     @Headers('if-none-match') ifNoneMatch: string | undefined,
@@ -75,6 +76,7 @@ export class MediaPublicController {
     description: 'La versión cacheada sigue vigente',
   })
   @ApiResponse({ status: 416, description: 'Rango inválido o no satisfacible' })
+  @ApiResponse({ status: 404, description: 'Medio inactivo o no disponible' })
   async get(
     @Param('mediaId') mediaId: string,
     @Headers('range') rangeHeader: string | undefined,

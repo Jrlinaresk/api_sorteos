@@ -32,6 +32,26 @@ estable de 8 a 160 caracteres. La combinación `userId + eventKey` es única: un
 replay concurrente devuelve el documento existente y no vuelve a crear el inbox
 ni a disparar la entrega push. No use UUID aleatorios por intento.
 
+Cuando `deliverPush` es `true`, la intención de envío queda persistida antes de
+contactar al proveedor. Un worker ejecutado cada 30 segundos consume solamente
+registros solicitados y vencidos. La adquisición cambia el registro a
+`processing` mediante compare-and-set y guarda un lease con token, de modo que
+dos solicitudes, procesos o réplicas no pueden enviar simultáneamente la misma
+notificación. El lease se renueva mientras el proveedor está trabajando.
+
+Las horas silenciosas no son un rechazo: el registro continúa `pending` y
+`scheduledAt` apunta exactamente al final local del intervalo. Los fallos
+transitorios (`429`, red o indisponibilidad upstream) se reprograman con backoff
+exponencial; después de cinco intentos quedan `failed` con
+`attempts_exhausted`. Los bloqueos permanentes de preferencias, proveedor o
+suscripciones quedan `skipped`. Un resultado parcialmente aceptado nunca se
+reenvía, porque hacerlo duplicaría los destinos ya aceptados.
+
+Si un proceso desaparece después de comenzar el efecto externo y el resultado
+no puede conocerse, al vencer el lease el worker deja el registro `failed` con
+`delivery_uncertain` en vez de arriesgar un segundo push. Un operador puede
+revisarlo y solicitar después un reintento explícito desde el endpoint admin.
+
 Eventos recomendados para integrarlo posteriormente: `order.created`, `payment.approved`, `payment.expired`, `draw.completed` y `winner.confirmed`.
 
 ## Web Push con VAPID
@@ -51,19 +71,19 @@ pnpm exec web-push generate-vapid-keys --json
 
 Guardar la clave privada en el secret manager del entorno; no incluirla en Git, frontend, logs o respuestas.
 
-| Variable                          | Obligatoria/predeterminado | Descripción                                                                              |
-| --------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------- |
-| `NOTIFICATION_PUSH_PROVIDER`      | `noop`                     | Selector estricto: `noop` o `webpush`                                                    |
-| `WEB_PUSH_VAPID_SUBJECT`          | Obligatoria para activar   | `mailto:soporte@dominio.com` o URL HTTPS de contacto                                     |
-| `WEB_PUSH_VAPID_PUBLIC_KEY`       | Obligatoria para activar   | Clave pública Base64 URL-safe de 65 bytes                                                |
-| `WEB_PUSH_VAPID_PRIVATE_KEY`      | Obligatoria para activar   | Clave privada Base64 URL-safe de 32 bytes                                                |
-| `WEB_PUSH_TTL_SECONDS`            | `300`                      | Retención upstream, entre 0 y 2419200 segundos                                           |
-| `WEB_PUSH_TIMEOUT_MS`             | `10000`                    | Timeout de socket, entre 1000 y 120000 ms                                                |
-| `WEB_PUSH_URGENCY`                | `normal`                   | `very-low`, `low`, `normal` o `high`                                                     |
-| `WEB_PUSH_MAX_PAYLOAD_BYTES`      | `3500`                     | Presupuesto UTF-8, máximo 4096 bytes                                                     |
-| `WEB_PUSH_MAX_CONCURRENCY`        | `10`                       | Envíos simultáneos, entre 1 y 50                                                         |
-| `WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER` | `10`                  | Suscripciones activas y destinos por entrega, entre 1 y 50                               |
-| `WEB_PUSH_ALLOWED_ENDPOINT_HOSTS` | Lista segura integrada     | Lista CSV que reemplaza los hosts admitidos; acepta patrones como `*.notify.windows.com` |
+| Variable                              | Obligatoria/predeterminado | Descripción                                                                              |
+| ------------------------------------- | -------------------------- | ---------------------------------------------------------------------------------------- |
+| `NOTIFICATION_PUSH_PROVIDER`          | `noop`                     | Selector estricto: `noop` o `webpush`                                                    |
+| `WEB_PUSH_VAPID_SUBJECT`              | Obligatoria para activar   | `mailto:soporte@dominio.com` o URL HTTPS de contacto                                     |
+| `WEB_PUSH_VAPID_PUBLIC_KEY`           | Obligatoria para activar   | Clave pública Base64 URL-safe de 65 bytes                                                |
+| `WEB_PUSH_VAPID_PRIVATE_KEY`          | Obligatoria para activar   | Clave privada Base64 URL-safe de 32 bytes                                                |
+| `WEB_PUSH_TTL_SECONDS`                | `300`                      | Retención upstream, entre 0 y 2419200 segundos                                           |
+| `WEB_PUSH_TIMEOUT_MS`                 | `10000`                    | Timeout de socket, entre 1000 y 120000 ms                                                |
+| `WEB_PUSH_URGENCY`                    | `normal`                   | `very-low`, `low`, `normal` o `high`                                                     |
+| `WEB_PUSH_MAX_PAYLOAD_BYTES`          | `3500`                     | Presupuesto UTF-8, máximo 4096 bytes                                                     |
+| `WEB_PUSH_MAX_CONCURRENCY`            | `10`                       | Envíos simultáneos, entre 1 y 50                                                         |
+| `WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER` | `10`                       | Suscripciones activas y destinos por entrega, entre 1 y 50                               |
+| `WEB_PUSH_ALLOWED_ENDPOINT_HOSTS`     | Lista segura integrada     | Lista CSV que reemplaza los hosts admitidos; acepta patrones como `*.notify.windows.com` |
 
 La lista integrada admite FCM/Chrome, Mozilla, Apple Web Push y Windows Push. Si el navegador entrega un host distinto, añadirlo explícitamente tras verificar que sea el servicio push esperado; no usar comodines globales.
 

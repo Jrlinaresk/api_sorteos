@@ -1,8 +1,15 @@
-import { Injectable, Optional, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Optional,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { InjectConnection } from '@nestjs/mongoose';
 import * as bcrypt from 'bcryptjs';
 import { timingSafeEqual } from 'crypto';
+import { Connection } from 'mongoose';
 import { UsersService } from '../users/users.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -15,6 +22,10 @@ import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { ConfirmPasswordResetDto } from './dto/confirm-password-reset.dto';
 import { normalizeEmail } from '../users/utils/user-normalization';
 import { RefreshTokensService } from './refresh-tokens.service';
+import { RegistrationAcceptedDto } from './dto/registration-accepted.dto';
+import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
+import { ResendRegistrationCodeDto } from './dto/resend-registration-code.dto';
+import { EmailVerificationPurpose } from '../email/enums/email-verification-purpose.enum';
 
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync('invalid-password-placeholder', 12);
 
@@ -28,13 +39,16 @@ export class AuthService {
     configService: ConfigService,
     private readonly emailVerificationService: EmailVerificationService,
     @Optional() private readonly refreshTokens?: RefreshTokensService,
+    @Optional()
+    @InjectConnection()
+    private readonly connection?: Connection,
   ) {
     this.expiresIn =
       configService.get<string>('JWT_ACCESS_EXPIRES_IN') ?? '15m';
   }
 
-  async register(dto: RegisterDto): Promise<AuthResponseDto> {
-    const user = await this.usersService.create({
+  async register(dto: RegisterDto): Promise<RegistrationAcceptedDto> {
+    const attempt = await this.usersService.createPendingRegistration({
       phone: dto.phone,
       password: dto.password,
       name: dto.name,
@@ -43,6 +57,86 @@ export class AuthService {
       nickname: dto.nickname,
       role: UserRole.CUSTOMER,
     });
+    if (attempt.user?.email) {
+      this.dispatchRegistrationCode(attempt.user.email, attempt.registrationId);
+    }
+    return this.registrationAccepted(attempt.registrationId);
+  }
+
+  async resendRegistrationCode(
+    dto: ResendRegistrationCodeDto,
+  ): Promise<RegistrationAcceptedDto> {
+    const pending = await this.usersService.findPendingRegistrationByEmail(
+      dto.email,
+      dto.registrationId,
+    );
+    if (pending?.email) {
+      this.dispatchRegistrationCode(pending.email, dto.registrationId);
+    }
+    return this.registrationAccepted(dto.registrationId);
+  }
+
+  async confirmRegistration(
+    dto: ConfirmRegistrationDto,
+  ): Promise<AuthResponseDto> {
+    const email = normalizeEmail(dto.email);
+    if (!email) throw this.invalidRegistrationCode();
+
+    let user: UserDocument | null = null;
+    let invalidCode = false;
+    let invalidPendingRegistration = false;
+
+    if (this.connection) {
+      const session = await this.connection.startSession();
+      try {
+        await session.withTransaction(async () => {
+          try {
+            await this.emailVerificationService.verifyCode(
+              email,
+              dto.code,
+              EmailVerificationPurpose.Registration,
+              dto.registrationId,
+              session,
+            );
+          } catch (error) {
+            if (!(error instanceof BadRequestException)) throw error;
+            invalidCode = true;
+            return;
+          }
+          user = await this.usersService.activatePendingRegistrationByEmail(
+            email,
+            dto.registrationId,
+            session,
+          );
+          invalidPendingRegistration = !user;
+        });
+      } finally {
+        await session.endSession();
+      }
+    } else {
+      try {
+        await this.emailVerificationService.verifyCode(
+          email,
+          dto.code,
+          EmailVerificationPurpose.Registration,
+          dto.registrationId,
+        );
+      } catch (error) {
+        if (!(error instanceof BadRequestException)) throw error;
+        invalidCode = true;
+      }
+      if (!invalidCode) {
+        user = await this.usersService.activatePendingRegistrationByEmail(
+          email,
+          dto.registrationId,
+        );
+        invalidPendingRegistration = !user;
+      }
+    }
+
+    if (invalidCode || invalidPendingRegistration || !user) {
+      throw this.invalidRegistrationCode();
+    }
     return this.createSession(user);
   }
 
@@ -69,7 +163,9 @@ export class AuthService {
       await this.usersService.recordFailedLogin(String(user._id));
       throw this.invalidCredentials();
     }
-    if (user.isActive === false) throw this.invalidCredentials();
+    if (user.isActive === false || user.registrationPending === true) {
+      throw this.invalidCredentials();
+    }
 
     await this.usersService.clearFailedLogins(String(user._id));
 
@@ -82,11 +178,15 @@ export class AuthService {
 
     try {
       const user = await this.usersService.findByPhone(dto.phone);
-      if (normalizeEmail(user.email) === email) {
+      if (
+        user.isActive !== false &&
+        user.registrationPending !== true &&
+        normalizeEmail(user.email) === email
+      ) {
         // El envío se desacopla de la respuesta genérica: esperar al SMTP solo
         // cuando la cuenta existe permitiría enumerarla midiendo la latencia.
         void this.emailVerificationService
-          .createVerificationCode(email)
+          .createVerificationCode(email, EmailVerificationPurpose.PasswordReset)
           .catch(() => undefined);
       }
     } catch {
@@ -107,12 +207,19 @@ export class AuthService {
       throw this.invalidResetCode();
     }
 
-    if (normalizeEmail(user.email) !== email) throw this.invalidResetCode();
+    if (
+      user.isActive === false ||
+      user.registrationPending === true ||
+      normalizeEmail(user.email) !== email
+    ) {
+      throw this.invalidResetCode();
+    }
 
     try {
       await this.emailVerificationService.verifyCode(
         email,
         dto.code.toUpperCase(),
+        EmailVerificationPurpose.PasswordReset,
       );
     } catch {
       throw this.invalidResetCode();
@@ -136,6 +243,7 @@ export class AuthService {
     const user = await this.usersService.findOne(rotated.userId);
     if (
       user.isActive === false ||
+      user.registrationPending === true ||
       (user.authVersion ?? 0) !== rotated.authVersion
     ) {
       await this.refreshTokens.revokeAllForUser(
@@ -214,6 +322,9 @@ export class AuthService {
     user: UserDocument,
     existingRefresh?: { token: string; expiresAt: Date },
   ): Promise<AuthResponseDto> {
+    if (user.isActive === false || user.registrationPending === true) {
+      throw this.invalidCredentials();
+    }
     const payload: JwtPayload = {
       sub: String(user._id),
       phone: user.phone,
@@ -247,5 +358,35 @@ export class AuthService {
     return new UnauthorizedException(
       'Los datos o el código de recuperación no son válidos',
     );
+  }
+
+  private invalidRegistrationCode(): UnauthorizedException {
+    return new UnauthorizedException(
+      'Los datos o el código de verificación no son válidos',
+    );
+  }
+
+  private dispatchRegistrationCode(
+    email: string,
+    registrationId: string,
+  ): void {
+    void this.emailVerificationService
+      .createVerificationCode(
+        email,
+        EmailVerificationPurpose.Registration,
+        registrationId,
+      )
+      .catch(() => undefined);
+  }
+
+  private registrationAccepted(
+    registrationId: string,
+  ): RegistrationAcceptedDto {
+    return {
+      registrationId,
+      message:
+        'Si los datos pueden registrarse, recibirás un código de verificación por correo',
+      verificationRequired: true,
+    };
   }
 }

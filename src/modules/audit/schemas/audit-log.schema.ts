@@ -74,6 +74,9 @@ export class AuditLog {
   @Prop({ required: false, immutable: true, maxlength: 500 })
   errorMessage?: string;
 
+  @Prop({ required: true, immutable: true, select: false })
+  expiresAt: Date;
+
   createdAt: Date;
 }
 
@@ -82,6 +85,7 @@ export const AuditLogSchema = SchemaFactory.createForClass(AuditLog);
 AuditLogSchema.index({ createdAt: -1, category: 1 });
 AuditLogSchema.index({ resourceType: 1, resourceId: 1, createdAt: -1 });
 AuditLogSchema.index({ actorId: 1, createdAt: -1 });
+AuditLogSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 const appendOnlyError = new Error(
   'Los eventos de auditoría son append-only y no pueden modificarse ni eliminarse',

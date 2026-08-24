@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { Types } from 'mongoose';
 import { RafflesService } from './raffles.service';
 import {
@@ -231,6 +232,42 @@ describe('RafflesService domain rules', () => {
         }),
       );
       expect(saved).toHaveLength(1);
+    });
+
+    it('sanitiza y canonicaliza el contenido público antes de persistir su hash legal', async () => {
+      let persisted: Record<string, any> | undefined;
+      raffleModel.mockImplementation((payload: Record<string, unknown>) => {
+        persisted = {
+          ...payload,
+          _id: new Types.ObjectId(),
+          save: jest.fn(),
+        };
+        persisted.save.mockResolvedValue(persisted);
+        return persisted;
+      });
+
+      await service.create({
+        ...validDto(),
+        description:
+          '<p onclick="steal()">Descripción</p><iframe src="https://evil.test"></iframe>',
+        regulationHtml:
+          '<p style="color:red">Reglas <strong>claras</strong></p><script>steal()</script>',
+      });
+
+      const safeRegulation = '<p>Reglas <strong>claras</strong></p>';
+      expect(persisted).toEqual(
+        expect.objectContaining({
+          description: '<p>Descripción</p>',
+          regulationHtml: safeRegulation,
+          regulationHistory: [
+            expect.objectContaining({
+              version: '1',
+              html: safeRegulation,
+              sha256: createHash('sha256').update(safeRegulation).digest('hex'),
+            }),
+          ],
+        }),
+      );
     });
   });
 
@@ -573,8 +610,17 @@ describe('RafflesService domain rules', () => {
         reservedCount: 0,
         totalTitles: 100,
         drawMethod: DrawMethod.ManualExternal,
-        regulationHtml: '<p>Reglas</p>',
-        regulationHistory: [],
+        description: '<p onclick="steal()">Descripción</p>',
+        regulationHtml:
+          '<p style="color:red">Reglas</p><script>steal()</script>',
+        regulationHistory: [
+          {
+            version: '1',
+            html: '<p style="color:red">Reglas</p><script>steal()</script>',
+            sha256: 'legacy',
+            publishedAt: new Date('2026-08-24T00:00:00.000Z'),
+          },
+        ],
         termsVersion: '1',
       } as any;
       raffleModel.findById.mockReturnValue({
@@ -597,7 +643,20 @@ describe('RafflesService domain rules', () => {
           status: CampaignStatus.Draft,
         }),
         expect.objectContaining({
-          $set: expect.objectContaining({ status: CampaignStatus.Active }),
+          $set: expect.objectContaining({
+            status: CampaignStatus.Active,
+            description: '<p>Descripción</p>',
+            regulationHtml: '<p>Reglas</p>',
+            regulationHistory: [
+              expect.objectContaining({
+                version: '1',
+                html: '<p>Reglas</p>',
+                sha256: createHash('sha256')
+                  .update('<p>Reglas</p>')
+                  .digest('hex'),
+              }),
+            ],
+          }),
           $inc: { contractRevision: 1 },
         }),
         { new: true, runValidators: true },

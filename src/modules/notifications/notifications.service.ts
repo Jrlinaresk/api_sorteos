@@ -9,12 +9,18 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
+import { Cron } from '@nestjs/schedule';
+import { randomUUID } from 'node:crypto';
 import { FilterQuery, Model, Types } from 'mongoose';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 import { ListNotificationsQueryDto } from './dto/list-notifications-query.dto';
 import { RegisterPushSubscriptionDto } from './dto/register-push-subscription.dto';
 import { UpdateNotificationPreferencesDto } from './dto/update-notification-preferences.dto';
-import { canDeliverPush } from './notification-policy';
+import {
+  canDeliverPushIgnoringQuietHours,
+  isInsideQuietHours,
+  nextAllowedPushAt,
+} from './notification-policy';
 import {
   NotificationPreferenceView,
   PublicNotificationView,
@@ -67,6 +73,22 @@ interface DeliveryStateDetails {
   rejected?: number;
   invalidSubscriptions?: number;
 }
+
+interface DeliveryStateOptions {
+  pushRequested?: boolean;
+  scheduledAt?: Date;
+}
+
+// El timeout Web Push máximo permitido es 120 s. Cinco minutos cubren esa
+// llamada y permiten recuperar pronto un proceso caído antes del dispatch;
+// el heartbeat extiende el lease mientras el worker siga vivo.
+const DELIVERY_LEASE_MILLISECONDS = 5 * 60 * 1_000;
+const DELIVERY_LEASE_HEARTBEAT_MILLISECONDS = 60 * 1_000;
+const MAX_AUTOMATIC_DELIVERY_ATTEMPTS = 5;
+const RETRY_BASE_MILLISECONDS = 30 * 1_000;
+const RETRY_MAX_MILLISECONDS = 30 * 60 * 1_000;
+const DELIVERY_WORKER_BATCH_SIZE = 25;
+const DELIVERY_WORKER_CONCURRENCY = 5;
 
 @Injectable()
 export class NotificationsService {
@@ -121,6 +143,8 @@ export class NotificationsService {
         type: dto.type ?? NotificationType.General,
         createdBy: createdBy?.slice(0, 120),
         expiresAt: expiresAt ? new Date(expiresAt) : undefined,
+        pushRequested: deliverPush,
+        scheduledAt: deliverPush ? new Date() : undefined,
       });
     } catch (error) {
       if (normalizedEventKey && this.isDuplicateKey(error)) {
@@ -427,8 +451,69 @@ export class NotificationsService {
     return toNotificationPreference(preferences);
   }
 
+  @Cron('*/30 * * * * *')
+  async processPendingPushDeliveries(): Promise<number> {
+    const now = new Date();
+    const candidates = await this.notificationModel
+      .find({
+        pushRequested: true,
+        $or: [
+          {
+            deliveryStatus: NotificationDeliveryStatus.Pending,
+            $or: [
+              { scheduledAt: { $exists: false } },
+              { scheduledAt: { $lte: now } },
+            ],
+          },
+          {
+            deliveryStatus: NotificationDeliveryStatus.Processing,
+            $or: [
+              { deliveryLeaseExpiresAt: { $exists: false } },
+              { deliveryLeaseExpiresAt: { $lte: now } },
+            ],
+          },
+        ],
+      })
+      .sort({ scheduledAt: 1, createdAt: 1 })
+      .limit(DELIVERY_WORKER_BATCH_SIZE)
+      .select('_id deliveryStatus deliveryDispatchStartedAt')
+      .lean()
+      .exec();
+
+    for (
+      let cursor = 0;
+      cursor < candidates.length;
+      cursor += DELIVERY_WORKER_CONCURRENCY
+    ) {
+      const batch = candidates.slice(
+        cursor,
+        cursor + DELIVERY_WORKER_CONCURRENCY,
+      );
+      await Promise.allSettled(
+        batch.map((candidate) =>
+          candidate.deliveryStatus === NotificationDeliveryStatus.Processing &&
+          candidate.deliveryDispatchStartedAt
+            ? this.finalizeUncertainDelivery(candidate._id.toString())
+            : this.deliverPushInternal(candidate._id.toString(), true),
+        ),
+      );
+    }
+    return candidates.length;
+  }
+
   async deliverPush(notificationId: string): Promise<NotificationDocument> {
-    const notification = await this.getById(notificationId);
+    return this.deliverPushInternal(notificationId, false);
+  }
+
+  private async deliverPushInternal(
+    notificationId: string,
+    automatic: boolean,
+  ): Promise<NotificationDocument> {
+    const uncertain = await this.finalizeUncertainDelivery(notificationId);
+    if (uncertain) return uncertain;
+    const claim = await this.claimDelivery(notificationId, automatic);
+    if (!claim) return this.getById(notificationId);
+    const { notification, leaseToken } = claim;
     const preferences = await this.getPreferenceDocument(
       notification.user.toString(),
     );
@@ -436,6 +521,7 @@ export class NotificationsService {
     if (!this.pushProvider || this.pushProvider.isConfigured === false) {
       return this.setDeliveryState(
         notification,
+        leaseToken,
         NotificationDeliveryStatus.Skipped,
         'No hay proveedor push configurado',
         false,
@@ -445,9 +531,10 @@ export class NotificationsService {
         },
       );
     }
-    if (!canDeliverPush(preferences, notification.type)) {
+    if (!canDeliverPushIgnoringQuietHours(preferences, notification.type)) {
       return this.setDeliveryState(
         notification,
+        leaseToken,
         NotificationDeliveryStatus.Skipped,
         'Las preferencias del usuario impiden la entrega push',
         false,
@@ -459,6 +546,24 @@ export class NotificationsService {
     }
 
     const deliveryNow = new Date();
+    if (isInsideQuietHours(preferences, deliveryNow)) {
+      return this.setDeliveryState(
+        notification,
+        leaseToken,
+        NotificationDeliveryStatus.Pending,
+        'Entrega pospuesta por las horas silenciosas del usuario',
+        false,
+        {
+          provider: this.pushProvider.providerName,
+          code: NotificationDeliveryCode.QuietHours,
+        },
+        {
+          pushRequested: true,
+          scheduledAt: nextAllowedPushAt(preferences, deliveryNow),
+        },
+      );
+    }
+
     await this.subscriptionModel
       .updateMany(
         {
@@ -500,6 +605,7 @@ export class NotificationsService {
     if (subscriptions.length === 0) {
       return this.setDeliveryState(
         notification,
+        leaseToken,
         NotificationDeliveryStatus.Skipped,
         'El usuario no tiene suscripciones push activas',
         false,
@@ -510,69 +616,169 @@ export class NotificationsService {
       );
     }
 
-    notification.deliveryAttempts += 1;
-    await notification.save();
+    const attempted = await this.notificationModel
+      .findOneAndUpdate(
+        {
+          _id: notification._id,
+          deliveryStatus: NotificationDeliveryStatus.Processing,
+          deliveryLeaseToken: leaseToken,
+        },
+        {
+          $inc: { deliveryAttempts: 1 },
+          $set: {
+            lastDeliveryAttemptAt: deliveryNow,
+            deliveryDispatchStartedAt: deliveryNow,
+          },
+        },
+        { new: true },
+      )
+      .exec();
+    if (!attempted) return this.getById(notificationId);
 
+    let result: PushDeliveryResult;
     try {
-      const result = await this.pushProvider.send(
-        {
-          notificationId: notification.id,
-          title: notification.title,
-          body: notification.body,
-          type: notification.type,
-          data: notification.data ?? {},
-          imageUrl: notification.imageUrl,
-          actionUrl: notification.actionUrl,
-        },
-        subscriptions.map((subscription) => ({
-          subscriptionId: subscription._id.toString(),
-          provider: subscription.provider,
-          address: subscription.address,
-          credentials: subscription.credentials ?? {},
-        })),
-      );
-
-      await this.disableRejectedSubscriptions(notification, result);
-
-      const status =
-        result.accepted > 0 && result.rejected > 0
-          ? NotificationDeliveryStatus.PartiallySent
-          : result.accepted > 0
-            ? NotificationDeliveryStatus.Sent
-            : NotificationDeliveryStatus.Failed;
-      return this.setDeliveryState(
-        notification,
-        status,
-        result.error,
-        result.accepted > 0,
-        {
-          provider: result.provider,
-          code:
-            result.errorCode ??
-            (status === NotificationDeliveryStatus.Sent
-              ? NotificationDeliveryCode.Delivered
-              : status === NotificationDeliveryStatus.PartiallySent
-                ? NotificationDeliveryCode.PartialFailure
-                : NotificationDeliveryCode.DeliveryFailed),
-          accepted: result.accepted,
-          rejected: result.rejected,
-          invalidSubscriptions:
-            (result.invalidSubscriptionIds?.length ?? 0) +
-            (result.expiredSubscriptionIds?.length ?? 0),
-        },
+      result = await this.withLeaseHeartbeat(attempted, leaseToken, () =>
+        this.pushProvider!.send(
+          {
+            notificationId: attempted.id,
+            title: attempted.title,
+            body: attempted.body,
+            type: attempted.type,
+            data: attempted.data ?? {},
+            imageUrl: attempted.imageUrl,
+            actionUrl: attempted.actionUrl,
+          },
+          subscriptions.map((subscription) => ({
+            subscriptionId: subscription._id.toString(),
+            provider: subscription.provider,
+            address: subscription.address,
+            credentials: subscription.credentials ?? {},
+          })),
+        ),
       );
     } catch {
+      // El contrato del proveedor convierte fallos conocidos de cada destino
+      // en PushDeliveryResult. Si el adaptador lanza después de comenzar el
+      // dispatch, algunos servicios externos podrían haber aceptado el push;
+      // reintentarlo automáticamente duplicaría notificaciones.
       return this.setDeliveryState(
-        notification,
+        attempted,
+        leaseToken,
         NotificationDeliveryStatus.Failed,
-        'Fallo inesperado del proveedor push',
+        'El proveedor terminó sin confirmar el resultado; revise antes de reintentar',
         false,
         {
           provider: this.pushProvider.providerName,
-          code: NotificationDeliveryCode.DeliveryFailed,
+          code: NotificationDeliveryCode.DeliveryUncertain,
         },
       );
     }
+
+    // La limpieza local jamás puede convertir un push ya aceptado en reenvío.
+    await this.disableRejectedSubscriptions(attempted, result).catch(
+      () => undefined,
+    );
+
+    const details = {
+      provider: result.provider,
+      code: result.errorCode,
+      accepted: result.accepted,
+      rejected: result.rejected,
+      invalidSubscriptions:
+        (result.invalidSubscriptionIds?.length ?? 0) +
+        (result.expiredSubscriptionIds?.length ?? 0),
+    };
+
+    if (result.accepted === 0 && this.isTransientFailure(result)) {
+      return this.scheduleRetry(
+        attempted,
+        leaseToken,
+        result.error ?? 'Fallo transitorio del proveedor push',
+        details,
+      );
+    }
+
+    const status =
+      result.accepted > 0 && result.rejected > 0
+        ? NotificationDeliveryStatus.PartiallySent
+        : result.accepted > 0
+          ? NotificationDeliveryStatus.Sent
+          : NotificationDeliveryStatus.Failed;
+    return this.setDeliveryState(
+      attempted,
+      leaseToken,
+      status,
+      result.error,
+      result.accepted > 0,
+      {
+        ...details,
+        code:
+          result.errorCode ??
+          (status === NotificationDeliveryStatus.Sent
+            ? NotificationDeliveryCode.Delivered
+            : status === NotificationDeliveryStatus.PartiallySent
+              ? NotificationDeliveryCode.PartialFailure
+              : NotificationDeliveryCode.DeliveryFailed),
+      },
+    );
+  }
+
+  private async claimDelivery(
+    notificationId: string,
+    automatic: boolean,
+  ): Promise<
+    { notification: NotificationDocument; leaseToken: string } | undefined
+  > {
+    const _id = this.toObjectId(notificationId, 'notificación');
+    const now = new Date();
+    const leaseToken = randomUUID();
+    const pendingDue = {
+      deliveryStatus: NotificationDeliveryStatus.Pending,
+      $or: [
+        { scheduledAt: { $exists: false } },
+        { scheduledAt: { $lte: now } },
+      ],
+    };
+    const staleLease = {
+      deliveryStatus: NotificationDeliveryStatus.Processing,
+      deliveryDispatchStartedAt: { $exists: false },
+      $or: [
+        { deliveryLeaseExpiresAt: { $exists: false } },
+        { deliveryLeaseExpiresAt: { $lte: now } },
+      ],
+    };
+    const eligibleStates = automatic
+      ? [pendingDue, staleLease]
+      : [
+          pendingDue,
+          staleLease,
+          { deliveryStatus: NotificationDeliveryStatus.Failed },
+          { deliveryStatus: NotificationDeliveryStatus.Skipped },
+        ];
+    const filter: FilterQuery<NotificationDocument> = {
+      _id,
+      ...(automatic ? { pushRequested: true } : {}),
+      $or: eligibleStates,
+    };
+
+    const notification = await this.notificationModel
+      .findOneAndUpdate(
+        filter,
+        {
+          $set: {
+            deliveryStatus: NotificationDeliveryStatus.Processing,
+            pushRequested: true,
+            deliveryLeaseToken: leaseToken,
+            deliveryLeaseExpiresAt: new Date(
+              now.getTime() + DELIVERY_LEASE_MILLISECONDS,
+            ),
+          },
+          $unset: { scheduledAt: 1 },
+        },
+        { new: true },
+      )
+      .exec();
+    return notification ? { notification, leaseToken } : undefined;
   }
 
   private async getById(notificationId: string): Promise<NotificationDocument> {
@@ -592,21 +798,168 @@ export class NotificationsService {
 
   private async setDeliveryState(
     notification: NotificationDocument,
+    leaseToken: string,
     status: NotificationDeliveryStatus,
     error?: string,
     delivered = false,
     details: DeliveryStateDetails = {},
+    options: DeliveryStateOptions = {},
   ): Promise<NotificationDocument> {
-    notification.deliveryStatus = status;
-    notification.lastDeliveryError = error?.slice(0, 500);
-    notification.deliveryProvider = details.provider;
-    notification.deliveryCode = details.code;
-    notification.deliveryAccepted = details.accepted ?? 0;
-    notification.deliveryRejected = details.rejected ?? 0;
-    notification.deliveryInvalidSubscriptions =
-      details.invalidSubscriptions ?? 0;
-    if (delivered) notification.deliveredAt = new Date();
-    return notification.save();
+    const set: Record<string, unknown> = {
+      deliveryStatus: status,
+      pushRequested: options.pushRequested ?? false,
+      deliveryAccepted: details.accepted ?? 0,
+      deliveryRejected: details.rejected ?? 0,
+      deliveryInvalidSubscriptions: details.invalidSubscriptions ?? 0,
+    };
+    const unset: Record<string, 1> = {
+      deliveryLeaseToken: 1,
+      deliveryLeaseExpiresAt: 1,
+      deliveryDispatchStartedAt: 1,
+    };
+    if (error) set.lastDeliveryError = error.slice(0, 500);
+    else unset.lastDeliveryError = 1;
+    if (details.provider) set.deliveryProvider = details.provider;
+    else unset.deliveryProvider = 1;
+    if (details.code) set.deliveryCode = details.code;
+    else unset.deliveryCode = 1;
+    if (options.scheduledAt) set.scheduledAt = options.scheduledAt;
+    else unset.scheduledAt = 1;
+    if (delivered) set.deliveredAt = new Date();
+
+    const updated = await this.notificationModel
+      .findOneAndUpdate(
+        {
+          _id: notification._id,
+          deliveryStatus: NotificationDeliveryStatus.Processing,
+          deliveryLeaseToken: leaseToken,
+        },
+        { $set: set, $unset: unset },
+        { new: true },
+      )
+      .exec();
+    return updated ?? this.getById(notification.id);
+  }
+
+  private async scheduleRetry(
+    notification: NotificationDocument,
+    leaseToken: string,
+    error: string,
+    details: DeliveryStateDetails,
+  ): Promise<NotificationDocument> {
+    const attempts = notification.deliveryAttempts ?? 0;
+    if (attempts >= MAX_AUTOMATIC_DELIVERY_ATTEMPTS) {
+      return this.setDeliveryState(
+        notification,
+        leaseToken,
+        NotificationDeliveryStatus.Failed,
+        error,
+        false,
+        { ...details, code: NotificationDeliveryCode.AttemptsExhausted },
+      );
+    }
+
+    const exponent = Math.max(0, attempts - 1);
+    const delay = Math.min(
+      RETRY_MAX_MILLISECONDS,
+      RETRY_BASE_MILLISECONDS * 2 ** exponent,
+    );
+    return this.setDeliveryState(
+      notification,
+      leaseToken,
+      NotificationDeliveryStatus.Pending,
+      error,
+      false,
+      { ...details, code: NotificationDeliveryCode.RetryScheduled },
+      {
+        pushRequested: true,
+        scheduledAt: new Date(Date.now() + delay),
+      },
+    );
+  }
+
+  private isTransientFailure(result: PushDeliveryResult): boolean {
+    if (result.accepted > 0) return false;
+    const invalidTargets =
+      (result.invalidSubscriptionIds?.length ?? 0) +
+      (result.expiredSubscriptionIds?.length ?? 0);
+    if (result.rejected > 0 && invalidTargets >= result.rejected) return false;
+    if (!result.errorCode) return true;
+    return new Set([
+      'rate_limited',
+      'upstream_unavailable',
+      'network_error',
+      'delivery_failed',
+      'validation_failed',
+    ]).has(result.errorCode);
+  }
+
+  private async withLeaseHeartbeat<T>(
+    notification: NotificationDocument,
+    leaseToken: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const heartbeat = setInterval(() => {
+      void this.notificationModel
+        .updateOne(
+          {
+            _id: notification._id,
+            deliveryStatus: NotificationDeliveryStatus.Processing,
+            deliveryLeaseToken: leaseToken,
+          },
+          {
+            $set: {
+              deliveryLeaseExpiresAt: new Date(
+                Date.now() + DELIVERY_LEASE_MILLISECONDS,
+              ),
+            },
+          },
+        )
+        .exec()
+        .catch(() => undefined);
+    }, DELIVERY_LEASE_HEARTBEAT_MILLISECONDS);
+    heartbeat.unref();
+    try {
+      return await operation();
+    } finally {
+      clearInterval(heartbeat);
+    }
+  }
+
+  private async finalizeUncertainDelivery(
+    notificationId: string,
+  ): Promise<NotificationDocument | undefined> {
+    const _id = this.toObjectId(notificationId, 'notificación');
+    const updated = await this.notificationModel
+      .findOneAndUpdate(
+        {
+          _id,
+          deliveryStatus: NotificationDeliveryStatus.Processing,
+          deliveryDispatchStartedAt: { $exists: true },
+          $or: [
+            { deliveryLeaseExpiresAt: { $exists: false } },
+            { deliveryLeaseExpiresAt: { $lte: new Date() } },
+          ],
+        },
+        {
+          $set: {
+            deliveryStatus: NotificationDeliveryStatus.Failed,
+            pushRequested: false,
+            deliveryCode: NotificationDeliveryCode.DeliveryUncertain,
+            lastDeliveryError:
+              'El proceso terminó durante el envío; se requiere revisión manual antes de reintentar',
+          },
+          $unset: {
+            scheduledAt: 1,
+            deliveryLeaseToken: 1,
+            deliveryLeaseExpiresAt: 1,
+            deliveryDispatchStartedAt: 1,
+          },
+        },
+        { new: true },
+      )
+      .exec();
+    return updated ?? undefined;
   }
 
   private async disableRejectedSubscriptions(

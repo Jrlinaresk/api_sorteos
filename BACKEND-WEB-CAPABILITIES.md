@@ -39,7 +39,7 @@ En las tablas se omite ese prefijo para facilitar la lectura. Si Swagger está h
 | Checkout | Cotización definitiva en servidor, validación de CPF y datos del comprador, aceptación de versión exacta del reglamento, reserva transaccional, asignación de títulos, promociones, títulos extra por doble oportunidad y creación idempotente del Pix. Admite invitado o usuario autenticado. | `POST /checkout`, `GET /checkout/:publicId`, `POST /checkout/:publicId/cancel` |
 | Pantalla Pix | Estado, QR, copia y pega, vencimiento, conciliación por webhook y cancelación mientras el cobro sea pagable. | La respuesta de `POST /checkout`; `GET /payments/:id`; `GET /checkout/:publicId`; `POST /checkout/:publicId/cancel` |
 | “Mis títulos” sin cuenta | Recuperación por teléfono + correo mediante desafío opaco y código de seis dígitos; respuesta antienumeración; desafío con caducidad, cooldown y límite de intentos; confirmación de un solo uso y rotación de los tokens de los pedidos recuperados. Si una identidad supera el máximo seguro, obliga a acotar por campaña. | `POST /orders/access/request`, `POST /orders/access/confirm` |
-| Registro, acceso y recuperación de contraseña | Alta con teléfono, correo, CPF y contraseña; login; access/refresh tokens; rotación de refresh; logout; cambio y recuperación de contraseña por correo. | `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `POST /auth/password/change`, `POST /auth/password/reset/request`, `POST /auth/password/reset/confirm`, `GET /auth/me` |
+| Registro, acceso y recuperación de contraseña | Alta pendiente versionada por `registrationId` opaco; cada repetición reemplaza credenciales e invalida el intento anterior. El OTP queda ligado al intento y la activación transaccional exige el mismo identificador antes de emitir sesión; reenvío antienumeración; login; access/refresh tokens; logout y recuperación por correo. | `POST /auth/register`, `POST /auth/register/resend`, `POST /auth/register/confirm`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `POST /auth/password/change`, `POST /auth/password/reset/request`, `POST /auth/password/reset/confirm`, `GET /auth/me` |
 | Área del cliente | Perfil, historial paginado de pedidos, detalle de un pedido, títulos pagados por campaña y premios del usuario. | `PATCH /me/profile`, `GET /me/orders`, `GET /me/orders/:publicId`, `GET /me/titles`, `GET /me/prize-awards`, `POST /me/prize-awards/:publicId/claim` |
 | Premios instantáneos | Catálogo público de premios y ganadores enmascarados; títulos premiados; intentos de ruleta o raspadinha adjudicados al confirmar un pago; jugada de un solo uso; consulta y reclamación del premio. | `GET /campaigns/:campaignId/prizes`, `GET /prizes/attempts/order/:orderPublicId`, `POST /prizes/attempts/:publicId/play`, `GET /prize-awards/order/:orderPublicId`, `POST /prize-awards/:publicId/claim` |
 | Resultados y ganadores | Resultado publicado por campaña o slug, archivo paginado, números ganadores, premios, ganador enmascarado y evidencia verificable. | `GET /campaigns/:campaignIdOrSlug/result`, `GET /results` |
@@ -125,7 +125,9 @@ La atribución de una compra no se expone como endpoint manipulable: el checkout
 
 | Acceso | Ruta | Función |
 | --- | --- | --- |
-| Público | `POST /auth/register` | Registra un cliente y emite sesión. |
+| Público | `POST /auth/register` | Acepta un alta pendiente y devuelve un `registrationId` aleatorio incluso ante colisiones; no emite sesión ni revela identidades existentes. |
+| Público | `POST /auth/register/resend` | Exige correo + `registrationId`; solicita otro código solo para el intento vigente, con respuesta antienumeración y cooldown. |
+| Público | `POST /auth/register/confirm` | Exige correo + código + `registrationId`; consume el OTP ligado al intento, activa ese mismo intento y emite la primera sesión en una transacción. |
 | Público | `POST /auth/login` | Acceso por teléfono y contraseña. |
 | Público | `POST /auth/password/reset/request` | Solicita código por teléfono + correo sin revelar si la cuenta existe. |
 | Público | `POST /auth/password/reset/confirm` | Valida código, cambia contraseña, verifica el correo e invalida sesiones anteriores. |
@@ -135,7 +137,7 @@ La atribución de una compra no se expone como endpoint manipulable: el checkout
 | Bearer | `GET /auth/me` | Perfil de la sesión actual. |
 | Bearer | `PATCH /me/profile` | Actualiza nickname, nombre y dirección propios. |
 
-No hay un endpoint activo independiente de “verificar correo al registrarse”. El servicio de correo sí se usa internamente para recuperar contraseña y pedidos de invitados; la recuperación de contraseña marca el correo como verificado.
+La activación prueba posesión del correo, no titularidad legal del teléfono o CPF. Estos dos campos solo tienen validación sintáctica; un producto que necesite esa garantía debe integrar OTP por SMS y/o KYC.
 
 ### Pedidos, títulos y premios propios
 
@@ -289,6 +291,7 @@ Aunque hay código fuente para `ProductsModule`, `TransactionsModule` y `Winners
 - Validación global con transformación, lista blanca y rechazo de campos no declarados.
 - Rate limit global y límites más estrictos para registro, login, checkout, recuperación de contraseña, recuperación de pedidos y clicks de referidos.
 - Contraseñas con bcrypt (coste 12), bloqueo temporal tras intentos fallidos y comparación de tiempo constante para credenciales heredadas.
+- El registro público permanece inactivo hasta verificar el correo. Sus respuestas no enumeran teléfono, CPF ni email; los OTP tienen propósito, caducidad explícita, cooldown, máximo de intentos y consumo transaccional de un solo uso.
 - JWT con issuer, audience, expiración y `authVersion`; refresh tokens opacos hasheados, rotados y agrupados en familias para detectar reutilización.
 - Roles `customer`, `operator` y `admin`; los guards están aplicados en los controladores, no se confía en un rol enviado por el cliente.
 - Pedidos de invitado, pagos y jugadas usan tokens opacos; se guarda su hash, no el token recuperable.

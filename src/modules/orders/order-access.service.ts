@@ -325,6 +325,12 @@ export class OrderAccessService {
     try {
       await this.email.sendVerificationEmail(email, code);
     } catch {
+      // Un código que SMTP rechazó no puede reconstruirse a partir del hash.
+      // Retiramos únicamente ese challenge para permitir un nuevo intento, sin
+      // mantener durante todo el cooldown una credencial imposible de recibir.
+      await this.challengeModel
+        .deleteOne({ challengeId })
+        .catch(() => undefined);
       // No se registran el código ni datos personales.
       this.logger.warn(
         `No se pudo confirmar la entrega del código del challenge ${challengeId}`,

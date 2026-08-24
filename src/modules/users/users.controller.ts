@@ -29,6 +29,7 @@ import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { UserRole } from './enums/user-role.enum';
 import { PublicUserDto } from './dto/public-user.dto';
+import { ListUsersDto } from './dto/list-users.dto';
 
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -51,19 +52,22 @@ export class UsersController {
   }
 
   @Get()
-  @Roles(UserRole.OPERATOR, UserRole.ADMIN)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: UserOperationSummaries.FIND_ALL })
   @ApiResponse({
     status: HttpStatus.OK,
-    description: UserMessages.USERS_LISTED,
-    type: [PublicUserDto],
+    description: 'Página de usuarios; acceso exclusivo de ADMIN',
   })
-  async findAll(): Promise<PublicUserDto[]> {
-    return this.usersService.toPublicUsers(await this.usersService.findAll());
+  async findAll(@Query() query: ListUsersDto) {
+    const result = await this.usersService.findAll(query);
+    return {
+      data: this.usersService.toPublicUsers(result.data),
+      meta: result.meta,
+    };
   }
 
   @Get('by-phone')
-  @Roles(UserRole.OPERATOR, UserRole.ADMIN)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: UserOperationSummaries.FIND_BY_PHONE })
   @ApiResponse({
     status: HttpStatus.OK,
@@ -81,7 +85,7 @@ export class UsersController {
   }
 
   @Get(':id')
-  @Roles(UserRole.OPERATOR, UserRole.ADMIN)
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: UserOperationSummaries.FIND_ONE })
   @ApiResponse({
     status: HttpStatus.OK,
@@ -132,5 +136,4 @@ export class UsersController {
   remove(@Param('id') id: string): Promise<void> {
     return this.usersService.remove(id);
   }
-
 }

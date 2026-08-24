@@ -55,6 +55,7 @@ describe('AuthService refresh integration', () => {
       token: 'rotated-refresh-token',
       userId: account._id.toString(),
       expiresAt,
+      authVersion: 0,
     });
     users.findOne.mockResolvedValue(account);
 
@@ -84,11 +85,32 @@ describe('AuthService refresh integration', () => {
       token: 'rotated-refresh-token',
       userId: account._id.toString(),
       expiresAt: new Date('2026-09-24T12:00:00.000Z'),
+      authVersion: 0,
     });
     users.findOne.mockResolvedValue(account);
 
     await expect(service.refresh('old-refresh-token')).rejects.toBeInstanceOf(
       UnauthorizedException,
+    );
+    expect(jwt.signAsync).not.toHaveBeenCalled();
+  });
+
+  it('no entrega sesión a un alta pendiente aunque alguien obtuviera un refresh', async () => {
+    const account = { ...user(), isActive: false, registrationPending: true };
+    refresh.rotate.mockResolvedValue({
+      token: 'rotated-refresh-token',
+      userId: account._id.toString(),
+      expiresAt: new Date('2026-09-24T12:00:00.000Z'),
+      authVersion: 0,
+    });
+    users.findOne.mockResolvedValue(account);
+
+    await expect(service.refresh('old-refresh-token')).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    expect(refresh.revokeAllForUser).toHaveBeenCalledWith(
+      account._id.toString(),
+      'Versión de seguridad de la cuenta modificada',
     );
     expect(jwt.signAsync).not.toHaveBeenCalled();
   });
@@ -114,7 +136,11 @@ describe('AuthService refresh integration', () => {
       account._id.toString(),
       'Contraseña restablecida',
     );
-    expect(refresh.issue).toHaveBeenCalledWith(account._id.toString());
+    expect(refresh.issue).toHaveBeenCalledWith(
+      account._id.toString(),
+      undefined,
+      0,
+    );
     expect(refresh.revokeAllForUser.mock.invocationCallOrder[0]).toBeLessThan(
       refresh.issue.mock.invocationCallOrder[0],
     );

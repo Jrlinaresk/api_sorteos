@@ -116,6 +116,35 @@ compose_minor="${compose_remainder%%.*}"
 (( compose_major > 2 || (compose_major == 2 && compose_minor >= 20) )) \
   || fail 'Se requiere Docker Compose v2.20 o superior'
 
+for port_name in API_PORT HTTP_PORT; do
+  port_value="$(env_value "${port_name}")"
+  if [[ -n "${port_value}" ]]; then
+    if [[ ! "${port_value}" =~ ^[0-9]+$ ]] \
+      || ((port_value < 1 || port_value > 65535)); then
+      fail "${port_name} debe ser un puerto entre 1 y 65535"
+    fi
+  fi
+done
+
+docker_log_max_size="$(env_value DOCKER_LOG_MAX_SIZE)"
+docker_log_max_size="${docker_log_max_size:-10m}"
+[[ "${docker_log_max_size}" =~ ^[1-9][0-9]*[kKmMgG]$ ]] \
+  || fail 'DOCKER_LOG_MAX_SIZE debe usar un tamaño como 10m o 1g'
+docker_log_size_number="${docker_log_max_size%?}"
+docker_log_size_unit="$(printf '%s' "${docker_log_max_size: -1}" | tr 'KMG' 'kmg')"
+case "${docker_log_size_unit}" in
+  k) ((docker_log_size_number >= 1024 && docker_log_size_number <= 1048576)) ;;
+  m) ((docker_log_size_number >= 1 && docker_log_size_number <= 1024)) ;;
+  g) ((docker_log_size_number == 1)) ;;
+  *) false ;;
+esac || fail 'DOCKER_LOG_MAX_SIZE debe estar entre 1m y 1g'
+docker_log_max_files="$(env_value DOCKER_LOG_MAX_FILES)"
+docker_log_max_files="${docker_log_max_files:-5}"
+if [[ ! "${docker_log_max_files}" =~ ^[0-9]+$ ]] \
+  || ((docker_log_max_files < 1 || docker_log_max_files > 20)); then
+  fail 'DOCKER_LOG_MAX_FILES debe ser un entero entre 1 y 20'
+fi
+
 for variable_name in \
   MONGO_ROOT_USERNAME MONGO_ROOT_PASSWORD MONGO_APP_USERNAME MONGO_APP_PASSWORD \
   MONGO_DATABASE MONGO_REPLICA_SET MONGO_REPLICA_KEY MONGODB_URI \
@@ -178,7 +207,18 @@ else
 fi
 
 cd -- "${script_dir}"
-compose=(docker compose --env-file "${env_file}" -f docker-compose.prod.yml)
+compose_base=(docker compose --env-file "${env_file}" -f docker-compose.prod.yml)
+
+# Si el proxy se activó en un despliegue anterior, conservarlo aunque el
+# operador omita --with-nginx. Esto también hace que el health final compruebe
+# la misma entrada por la que realmente llega el tráfico.
+if [[ "${with_nginx}" != true ]] \
+  && "${compose_base[@]}" ps --all --services 2>/dev/null | grep -Fxq nginx; then
+  with_nginx=true
+  printf '%s\n' 'Se detectó nginx existente; se conservará el perfil proxy.'
+fi
+
+compose=("${compose_base[@]}")
 if [[ "${with_nginx}" == true ]]; then
   compose+=(--profile proxy)
 fi
@@ -192,16 +232,31 @@ if [[ "${check_only}" == true ]]; then
 fi
 
 printf '%s\n' 'Actualizando imágenes base y construyendo la API...'
-"${compose[@]}" pull mongodb mongo-keyfile-init mongo-init-replica efi-cert-init
+images=(mongodb mongo-keyfile-init mongo-init-replica efi-cert-init)
+if [[ "${with_nginx}" == true ]]; then
+  images+=(nginx)
+fi
+"${compose[@]}" pull "${images[@]}"
 "${compose[@]}" build --pull api-sorteos
 
 printf '%s\n' 'Aplicando el despliegue sin eliminar volúmenes ni detener previamente el servicio...'
-"${compose[@]}" up -d --remove-orphans --wait --wait-timeout 360
+# No se usa --remove-orphans: un perfil opcional ya desplegado nunca debe ser
+# borrado por una ejecución posterior que no lo haya mencionado.
+"${compose[@]}" up -d --wait --wait-timeout 360
 
 "${compose[@]}" ps
-api_port="$(env_value API_PORT)"
-api_port="${api_port:-8017}"
-curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:${api_port}/api/v1/health" >/dev/null \
-  || fail 'La API no respondió correctamente después del despliegue'
+if [[ "${with_nginx}" == true ]]; then
+  health_port="$(env_value HTTP_PORT)"
+  health_port="${health_port:-8081}"
+  health_component='nginx'
+else
+  health_port="$(env_value API_PORT)"
+  health_port="${health_port:-8017}"
+  health_component='API'
+fi
+health_url="http://127.0.0.1:${health_port}/api/v1/health"
+curl --fail --silent --show-error --max-time 10 "${health_url}" >/dev/null \
+  || fail "${health_component} no respondió correctamente después del despliegue en ${health_url}"
 
-printf 'Despliegue saludable en http://127.0.0.1:%s/api/v1\n' "${api_port}"
+printf 'Despliegue saludable a través de %s en http://127.0.0.1:%s/api/v1\n' \
+  "${health_component}" "${health_port}"

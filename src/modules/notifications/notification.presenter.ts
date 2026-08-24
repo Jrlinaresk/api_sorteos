@@ -32,6 +32,8 @@ export interface AdminNotificationView extends PublicNotificationView {
   userId: string;
   deliveryStatus: NotificationDeliveryStatus;
   deliveryAttempts: number;
+  scheduledAt?: Date;
+  lastDeliveryAttemptAt?: Date;
   deliveryProvider?: string;
   deliveryCode?: string;
   deliveryAccepted: number;
@@ -96,6 +98,8 @@ export function toAdminNotification(
     userId: notification.user.toString(),
     deliveryStatus: notification.deliveryStatus,
     deliveryAttempts: notification.deliveryAttempts,
+    scheduledAt: notification.scheduledAt,
+    lastDeliveryAttemptAt: notification.lastDeliveryAttemptAt,
     deliveryProvider: notification.deliveryProvider,
     deliveryCode: notification.deliveryCode,
     deliveryAccepted: notification.deliveryAccepted ?? 0,

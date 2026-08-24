@@ -22,6 +22,7 @@ import {
   RaffleDocument,
 } from '../riffles/schema/raffle.schema';
 import { RafflesService } from '../riffles/raffles.service';
+import { sanitizeCampaignRichText } from '../riffles/utils/campaign-rich-text';
 import {
   normalizeOrderEmail,
   normalizeOrderPhone,
@@ -97,11 +98,12 @@ export class OrdersService {
         const acceptedRegulation = campaign.regulationHistory?.find(
           (entry) => entry.version === campaign.termsVersion,
         );
-        const termsHash =
-          acceptedRegulation?.sha256 ||
-          createHash('sha256')
-            .update(campaign.regulationHtml || '')
-            .digest('hex');
+        const acceptedHtml = sanitizeCampaignRichText(
+          acceptedRegulation?.html ?? campaign.regulationHtml ?? '',
+        );
+        const termsHash = createHash('sha256')
+          .update(acceptedHtml, 'utf8')
+          .digest('hex');
 
         const quote = this.campaigns.calculatePrice(
           campaign,

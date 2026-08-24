@@ -28,7 +28,7 @@ import { AuditCategory } from './enums/audit-category.enum';
 @ApiBearerAuth()
 @Controller('admin/audit-logs')
 @UseGuards(JwtAuthGuard, RolesGuard)
-@Roles(UserRole.ADMIN, UserRole.OPERATOR)
+@Roles(UserRole.ADMIN)
 export class AuditController {
   constructor(private readonly auditService: AuditService) {}
 

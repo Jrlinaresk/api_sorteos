@@ -9,7 +9,6 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
-  ApiCreatedResponse,
   ApiOkResponse,
   ApiTags,
   ApiUnauthorizedResponse,
@@ -27,6 +26,9 @@ import { ConfirmPasswordResetDto } from './dto/confirm-password-reset.dto';
 import { Throttle } from '@nestjs/throttler';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { RegistrationAcceptedDto } from './dto/registration-accepted.dto';
+import { ConfirmRegistrationDto } from './dto/confirm-registration.dto';
+import { ResendRegistrationCodeDto } from './dto/resend-registration-code.dto';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -35,13 +37,46 @@ export class AuthController {
 
   @Post('register')
   @Throttle({ default: { limit: 5, ttl: 60 * 60 * 1000 } })
-  @ApiCreatedResponse({ type: AuthResponseDto })
-  register(@Body() dto: RegisterDto): Promise<AuthResponseDto> {
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiAcceptedResponse({
+    type: RegistrationAcceptedDto,
+    description:
+      'Respuesta genérica: no revela si teléfono, CPF o correo ya existen',
+  })
+  register(@Body() dto: RegisterDto): Promise<RegistrationAcceptedDto> {
     return this.authService.register(dto);
   }
 
+  @Post('register/resend')
+  @Throttle({ default: { limit: 5, ttl: 60 * 60 * 1000 } })
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiAcceptedResponse({
+    type: RegistrationAcceptedDto,
+    description: 'Respuesta genérica sin revelar si existe un alta pendiente',
+  })
+  resendRegistrationCode(
+    @Body() dto: ResendRegistrationCodeDto,
+  ): Promise<RegistrationAcceptedDto> {
+    return this.authService.resendRegistrationCode(dto);
+  }
+
+  @Post('register/confirm')
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: AuthResponseDto })
+  @ApiUnauthorizedResponse({
+    description: 'Código inválido, vencido o alta no disponible',
+  })
+  confirmRegistration(
+    @Body() dto: ConfirmRegistrationDto,
+  ): Promise<AuthResponseDto> {
+    return this.authService.confirmRegistration(dto);
+  }
+
   @Post('login')
-  @Throttle({ default: { limit: 10, ttl: 60 * 1000, blockDuration: 5 * 60 * 1000 } })
+  @Throttle({
+    default: { limit: 10, ttl: 60 * 1000, blockDuration: 5 * 60 * 1000 },
+  })
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ type: AuthResponseDto })
   @ApiUnauthorizedResponse({ description: 'Credenciales inválidas' })

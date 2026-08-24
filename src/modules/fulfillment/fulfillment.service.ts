@@ -1,9 +1,11 @@
 import {
+  HttpException,
   Injectable,
   Logger,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
+import { TransactionalEmailService } from '../email/transactional-email.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/schemas/notification.schema';
 import { OrderDocument, OrderStatus } from '../orders/schemas/order.schema';
@@ -30,6 +32,7 @@ export class FulfillmentService
     private readonly prizes: PrizesService,
     private readonly referrals: ReferralAttributionService,
     private readonly notifications: NotificationsService,
+    private readonly transactionalEmail: TransactionalEmailService,
   ) {}
 
   onModuleInit() {
@@ -48,12 +51,16 @@ export class FulfillmentService
     if (!order) return;
 
     await this.prizes.awardForPaidOrder(order._id);
+    await this.notify(
+      order,
+      {
+        title: 'Pago confirmado',
+        body: 'Tus títulos ya están disponibles en tu cuenta.',
+        type: NotificationType.Payment,
+      },
+      event,
+    );
     await this.attributeReferral(order);
-    await this.notify(order, {
-      title: 'Pago confirmado',
-      body: 'Tus títulos ya están disponibles en tu cuenta.',
-      type: NotificationType.Payment,
-    });
   }
 
   async onPaymentCancelled(event: PaymentLifecycleEvent) {
@@ -65,19 +72,19 @@ export class FulfillmentService
       `Pago ${event.status}`,
     );
     if (!order) return;
-    await this.referrals
-      .reverseOrder(order.publicId, `Pedido ${order.status}`)
-      .catch((error: unknown) =>
-        this.logNonCritical('referido cancelado', error),
-      );
-    await this.notify(order, {
-      title:
-        event.status === PaymentStatus.Expired
-          ? 'Reserva vencida'
-          : 'Pedido cancelado',
-      body: 'Las cuotas reservadas fueron liberadas.',
-      type: NotificationType.Order,
-    });
+    await this.referrals.reverseOrder(order.publicId, `Pedido ${order.status}`);
+    await this.notify(
+      order,
+      {
+        title:
+          event.status === PaymentStatus.Expired
+            ? 'Reserva vencida'
+            : 'Pedido cancelado',
+        body: 'Las cuotas reservadas fueron liberadas.',
+        type: NotificationType.Order,
+      },
+      event,
+    );
   }
 
   async onPaymentRefunded(event: PaymentLifecycleEvent) {
@@ -90,11 +97,15 @@ export class FulfillmentService
     if (!order) return;
     await this.prizes.reverseForOrder(order._id);
     await this.referrals.reverseOrder(order.publicId, 'Pedido reembolsado');
-    await this.notify(order, {
-      title: 'Pago reembolsado',
-      body: 'La devolución del pedido fue confirmada.',
-      type: NotificationType.Payment,
-    });
+    await this.notify(
+      order,
+      {
+        title: 'Pago reembolsado',
+        body: 'La devolución del pedido fue confirmada.',
+        type: NotificationType.Payment,
+      },
+      event,
+    );
   }
 
   private async attributeReferral(order: OrderDocument) {
@@ -117,27 +128,40 @@ export class FulfillmentService
       });
       await this.referrals.approveOrder(order.publicId);
     } catch (error) {
-      this.logNonCritical('atribución de referido', error);
+      if (error instanceof HttpException && error.getStatus() < 500) {
+        this.logNonCritical('atribución de referido no aplicable', error);
+        return;
+      }
+      throw error;
     }
   }
 
   private async notify(
     order: OrderDocument,
     message: { title: string; body: string; type: NotificationType },
+    event: PaymentLifecycleEvent,
   ) {
-    if (!order.user) return;
-    await this.notifications
-      .create({
+    const eventKey = `fulfillment:${event.paymentId}:${event.status}`;
+    if (order.user) {
+      await this.notifications.create({
         userId: order.user.toString(),
         ...message,
+        eventKey,
         data: {
           orderId: order.publicId,
           campaignId: order.campaign.toString(),
         },
         actionUrl: `/pedidos/${order.publicId}`,
         deliverPush: true,
-      })
-      .catch((error: unknown) => this.logNonCritical('notificación', error));
+      });
+      return;
+    }
+    await this.transactionalEmail.enqueueAndDeliver({
+      eventKey,
+      recipient: order.buyer.email,
+      subject: message.title,
+      body: `${message.body}\n\nPedido: ${order.publicId}`,
+    });
   }
 
   private logNonCritical(context: string, error: unknown) {

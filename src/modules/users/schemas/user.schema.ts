@@ -41,6 +41,23 @@ export class User {
   @Prop({ type: Boolean, default: true, required: true })
   isActive: boolean;
 
+  /**
+   * Marca interna para distinguir un alta pública aún no verificada de una
+   * cuenta desactivada por administración. Nunca debe exponerse al cliente.
+   */
+  @ApiHideProperty()
+  @Prop({ type: Boolean, default: false, required: true })
+  registrationPending: boolean;
+
+  @ApiHideProperty()
+  @Prop({ type: Date, required: false })
+  registrationPendingExpiresAt?: Date;
+
+  /** Hash SHA-256 del identificador opaco del intento de registro vigente. */
+  @ApiHideProperty()
+  @Prop({ type: String, required: false, select: false })
+  registrationIdHash?: string;
+
   @ApiProperty({
     description: 'Lista de IDs de rifas en las que participa',
     type: [String],
@@ -129,9 +146,11 @@ export class User {
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
+UserSchema.index({ registrationPending: 1, registrationPendingExpiresAt: 1 });
 
-type SerializedUser = Omit<User, 'authVersion'> & {
+type SerializedUser = Omit<User, 'authVersion' | 'registrationPending'> & {
   authVersion?: number;
+  registrationPending?: boolean;
   __v?: number;
 };
 
@@ -144,6 +163,9 @@ function removePrivateFields(
   delete returned.failedLoginAttempts;
   delete returned.lockedUntil;
   delete returned.authVersion;
+  delete returned.registrationPending;
+  delete returned.registrationPendingExpiresAt;
+  delete returned.registrationIdHash;
   delete returned.__v;
   return returned;
 }

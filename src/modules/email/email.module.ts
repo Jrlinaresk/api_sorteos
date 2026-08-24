@@ -8,16 +8,26 @@ import {
   EmailVerificationSchema,
 } from './schema/email-verification.schema';
 import { ConfigModule } from '@nestjs/config';
+import {
+  TransactionalEmail,
+  TransactionalEmailSchema,
+} from './schema/transactional-email.schema';
+import { TransactionalEmailService } from './transactional-email.service';
 
 @Module({
   imports: [
     ConfigModule,
     MongooseModule.forFeature([
       { name: EmailVerification.name, schema: EmailVerificationSchema },
+      { name: TransactionalEmail.name, schema: TransactionalEmailSchema },
     ]),
   ],
   controllers: [],
-  providers: [EmailService, EmailVerificationService],
-  exports: [EmailService, EmailVerificationService],
+  providers: [
+    EmailService,
+    EmailVerificationService,
+    TransactionalEmailService,
+  ],
+  exports: [EmailService, EmailVerificationService, TransactionalEmailService],
 })
 export class EmailModule {}

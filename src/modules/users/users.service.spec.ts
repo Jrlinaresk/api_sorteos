@@ -61,12 +61,14 @@ describe('UsersService security', () => {
         nickname: 'joao',
         password: 'legacy',
         passwordHash: 'hash',
+        registrationIdHash: 'attempt-hash',
       }),
     } as never);
 
     expect(publicUser.id).toBe('507f1f77bcf86cd799439011');
     expect(publicUser).not.toHaveProperty('password');
     expect(publicUser).not.toHaveProperty('passwordHash');
+    expect(publicUser).not.toHaveProperty('registrationIdHash');
     expect(publicUser.role).toBe(UserRole.CUSTOMER);
     expect(publicUser.isActive).toBe(true);
   });

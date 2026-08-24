@@ -38,6 +38,10 @@ debe reenviar una cabecera de verificación enviada por el cliente.
 Si despliega con `./deploy-prod.sh --with-nginx`, use en cambio
 `http://127.0.0.1:8081` como upstream.
 
+El primer despliegue con `--with-nginx` deja ese perfil persistente. Las
+actualizaciones posteriores lo detectan y conservan aunque se omita la opción,
+y validan el health atravesando `HTTP_PORT` (8081 por defecto).
+
 ## Backend
 
 ```bash

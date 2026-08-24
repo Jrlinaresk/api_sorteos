@@ -32,13 +32,21 @@ export class BrandSettingsDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl({ require_protocol: true })
+  @IsUrl({
+    protocols: ['https'],
+    require_protocol: true,
+    require_valid_protocol: true,
+  })
   @MaxLength(1000)
   logoUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl({ require_protocol: true })
+  @IsUrl({
+    protocols: ['https'],
+    require_protocol: true,
+    require_valid_protocol: true,
+  })
   @MaxLength(1000)
   faviconUrl?: string;
 }
@@ -65,13 +73,21 @@ export class UpdateBrandSettingsDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl({ require_protocol: true })
+  @IsUrl({
+    protocols: ['https'],
+    require_protocol: true,
+    require_valid_protocol: true,
+  })
   @MaxLength(1000)
   logoUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl({ require_protocol: true })
+  @IsUrl({
+    protocols: ['https'],
+    require_protocol: true,
+    require_valid_protocol: true,
+  })
   @MaxLength(1000)
   faviconUrl?: string;
 }
@@ -104,37 +120,37 @@ export class ContactSettingsDto {
 export class SocialSettingsDto {
   @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
+  @IsUrl({ protocols: ['https'], require_protocol: true })
   @MaxLength(300)
   instagram?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
+  @IsUrl({ protocols: ['https'], require_protocol: true })
   @MaxLength(300)
   facebook?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
+  @IsUrl({ protocols: ['https'], require_protocol: true })
   @MaxLength(300)
   youtube?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
+  @IsUrl({ protocols: ['https'], require_protocol: true })
   @MaxLength(300)
   telegram?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
+  @IsUrl({ protocols: ['https'], require_protocol: true })
   @MaxLength(300)
   tiktok?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsString()
+  @IsUrl({ protocols: ['https'], require_protocol: true })
   @MaxLength(300)
   x?: string;
 }
@@ -169,13 +185,21 @@ export class ThemeSettingsDto {
 export class LegalSettingsDto {
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl({ require_protocol: true })
+  @IsUrl({
+    protocols: ['https'],
+    require_protocol: true,
+    require_valid_protocol: true,
+  })
   @MaxLength(1000)
   privacyPolicyUrl?: string;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsUrl({ require_protocol: true })
+  @IsUrl({
+    protocols: ['https'],
+    require_protocol: true,
+    require_valid_protocol: true,
+  })
   @MaxLength(1000)
   termsUrl?: string;
 

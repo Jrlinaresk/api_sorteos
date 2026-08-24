@@ -5,7 +5,11 @@ const MAX_ARRAY_ITEMS = 20;
 const MAX_STRING_LENGTH = 500;
 
 const SENSITIVE_KEY_PATTERN =
-  /(password|passwordhash|secret|token|authorization|cookie|code|cvv|pin|privatekey|apikey|pixcopy|pixpayload)/i;
+  /(password|passwordhash|secret|token|authorization|cookie|code|cvv|pin|privatekey|apikey|pixcopy|pixpayload|phone|email|cpf|address|buyer|payer|taxid|documentnumber|fullname|firstname|middlename|lastname|secondlastname)/i;
+
+function isSensitiveKey(key: string): boolean {
+  return key.toLowerCase() === 'name' || SENSITIVE_KEY_PATTERN.test(key);
+}
 
 export function summarizeAuditValue(
   value: unknown,
@@ -40,7 +44,7 @@ export function summarizeAuditValue(
   const entries = Object.entries(value).slice(0, MAX_KEYS);
   const result: Record<string, unknown> = {};
   for (const [key, entryValue] of entries) {
-    result[key] = SENSITIVE_KEY_PATTERN.test(key)
+    result[key] = isSensitiveKey(key)
       ? REDACTED
       : summarizeAuditValue(entryValue, depth + 1, seen);
   }

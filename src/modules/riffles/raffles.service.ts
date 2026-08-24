@@ -21,6 +21,7 @@ import {
 import { MediaService } from '../media/media.service';
 import { CaixaFederalLotteryService } from '../draws/caixa-federal-lottery.service';
 import { ConfigService } from '@nestjs/config';
+import { sanitizeCampaignRichText } from './utils/campaign-rich-text';
 
 export interface CampaignPriceQuote {
   selectedQuantity: number;
@@ -101,6 +102,7 @@ export class RafflesService {
   ) {}
 
   async create(dto: CreateRaffleDto): Promise<RaffleDocument> {
+    dto = this.sanitizeRichContentDto(dto);
     if (
       dto.status !== undefined &&
       ![CampaignStatus.Draft, CampaignStatus.Scheduled].includes(dto.status)
@@ -299,17 +301,19 @@ export class RafflesService {
       (entry) => entry.version === version,
     );
     if (!regulation) throw new NotFoundException('Reglamento no encontrado');
+    const html = sanitizeCampaignRichText(regulation.html);
     return {
       campaignSlug: campaign.slug,
       version: regulation.version,
-      html: regulation.html,
-      sha256: regulation.sha256,
+      html,
+      sha256: this.regulationHash(html),
       publishedAt: regulation.publishedAt,
       current: campaign.termsVersion === regulation.version,
     };
   }
 
   async update(id: string, dto: UpdateRaffleDto): Promise<RaffleDocument> {
+    dto = this.sanitizeRichContentDto(dto);
     const campaign = await this.findOne(id);
     const previousMediaIds = this.mediaIds(campaign.media);
     this.assertMutableUpdate(campaign, dto);
@@ -408,6 +412,7 @@ export class RafflesService {
     status: CampaignStatus,
   ): Promise<RaffleDocument> {
     const campaign = await this.findOne(id);
+    this.sanitizeStoredDraftContent(campaign);
     const leavingDraft =
       campaign.status === CampaignStatus.Draft &&
       status !== CampaignStatus.Draft;
@@ -463,6 +468,8 @@ export class RafflesService {
             status,
             contractLockedAt: campaign.contractLockedAt,
             launchAt: campaign.launchAt,
+            description: campaign.description,
+            regulationHtml: campaign.regulationHtml,
             regulationHistory: campaign.regulationHistory,
           },
           $inc: { contractRevision: 1 },
@@ -1042,6 +1049,12 @@ export class RafflesService {
     delete raw.drawCommittedBy;
     delete raw.contractRevision;
     delete raw.__v;
+    if (typeof raw.description === 'string') {
+      raw.description = sanitizeCampaignRichText(raw.description);
+    }
+    if (typeof raw.regulationHtml === 'string') {
+      raw.regulationHtml = sanitizeCampaignRichText(raw.regulationHtml);
+    }
     if (!raw.analytics?.enabled) raw.analytics = { enabled: false };
 
     const id = raw._id?.toString?.() || raw._id;
@@ -1049,7 +1062,10 @@ export class RafflesService {
     raw.regulationVersions = (raw.regulationHistory || []).map(
       (entry: Record<string, unknown>) => ({
         version: entry.version,
-        sha256: entry.sha256,
+        sha256:
+          typeof entry.html === 'string'
+            ? this.regulationHash(sanitizeCampaignRichText(entry.html))
+            : entry.sha256,
         publishedAt: entry.publishedAt,
         current: entry.version === raw.termsVersion,
       }),
@@ -1216,6 +1232,44 @@ export class RafflesService {
 
   private regulationHash(html: string): string {
     return createHash('sha256').update(html, 'utf8').digest('hex');
+  }
+
+  private sanitizeRichContentDto<
+    T extends { description?: string; regulationHtml?: string },
+  >(dto: T): T {
+    return {
+      ...dto,
+      ...(dto.description !== undefined
+        ? { description: sanitizeCampaignRichText(dto.description) }
+        : {}),
+      ...(dto.regulationHtml !== undefined
+        ? { regulationHtml: sanitizeCampaignRichText(dto.regulationHtml) }
+        : {}),
+    };
+  }
+
+  /** Canonicaliza borradores heredados antes de hacer público su contrato. */
+  private sanitizeStoredDraftContent(campaign: RaffleDocument): void {
+    if (campaign.status !== CampaignStatus.Draft) return;
+    if (campaign.description !== undefined) {
+      campaign.description = sanitizeCampaignRichText(campaign.description);
+    }
+    if (campaign.regulationHtml !== undefined) {
+      campaign.regulationHtml = sanitizeCampaignRichText(
+        campaign.regulationHtml,
+      );
+    }
+    campaign.regulationHistory = (campaign.regulationHistory ?? []).map(
+      (entry) => {
+        const html = sanitizeCampaignRichText(entry.html);
+        return {
+          version: entry.version,
+          html,
+          sha256: this.regulationHash(html),
+          publishedAt: entry.publishedAt,
+        };
+      },
+    );
   }
 
   private allowedTransitions(current: CampaignStatus): CampaignStatus[] {

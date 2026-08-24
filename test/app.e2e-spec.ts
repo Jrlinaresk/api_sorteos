@@ -13,6 +13,22 @@ describe('Sorteos API transaction journey (e2e)', () => {
   let connection: Connection;
   let users: Model<UserDocument>;
   const sentCodes: Array<{ recipient: string; code: string }> = [];
+  const transactionalEmails: Array<{ recipient: string; eventKey: string }> =
+    [];
+
+  async function waitForCode(
+    recipient: string,
+    fromIndex: number,
+  ): Promise<string> {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const message = sentCodes
+        .slice(fromIndex)
+        .find((candidate) => candidate.recipient === recipient);
+      if (message) return message.code;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error(`No se recibió el código para ${recipient}`);
+  }
 
   beforeAll(async () => {
     const uri = process.env.MONGODB_INTEGRATION_URI;
@@ -44,6 +60,9 @@ describe('Sorteos API transaction journey (e2e)', () => {
         sendVerificationEmail: async (recipient: string, code: string) => {
           sentCodes.push({ recipient, code });
         },
+        sendTransactionalEmail: async (recipient: string, eventKey: string) => {
+          transactionalEmails.push({ recipient, eventKey });
+        },
       })
       .compile();
     app = testingModule.createNestApplication();
@@ -69,7 +88,8 @@ describe('Sorteos API transaction journey (e2e)', () => {
 
   it('completes auth, checkout, Pix, titles, draw, result and refund atomically', async () => {
     const http = app.getHttpServer();
-    const registration = await request(http)
+    const registrationCodeIndex = sentCodes.length;
+    const pendingRegistration = await request(http)
       .post('/api/v1/auth/register')
       .send({
         phone: '+5511999999999',
@@ -79,7 +99,23 @@ describe('Sorteos API transaction journey (e2e)', () => {
         cpf: '52998224725',
         email: 'admin-e2e@example.test',
       })
-      .expect(201);
+      .expect(202)
+      .expect(({ body }) => {
+        expect(body.verificationRequired).toBe(true);
+        expect(body.registrationId).toEqual(expect.any(String));
+      });
+    const registrationCode = await waitForCode(
+      'admin-e2e@example.test',
+      registrationCodeIndex,
+    );
+    const registration = await request(http)
+      .post('/api/v1/auth/register/confirm')
+      .send({
+        email: 'admin-e2e@example.test',
+        code: registrationCode,
+        registrationId: pendingRegistration.body.registrationId,
+      })
+      .expect(200);
     await users.updateOne(
       { _id: registration.body.user.id },
       { $set: { role: UserRole.ADMIN } },
@@ -91,7 +127,8 @@ describe('Sorteos API transaction journey (e2e)', () => {
       .expect(200);
     const authorization = `Bearer ${login.body.accessToken}`;
 
-    const publisherRegistration = await request(http)
+    const publisherCodeIndex = sentCodes.length;
+    const pendingPublisherRegistration = await request(http)
       .post('/api/v1/auth/register')
       .send({
         phone: '+5511966666666',
@@ -101,7 +138,23 @@ describe('Sorteos API transaction journey (e2e)', () => {
         cpf: '11144477735',
         email: 'publisher-e2e@example.test',
       })
-      .expect(201);
+      .expect(202)
+      .expect(({ body }) => {
+        expect(body.verificationRequired).toBe(true);
+        expect(body.registrationId).toEqual(expect.any(String));
+      });
+    const publisherCode = await waitForCode(
+      'publisher-e2e@example.test',
+      publisherCodeIndex,
+    );
+    const publisherRegistration = await request(http)
+      .post('/api/v1/auth/register/confirm')
+      .send({
+        email: 'publisher-e2e@example.test',
+        code: publisherCode,
+        registrationId: pendingPublisherRegistration.body.registrationId,
+      })
+      .expect(200);
     await users.updateOne(
       { _id: publisherRegistration.body.user.id },
       { $set: { role: UserRole.ADMIN } },
@@ -361,5 +414,18 @@ describe('Sorteos API transaction journey (e2e)', () => {
           true,
         );
       });
+
+    expect(transactionalEmails).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          recipient: 'refund-e2e@example.test',
+          eventKey: `fulfillment:${refundablePaymentId}:paid`,
+        }),
+        expect.objectContaining({
+          recipient: 'refund-e2e@example.test',
+          eventKey: `fulfillment:${refundablePaymentId}:refunded`,
+        }),
+      ]),
+    );
   }, 60_000);
 });

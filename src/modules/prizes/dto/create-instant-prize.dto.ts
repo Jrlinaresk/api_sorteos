@@ -43,7 +43,7 @@ export class CreateInstantPrizeDto {
   alternativeTitle?: string;
 
   @IsOptional()
-  @IsUrl({ require_tld: false })
+  @IsUrl({ protocols: ['https'], require_protocol: true })
   imageUrl?: string;
 
   @IsOptional()

@@ -14,6 +14,7 @@ export enum NotificationType {
 
 export enum NotificationDeliveryStatus {
   Pending = 'pending',
+  Processing = 'processing',
   Skipped = 'skipped',
   Sent = 'sent',
   PartiallySent = 'partially_sent',
@@ -24,6 +25,10 @@ export enum NotificationDeliveryCode {
   NotConfigured = 'not_configured',
   PreferencesBlocked = 'preferences_blocked',
   NoSubscriptions = 'no_subscriptions',
+  QuietHours = 'quiet_hours',
+  RetryScheduled = 'retry_scheduled',
+  AttemptsExhausted = 'attempts_exhausted',
+  DeliveryUncertain = 'delivery_uncertain',
   Delivered = 'delivered',
   PartialFailure = 'partial_failure',
   DeliveryFailed = 'delivery_failed',
@@ -81,8 +86,30 @@ export class Notification {
   })
   deliveryStatus: NotificationDeliveryStatus;
 
+  /** Solo las notificaciones solicitadas para push son consumidas por el worker. */
+  @Prop({ required: true, default: false })
+  pushRequested: boolean;
+
+  /** Próximo instante en el que un worker puede intentar la entrega. */
+  @Prop()
+  scheduledAt?: Date;
+
+  /** Token y vencimiento del lease CAS; nunca se presentan por HTTP. */
+  @Prop({ trim: true, maxlength: 64, select: false })
+  deliveryLeaseToken?: string;
+
+  @Prop({ select: false })
+  deliveryLeaseExpiresAt?: Date;
+
   @Prop({ required: true, min: 0, default: 0 })
   deliveryAttempts: number;
+
+  @Prop()
+  lastDeliveryAttemptAt?: Date;
+
+  /** Marca que el efecto externo pudo comenzar; evita reenvíos automáticos inciertos. */
+  @Prop()
+  deliveryDispatchStartedAt?: Date;
 
   @Prop({ trim: true, maxlength: 40 })
   deliveryProvider?: string;
@@ -130,6 +157,12 @@ NotificationSchema.index(
 );
 NotificationSchema.index({ user: 1, readAt: 1, createdAt: -1 });
 NotificationSchema.index({ user: 1, type: 1, createdAt: -1 });
+NotificationSchema.index({
+  deliveryStatus: 1,
+  pushRequested: 1,
+  scheduledAt: 1,
+});
+NotificationSchema.index({ deliveryStatus: 1, deliveryLeaseExpiresAt: 1 });
 NotificationSchema.index(
   { expiresAt: 1 },
   {

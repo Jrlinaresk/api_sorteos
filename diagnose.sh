@@ -57,7 +57,7 @@ printf '%s\n' 'Diagnóstico de API Sorteos'
 check 'Docker responde' docker info
 [[ -f "${env_file}" ]] || { printf 'FALLO  No existe %s\n' "${env_file}" >&2; exit 1; }
 
-cd -- "${script_dir}"
+cd -- "${script_dir}" || exit 1
 compose=(docker compose --env-file "${env_file}" -f "${compose_file}")
 check 'Compose es válido' "${compose[@]}" config --quiet
 
@@ -73,6 +73,8 @@ if [[ -z "${api_port}" ]]; then
 fi
 check 'Health HTTP en loopback' curl --fail --silent --show-error --max-time 10 "http://127.0.0.1:${api_port}/api/v1/health"
 
+# Las variables se expanden deliberadamente dentro del contenedor.
+# shellcheck disable=SC2016
 check 'MongoDB autenticado y primario' \
   "${compose[@]}" exec -T mongodb /bin/bash -ec \
   'mongosh --quiet --host 127.0.0.1 --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "quit(db.hello().isWritablePrimary ? 0 : 1)"'

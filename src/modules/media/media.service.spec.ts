@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  HttpException,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -222,5 +223,113 @@ describe('MediaService security', () => {
     await expect(
       service.preparePublic(mediaId.toString()),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('rolls global storage usage back when the per-user quota is exhausted', async () => {
+    const actor = new Types.ObjectId();
+    const exists = jest.fn().mockReturnValue({
+      exec: jest.fn().mockResolvedValue({ _id: new Types.ObjectId() }),
+    });
+    const findOneAndUpdate = jest
+      .fn()
+      .mockReturnValueOnce({
+        lean: jest.fn().mockReturnValue({
+          exec: jest.fn().mockResolvedValue({ scope: 'global', bytes: 10 }),
+        }),
+      })
+      .mockReturnValueOnce({
+        lean: jest.fn().mockReturnValue({
+          exec: jest.fn().mockResolvedValue(null),
+        }),
+      });
+    const usageModel = {
+      exists,
+      findOneAndUpdate,
+      updateOne: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+      }),
+    };
+    const service = serviceWith({}, { providerName: 'test' }, usageModel);
+
+    await expect(
+      (
+        service as unknown as {
+          reserveStorage(actor: Types.ObjectId, bytes: number): Promise<void>;
+        }
+      ).reserveStorage(actor, 10),
+    ).rejects.toBeInstanceOf(HttpException);
+
+    expect(findOneAndUpdate).toHaveBeenNthCalledWith(
+      1,
+      {
+        scope: 'global',
+        bytes: { $lte: 50 * 1024 * 1024 * 1024 - 10 },
+      },
+      { $inc: { bytes: 10, objects: 1 } },
+      { new: true },
+    );
+    expect(findOneAndUpdate).toHaveBeenNthCalledWith(
+      2,
+      {
+        scope: `user:${actor.toString()}`,
+        bytes: { $lte: 10 * 1024 * 1024 * 1024 - 10 },
+      },
+      { $inc: { bytes: 10, objects: 1 } },
+      { new: true },
+    );
+    expect(usageModel.updateOne).toHaveBeenCalledWith(
+      { scope: 'global', bytes: { $gte: 10 }, objects: { $gte: 1 } },
+      { $inc: { bytes: -10, objects: -1 } },
+    );
+  });
+
+  it('purges a retained soft-deleted object and releases both usage counters', async () => {
+    const mediaId = new Types.ObjectId();
+    const uploader = new Types.ObjectId();
+    const asset = {
+      _id: mediaId,
+      id: mediaId.toString(),
+      storageProvider: 'test',
+      storageKey: 'opaque/deleted.png',
+      uploadedBy: uploader,
+      size: 40,
+      status: MediaAssetStatus.Purging,
+      references: [],
+    };
+    const findOneAndUpdate = jest.fn().mockReturnValue({
+      exec: jest.fn().mockResolvedValue(asset),
+    });
+    const findOneAndDelete = jest.fn().mockReturnValue({
+      lean: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue(asset),
+      }),
+    });
+    const mediaModel = { findOneAndUpdate, findOneAndDelete };
+    const storage = { providerName: 'test', delete: jest.fn() };
+    const usageModel = {
+      updateOne: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+      }),
+    };
+    const service = serviceWith(mediaModel, storage, usageModel);
+
+    const result = await service.purgeDeleted(mediaId.toString(), actorId);
+
+    expect(findOneAndUpdate.mock.calls[0][0]).toMatchObject({
+      _id: expect.any(Types.ObjectId),
+      references: { $size: 0 },
+      $or: expect.arrayContaining([
+        { status: MediaAssetStatus.Purging },
+        expect.objectContaining({ status: MediaAssetStatus.Deleted }),
+      ]),
+    });
+    expect(storage.delete).toHaveBeenCalledWith('opaque/deleted.png');
+    expect(findOneAndDelete).toHaveBeenCalledWith({
+      _id: expect.any(Types.ObjectId),
+      status: MediaAssetStatus.Purging,
+      references: { $size: 0 },
+    });
+    expect(usageModel.updateOne).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ id: mediaId.toString(), purged: true });
   });
 });

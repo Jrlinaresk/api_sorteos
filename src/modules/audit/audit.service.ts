@@ -1,7 +1,8 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { randomUUID } from 'crypto';
-import { FilterQuery, Model, Types } from 'mongoose';
+import { ClientSession, FilterQuery, Model, Types } from 'mongoose';
 import { ListAuditLogsDto } from './dto/list-audit-logs.dto';
 import { AuditCategory, AuditOutcome } from './enums/audit-category.enum';
 import { AuditEventInput } from './interfaces/audit-event.interface';
@@ -23,10 +24,14 @@ export class AuditService {
   constructor(
     @InjectModel(AuditLog.name)
     private readonly auditLogModel: Model<AuditLogDocument>,
+    private readonly config?: ConfigService,
   ) {}
 
-  async record(input: AuditEventInput): Promise<AuditLogDocument> {
-    return this.auditLogModel.create({
+  async record(
+    input: AuditEventInput,
+    session?: ClientSession,
+  ): Promise<AuditLogDocument> {
+    const payload = {
       action: sanitizeAuditText(input.action, 120),
       category: input.category ?? AuditCategory.ADMINISTRATION,
       outcome: input.outcome ?? AuditOutcome.SUCCESS,
@@ -43,15 +48,27 @@ export class AuditService {
       metadata: summarizeAuditValue(input.metadata),
       errorCode: sanitizeAuditText(input.errorCode, 100),
       errorMessage: sanitizeAuditText(input.errorMessage, 500),
-    });
+      expiresAt: new Date(
+        Date.now() + this.retentionDays() * 24 * 60 * 60 * 1000,
+      ),
+    };
+    if (session) {
+      const [created] = await this.auditLogModel.create([payload], { session });
+      return created;
+    }
+    return this.auditLogModel.create(payload);
   }
 
   async tryRecord(input: AuditEventInput): Promise<void> {
     try {
       await this.record(input);
     } catch (error) {
+      const errorName =
+        error instanceof Error && error.name
+          ? error.name.replace(/[^A-Za-z0-9_.:-]/g, '').slice(0, 120)
+          : 'UnknownError';
       this.logger.error(
-        `No se pudo persistir auditoría ${input.action}: ${error instanceof Error ? error.message : String(error)}`,
+        `No se pudo persistir auditoría ${input.action}: ${errorName}`,
       );
     }
   }
@@ -121,8 +138,18 @@ export class AuditService {
   }
 
   private publicView(row: Record<string, unknown>): Record<string, unknown> {
-    const { _id, ...result } = row;
-    return { ...result, id: String(_id) };
+    const result = { ...row };
+    const id = result._id;
+    delete result._id;
+    delete result.expiresAt;
+    return { ...result, id: String(id) };
+  }
+
+  private retentionDays(): number {
+    const configured = Number(this.config?.get('AUDIT_RETENTION_DAYS') ?? 365);
+    return Number.isSafeInteger(configured)
+      ? Math.min(3_650, Math.max(30, configured))
+      : 365;
   }
 
   private boundedInteger(

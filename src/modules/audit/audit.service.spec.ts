@@ -38,6 +38,7 @@ describe('AuditService', () => {
           accessToken: '[REDACTED]',
           theme: { primaryColor: '#FFFFFF' },
         },
+        expiresAt: expect.any(Date),
       }),
     );
   });

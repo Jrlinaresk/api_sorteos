@@ -52,9 +52,12 @@ el proceso local al usuario raíz de Mongo.
 - Las operaciones idempotentes usan `Idempotency-Key`.
 - `X-Correlation-Id` permite trazar una petición en logs y auditoría.
 
-Las rutas de autenticación incluyen registro, login, refresh, logout,
-recuperación/cambio de contraseña y `GET /api/v1/auth/me`. Las respuestas
-públicas de usuario no contienen hashes ni contraseñas.
+Las rutas de autenticación incluyen registro con activación por correo, login,
+refresh, logout, recuperación/cambio de contraseña y `GET /api/v1/auth/me`.
+El alta pública no emite una sesión hasta confirmar el código enviado al correo.
+El frontend debe conservar el `registrationId` opaco devuelto por el alta y
+enviarlo en el reenvío y la confirmación; una nueva alta invalida el intento previo.
+Las respuestas públicas de usuario no contienen hashes ni contraseñas.
 
 ## Configuración
 

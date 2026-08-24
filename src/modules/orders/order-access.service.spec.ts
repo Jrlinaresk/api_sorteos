@@ -264,6 +264,24 @@ describe('OrderAccessService', () => {
     await Promise.resolve();
   });
 
+  it('elimina el challenge si SMTP rechaza el OTP para permitir solicitar otro', async () => {
+    const orderId = new Types.ObjectId();
+    orderModel.find.mockReturnValue(executable([{ _id: orderId }]));
+    email.sendVerificationEmail.mockRejectedValueOnce(
+      new Error('SMTP temporalmente indisponible'),
+    );
+
+    const response = await service.request({
+      phone: buyer.phone,
+      email: buyer.email,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(challengeModel.deleteOne).toHaveBeenCalledWith({
+      challengeId: response.challengeId,
+    });
+  });
+
   it('no rota un subconjunto silencioso y exige filtrar por campaña si se supera el máximo', async () => {
     const matches = Array.from({ length: 21 }, () => ({
       _id: new Types.ObjectId(),

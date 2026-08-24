@@ -31,6 +31,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (
       !user ||
       user.isActive === false ||
+      user.registrationPending === true ||
       (user.authVersion ?? 0) !== (payload.ver ?? 0)
     ) {
       throw new UnauthorizedException('Sesión inválida');

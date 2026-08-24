@@ -6,13 +6,12 @@ import { UserRole } from '../users/enums/user-role.enum';
 import { AuditController } from './audit.controller';
 
 describe('AuditController security metadata', () => {
-  it('exige JWT y rol admin/operator en todo el controlador', () => {
+  it('exige JWT y rol ADMIN en todo el controlador', () => {
     expect(Reflect.getMetadata(GUARDS_METADATA, AuditController)).toEqual(
       expect.arrayContaining([JwtAuthGuard, RolesGuard]),
     );
     expect(Reflect.getMetadata(ROLES_KEY, AuditController)).toEqual([
       UserRole.ADMIN,
-      UserRole.OPERATOR,
     ]);
   });
 });

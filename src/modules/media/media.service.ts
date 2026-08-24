@@ -298,6 +298,7 @@ export class MediaService {
       .findOneAndUpdate(
         {
           _id,
+          storageProvider: this.storage.providerName,
           references: { $size: 0 },
           $or: [
             {
@@ -321,10 +322,15 @@ export class MediaService {
     if (!asset) {
       const existing = await this.mediaModel
         .findById(_id)
-        .select('status references deletedAt')
+        .select('status storageProvider references deletedAt')
         .lean()
         .exec();
       if (!existing) throw new NotFoundException('Medio no encontrado');
+      if (existing.storageProvider !== this.storage.providerName) {
+        throw new ConflictException(
+          'El proveedor configurado no puede purgar este medio',
+        );
+      }
       if (existing.status === MediaAssetStatus.Active) {
         throw new ConflictException(
           'El medio debe eliminarse lógicamente antes de purgarlo',
@@ -345,12 +351,6 @@ export class MediaService {
         meta: { eligibleAt },
       });
     }
-    if (asset.storageProvider !== this.storage.providerName) {
-      throw new ConflictException(
-        'El proveedor configurado no puede purgar este medio',
-      );
-    }
-
     try {
       await this.storage.delete(asset.storageKey);
     } catch (error) {
@@ -537,7 +537,11 @@ export class MediaService {
         this.maxStoredBytesPerUser,
       );
     } catch (error) {
-      await this.releaseUsageCounter('global', bytes);
+      await this.releaseUsageCounter('global', bytes).catch(() => {
+        this.logger.error(
+          'No se pudo revertir la reserva global de almacenamiento de medios',
+        );
+      });
       throw error;
     }
   }

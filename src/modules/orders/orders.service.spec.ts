@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { Types } from 'mongoose';
 import { OrdersService } from './orders.service';
 import { OrderStatus } from './schemas/order.schema';
@@ -93,6 +94,14 @@ describe('OrdersService reservations and lifecycle', () => {
       slug: 'titan-160',
       status: CampaignStatus.Active,
       termsVersion: 'v1',
+      regulationHtml: '<p onclick="steal()">Reglas</p><script>steal()</script>',
+      regulationHistory: [
+        {
+          version: 'v1',
+          html: '<p onclick="steal()">Reglas</p><script>steal()</script>',
+          sha256: 'legacy-source-hash',
+        },
+      ],
       totalTitles: 10,
       quotaDigits: 2,
       allocationMultiplier: 3,
@@ -152,6 +161,7 @@ describe('OrdersService reservations and lifecycle', () => {
         total: 1.5,
         currency: 'BRL',
         allocatedQuantity: 3,
+        termsHash: createHash('sha256').update('<p>Reglas</p>').digest('hex'),
       }),
     );
     expect(quotaModel.updateMany).toHaveBeenCalledWith(

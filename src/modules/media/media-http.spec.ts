@@ -11,6 +11,7 @@ describe('media HTTP helpers', () => {
     ['bytes=-3', { start: 7, end: 9, length: 3 }],
     ['bytes=-99', { start: 0, end: 9, length: 10 }],
     ['bytes=8-99', { start: 8, end: 9, length: 2 }],
+    ['BYTES=1-1', { start: 1, end: 1, length: 1 }],
   ])('parses %s as one bounded range', (header, expected) => {
     expect(parseSingleByteRange(header, 10)).toEqual(expected);
   });

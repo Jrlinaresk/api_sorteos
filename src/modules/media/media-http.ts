@@ -24,7 +24,7 @@ export function parseSingleByteRange(
     throw new InvalidMediaRangeError();
   }
 
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(header.trim());
   if (!match || (match[1] === '' && match[2] === '')) {
     throw new InvalidMediaRangeError();
   }

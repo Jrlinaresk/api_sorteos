@@ -10,12 +10,14 @@ function queryResult<T>(result: T) {
     sort: jest.fn(),
     skip: jest.fn(),
     limit: jest.fn(),
+    session: jest.fn(),
     exec: jest.fn().mockResolvedValue(result),
   };
   query.lean.mockReturnValue(query);
   query.sort.mockReturnValue(query);
   query.skip.mockReturnValue(query);
   query.limit.mockReturnValue(query);
+  query.session.mockReturnValue(query);
   return query;
 }
 
@@ -30,11 +32,12 @@ describe('SettingsService', () => {
     findByIdAndUpdate: jest.fn(),
   };
   const auditService = { record: jest.fn() };
-  const service = new SettingsService(
-    settingsModel as never,
-    counterModel as never,
-    auditService as never,
-  );
+  const session = {
+    withTransaction: jest.fn(async (work: () => Promise<void>) => work()),
+    endSession: jest.fn().mockResolvedValue(undefined),
+  };
+  const connection = { startSession: jest.fn().mockResolvedValue(session) };
+  let service: SettingsService;
   const actor = {
     actorId: '507f1f77bcf86cd799439011',
     actorRole: UserRole.ADMIN,
@@ -44,6 +47,12 @@ describe('SettingsService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     auditService.record.mockResolvedValue({});
+    service = new SettingsService(
+      settingsModel as never,
+      counterModel as never,
+      auditService as never,
+      connection as never,
+    );
   });
 
   it('devuelve una configuración pública utilizable antes de la primera publicación', async () => {
@@ -74,9 +83,11 @@ describe('SettingsService', () => {
       featureFlags: DEFAULT_SETTINGS.featureFlags,
       createdBy: actor.actorId,
     };
-    settingsModel.create.mockResolvedValue({
-      toObject: () => stored,
-    });
+    settingsModel.create.mockResolvedValue([
+      {
+        toObject: () => stored,
+      },
+    ]);
 
     const result = await service.createVersion(
       { brand: { siteName: 'ZERO7' }, changeNote: 'Nueva identidad' },
@@ -86,14 +97,17 @@ describe('SettingsService', () => {
     expect(result.version).toBe(3);
     expect(result.status).toBe(SettingsVersionStatus.DRAFT);
     expect(settingsModel.create).toHaveBeenCalledWith(
-      expect.objectContaining({ version: 3, createdBy: actor.actorId }),
+      [expect.objectContaining({ version: 3, createdBy: actor.actorId })],
+      { session },
     );
     expect(auditService.record).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'settings.version.create',
         resourceId: '3',
       }),
+      session,
     );
+    expect(session.endSession).toHaveBeenCalled();
   });
 
   it('impide modificar una versión publicada', async () => {

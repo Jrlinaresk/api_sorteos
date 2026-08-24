@@ -9,12 +9,16 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { createHmac, randomInt, timingSafeEqual } from 'crypto';
-import { Model } from 'mongoose';
+import { ClientSession, Model } from 'mongoose';
 import { EmailService } from './email.service';
+import { EmailVerificationPurpose } from './enums/email-verification-purpose.enum';
 import {
   EmailVerification,
   EmailVerificationDocument,
 } from './schema/email-verification.schema';
+
+const EMAIL_CODE_COOLDOWN_MILLISECONDS = 60_000;
+const EMAIL_CODE_LIFETIME_MILLISECONDS = 15 * 60_000;
 
 @Injectable()
 export class EmailVerificationService {
@@ -27,11 +31,19 @@ export class EmailVerificationService {
     private readonly config: ConfigService,
   ) {}
 
-  async createVerificationCode(rawEmail: string): Promise<void> {
+  async createVerificationCode(
+    rawEmail: string,
+    purpose = EmailVerificationPurpose.Generic,
+    binding = '',
+  ): Promise<void> {
     const email = rawEmail.trim().toLowerCase();
     const now = new Date();
+    const expiresAt = new Date(
+      now.getTime() + EMAIL_CODE_LIFETIME_MILLISECONDS,
+    );
     const code = String(randomInt(100_000, 1_000_000));
-    const codeHash = this.hash(email, code);
+    const bindingHash = this.hashBinding(purpose, binding);
+    const codeHash = this.hash(email, code, purpose, binding);
     let document: EmailVerificationDocument | null;
     try {
       document = await this.verificationModel
@@ -39,12 +51,27 @@ export class EmailVerificationService {
           {
             email,
             $or: [
-              { createdAt: { $lte: new Date(now.getTime() - 60_000) } },
+              {
+                createdAt: {
+                  $lte: new Date(
+                    now.getTime() - EMAIL_CODE_COOLDOWN_MILLISECONDS,
+                  ),
+                },
+              },
+              { expiresAt: { $lte: now } },
               { createdAt: { $exists: false } },
             ],
           },
           {
-            $set: { email, codeHash, attempts: 0, createdAt: now },
+            $set: {
+              email,
+              codeHash,
+              bindingHash,
+              attempts: 0,
+              purpose,
+              createdAt: now,
+              expiresAt,
+            },
             $unset: { code: 1 },
           },
           { new: true, upsert: true, setDefaultsOnInsert: true },
@@ -70,40 +97,67 @@ export class EmailVerificationService {
     }
   }
 
-  async verifyCode(rawEmail: string, rawCode: string): Promise<void> {
+  async verifyCode(
+    rawEmail: string,
+    rawCode: string,
+    purpose = EmailVerificationPurpose.Generic,
+    binding = '',
+    session?: ClientSession,
+  ): Promise<void> {
     const email = rawEmail.trim().toLowerCase();
     const code = rawCode.trim().toUpperCase();
-    const record = await this.verificationModel
+    const now = new Date();
+    const bindingHash = this.hashBinding(purpose, binding);
+    const verificationQuery = this.verificationModel
       .findOneAndUpdate(
-        { email, attempts: { $lt: 5 } },
+        {
+          email,
+          purpose,
+          bindingHash,
+          expiresAt: { $gt: now },
+          attempts: { $lt: 5 },
+        },
         { $inc: { attempts: 1 } },
         { new: true },
       )
-      .select('+codeHash +code')
-      .exec();
+      .select('+codeHash +code');
+    if (session) verificationQuery.session(session);
+    const record = await verificationQuery.exec();
     if (!record) throw this.invalidCode();
 
-    const candidate = this.hash(email, code);
+    const candidate = this.hash(email, code, purpose, binding);
     const expected = record.codeHash || '';
     const hashMatches = this.safeEqual(candidate, expected);
-    const legacyMatches = Boolean(record.code && this.safeEqual(code, record.code));
+    const legacyMatches = Boolean(
+      purpose === EmailVerificationPurpose.Generic &&
+        binding === '' &&
+        record.code &&
+        this.safeEqual(code, record.code),
+    );
     if (!hashMatches && !legacyMatches) {
       if (record.attempts >= 5) {
-        await this.verificationModel.deleteOne({
+        const deleteQuery = this.verificationModel.deleteOne({
           _id: record._id,
           createdAt: record.createdAt,
         });
+        if (session) deleteQuery.session(session);
+        await deleteQuery.exec();
       }
       throw this.invalidCode();
     }
     const secretFilter = hashMatches
       ? { codeHash: record.codeHash }
       : { code: record.code };
-    const consumed = await this.verificationModel.findOneAndDelete({
+    const consumptionQuery = this.verificationModel.findOneAndDelete({
       _id: record._id,
       createdAt: record.createdAt,
+      purpose,
+      bindingHash,
+      expiresAt: { $gt: now },
       ...secretFilter,
     });
+    if (session) consumptionQuery.session(session);
+    const consumed = await consumptionQuery.exec();
     if (!consumed) throw this.invalidCode();
   }
 
@@ -116,15 +170,34 @@ export class EmailVerificationService {
       });
   }
 
-  private hash(email: string, code: string) {
-    return createHmac('sha256', this.secret()).update(`${email}:${code}`).digest('hex');
+  private hash(
+    email: string,
+    code: string,
+    purpose: EmailVerificationPurpose,
+    binding: string,
+  ) {
+    return createHmac('sha256', this.secret())
+      .update(`code:${purpose}:${email}:${binding}:${code}`)
+      .digest('hex');
+  }
+
+  private hashBinding(
+    purpose: EmailVerificationPurpose,
+    binding: string,
+  ): string {
+    return createHmac('sha256', this.secret())
+      .update(`binding:${purpose}:${binding}`)
+      .digest('hex');
   }
 
   private secret() {
     const secret =
-      this.config.get<string>('EMAIL_CODE_SECRET') || this.config.get<string>('JWT_SECRET');
+      this.config.get<string>('EMAIL_CODE_SECRET') ||
+      this.config.get<string>('JWT_SECRET');
     if (!secret || secret.length < 32) {
-      throw new InternalServerErrorException('EMAIL_CODE_SECRET no está configurado de forma segura');
+      throw new InternalServerErrorException(
+        'EMAIL_CODE_SECRET no está configurado de forma segura',
+      );
     }
     return secret;
   }
@@ -136,7 +209,9 @@ export class EmailVerificationService {
   }
 
   private invalidCode() {
-    return new BadRequestException('Código de verificación inválido o expirado');
+    return new BadRequestException(
+      'Código de verificación inválido o expirado',
+    );
   }
 
   private tooManyRequests() {

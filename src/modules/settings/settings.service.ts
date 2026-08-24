@@ -2,9 +2,11 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { FilterQuery, Model } from 'mongoose';
+import { InjectConnection, InjectModel } from '@nestjs/mongoose';
+import { ClientSession, Connection, FilterQuery, Model } from 'mongoose';
 import { AuditService } from '../audit/audit.service';
 import { AuditCategory } from '../audit/enums/audit-category.enum';
 import { AuditActorContext } from '../audit/interfaces/audit-event.interface';
@@ -48,6 +50,9 @@ export class SettingsService {
     @InjectModel(SettingsCounter.name)
     private readonly counterModel: Model<SettingsCounterDocument>,
     private readonly auditService: AuditService,
+    @Optional()
+    @InjectConnection()
+    private readonly connection?: Connection,
   ) {}
 
   async getPublic(): Promise<PublicSettingsView> {
@@ -90,39 +95,54 @@ export class SettingsService {
     dto: CreateSettingsVersionDto,
     actor: AuditActorContext,
   ): Promise<Record<string, unknown>> {
-    const counter = await this.counterModel
-      .findByIdAndUpdate(
-        SETTINGS_COUNTER_ID,
-        { $inc: { nextVersion: 1 } },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      )
-      .lean()
-      .exec();
-    const version = counter?.nextVersion ?? 1;
-    const configuration = mergeSettings(this.patchFromDto(dto));
-    const created = await this.settingsModel.create({
-      version,
-      status: SettingsVersionStatus.DRAFT,
-      ...configuration,
-      createdBy: actor.actorId ?? 'system',
-      changeNote: dto.changeNote,
+    return this.transaction(async (session) => {
+      const counter = await this.counterModel
+        .findByIdAndUpdate(
+          SETTINGS_COUNTER_ID,
+          { $inc: { nextVersion: 1 } },
+          {
+            upsert: true,
+            new: true,
+            setDefaultsOnInsert: true,
+            session,
+          },
+        )
+        .lean()
+        .exec();
+      const version = counter?.nextVersion ?? 1;
+      const configuration = mergeSettings(this.patchFromDto(dto));
+      const [created] = await this.settingsModel.create(
+        [
+          {
+            version,
+            status: SettingsVersionStatus.DRAFT,
+            ...configuration,
+            createdBy: actor.actorId ?? 'system',
+            changeNote: dto.changeNote,
+          },
+        ],
+        { session },
+      );
+      const view = this.adminView(
+        created.toObject({ flattenMaps: true }) as unknown as Record<
+          string,
+          unknown
+        >,
+      );
+      await this.auditService.record(
+        {
+          ...actor,
+          action: 'settings.version.create',
+          category: AuditCategory.ADMINISTRATION,
+          resourceType: 'site_settings',
+          resourceId: String(version),
+          before: null,
+          after: view,
+        },
+        session,
+      );
+      return view;
     });
-    const view = this.adminView(
-      created.toObject({ flattenMaps: true }) as unknown as Record<
-        string,
-        unknown
-      >,
-    );
-    await this.auditService.record({
-      ...actor,
-      action: 'settings.version.create',
-      category: AuditCategory.ADMINISTRATION,
-      resourceType: 'site_settings',
-      resourceId: String(version),
-      before: null,
-      after: view,
-    });
-    return view;
   }
 
   async updateDraft(
@@ -130,142 +150,176 @@ export class SettingsService {
     dto: UpdateSettingsVersionDto,
     actor: AuditActorContext,
   ): Promise<Record<string, unknown>> {
-    const existing = (await this.settingsModel
-      .findOne({ version })
-      .lean({ flattenMaps: true })
-      .exec()) as unknown as Record<string, unknown> | null;
-    if (!existing) throw new NotFoundException('Versión no encontrada');
-    if (existing.status !== SettingsVersionStatus.DRAFT) {
-      throw new ConflictException(
-        'Solo las versiones en borrador pueden modificarse',
-      );
-    }
+    return this.transaction(async (session) => {
+      const existing = (await this.settingsModel
+        .findOne({ version })
+        .session(session)
+        .lean({ flattenMaps: true })
+        .exec()) as unknown as Record<string, unknown> | null;
+      if (!existing) throw new NotFoundException('Versión no encontrada');
+      if (existing.status !== SettingsVersionStatus.DRAFT) {
+        throw new ConflictException(
+          'Solo las versiones en borrador pueden modificarse',
+        );
+      }
 
-    const configuration = mergeSettings(
-      this.patchFromDto(dto),
-      this.configurationFromRow(existing),
-    );
-    const updated = (await this.settingsModel
-      .findOneAndUpdate(
-        { version, status: SettingsVersionStatus.DRAFT },
-        {
-          $set: {
-            ...configuration,
-            ...(dto.changeNote !== undefined
-              ? { changeNote: dto.changeNote }
-              : {}),
+      const configuration = mergeSettings(
+        this.patchFromDto(dto),
+        this.configurationFromRow(existing),
+      );
+      const updated = (await this.settingsModel
+        .findOneAndUpdate(
+          { version, status: SettingsVersionStatus.DRAFT },
+          {
+            $set: {
+              ...configuration,
+              ...(dto.changeNote !== undefined
+                ? { changeNote: dto.changeNote }
+                : {}),
+            },
           },
+          { new: true, runValidators: true, session },
+        )
+        .lean({ flattenMaps: true })
+        .exec()) as unknown as Record<string, unknown> | null;
+      if (!updated) {
+        throw new ConflictException(
+          'El borrador cambió mientras se actualizaba',
+        );
+      }
+      const view = this.adminView(updated);
+      await this.auditService.record(
+        {
+          ...actor,
+          action: 'settings.version.update',
+          category: AuditCategory.ADMINISTRATION,
+          resourceType: 'site_settings',
+          resourceId: String(version),
+          before: this.adminView(existing),
+          after: view,
         },
-        { new: true, runValidators: true },
-      )
-      .lean({ flattenMaps: true })
-      .exec()) as unknown as Record<string, unknown> | null;
-    if (!updated) {
-      throw new ConflictException('El borrador cambió mientras se actualizaba');
-    }
-    const view = this.adminView(updated);
-    await this.auditService.record({
-      ...actor,
-      action: 'settings.version.update',
-      category: AuditCategory.ADMINISTRATION,
-      resourceType: 'site_settings',
-      resourceId: String(version),
-      before: this.adminView(existing),
-      after: view,
+        session,
+      );
+      return view;
     });
-    return view;
   }
 
   async publish(
     version: number,
     actor: AuditActorContext,
   ): Promise<Record<string, unknown>> {
-    const existing = (await this.settingsModel
-      .findOne({ version })
-      .lean({ flattenMaps: true })
-      .exec()) as unknown as Record<string, unknown> | null;
-    if (!existing) throw new NotFoundException('Versión no encontrada');
-    if (existing.status === SettingsVersionStatus.ARCHIVED) {
-      throw new ConflictException('Una versión archivada no puede publicarse');
-    }
+    return this.transaction(async (session) => {
+      const existing = (await this.settingsModel
+        .findOne({ version })
+        .session(session)
+        .lean({ flattenMaps: true })
+        .exec()) as unknown as Record<string, unknown> | null;
+      if (!existing) throw new NotFoundException('Versión no encontrada');
+      if (existing.status === SettingsVersionStatus.ARCHIVED) {
+        throw new ConflictException(
+          'Una versión archivada no puede publicarse',
+        );
+      }
 
-    const publishedAt = new Date();
-    const updated = (await this.settingsModel
-      .findOneAndUpdate(
-        { version, status: { $ne: SettingsVersionStatus.ARCHIVED } },
-        {
-          $set: {
-            status: SettingsVersionStatus.PUBLISHED,
-            publishedAt,
-            publishedBy: actor.actorId ?? 'system',
+      const publishedAt = new Date();
+      const updated = (await this.settingsModel
+        .findOneAndUpdate(
+          { version, status: { $ne: SettingsVersionStatus.ARCHIVED } },
+          {
+            $set: {
+              status: SettingsVersionStatus.PUBLISHED,
+              publishedAt,
+              publishedBy: actor.actorId ?? 'system',
+            },
           },
-        },
-        { new: true, runValidators: true },
-      )
-      .lean({ flattenMaps: true })
-      .exec()) as unknown as Record<string, unknown> | null;
-    if (!updated) throw new ConflictException('No se pudo publicar la versión');
+          { new: true, runValidators: true, session },
+        )
+        .lean({ flattenMaps: true })
+        .exec()) as unknown as Record<string, unknown> | null;
+      if (!updated) {
+        throw new ConflictException('No se pudo publicar la versión');
+      }
 
-    await this.counterModel
-      .findByIdAndUpdate(
-        SETTINGS_COUNTER_ID,
+      await this.counterModel
+        .findByIdAndUpdate(
+          SETTINGS_COUNTER_ID,
+          {
+            $max: { nextVersion: version },
+            $set: { publishedVersion: version },
+          },
+          {
+            upsert: true,
+            new: true,
+            setDefaultsOnInsert: true,
+            session,
+          },
+        )
+        .exec();
+
+      const view = this.adminView(updated);
+      await this.auditService.record(
         {
-          $max: { nextVersion: version },
-          $set: { publishedVersion: version },
+          ...actor,
+          action: 'settings.version.publish',
+          category: AuditCategory.ADMINISTRATION,
+          resourceType: 'site_settings',
+          resourceId: String(version),
+          before: this.adminView(existing),
+          after: view,
         },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      )
-      .exec();
-
-    const view = this.adminView(updated);
-    await this.auditService.record({
-      ...actor,
-      action: 'settings.version.publish',
-      category: AuditCategory.ADMINISTRATION,
-      resourceType: 'site_settings',
-      resourceId: String(version),
-      before: this.adminView(existing),
-      after: view,
+        session,
+      );
+      return view;
     });
-    return view;
   }
 
   async archive(
     version: number,
     actor: AuditActorContext,
   ): Promise<Record<string, unknown>> {
-    const [counter, existing] = await Promise.all([
-      this.counterModel.findById(SETTINGS_COUNTER_ID).lean().exec(),
-      this.settingsModel
+    return this.transaction(async (session) => {
+      const counter = await this.counterModel
+        .findById(SETTINGS_COUNTER_ID)
+        .session(session)
+        .lean()
+        .exec();
+      const existing = (await this.settingsModel
         .findOne({ version })
+        .session(session)
         .lean({ flattenMaps: true })
-        .exec() as unknown as Promise<Record<string, unknown> | null>,
-    ]);
-    if (!existing) throw new NotFoundException('Versión no encontrada');
-    if (counter?.publishedVersion === version) {
-      throw new ConflictException(
-        'No se puede archivar la versión pública actual; publica otra primero',
+        .exec()) as unknown as Record<string, unknown> | null;
+      if (!existing) throw new NotFoundException('Versión no encontrada');
+      if (counter?.publishedVersion === version) {
+        throw new ConflictException(
+          'No se puede archivar la versión pública actual; publica otra primero',
+        );
+      }
+      const updated = (await this.settingsModel
+        .findOneAndUpdate(
+          { version, status: { $ne: SettingsVersionStatus.ARCHIVED } },
+          { $set: { status: SettingsVersionStatus.ARCHIVED } },
+          { new: true, session },
+        )
+        .lean({ flattenMaps: true })
+        .exec()) as unknown as Record<string, unknown> | null;
+      if (!updated) {
+        throw new ConflictException('No se pudo archivar la versión');
+      }
+      const view = this.adminView(updated);
+      await this.auditService.record(
+        {
+          ...actor,
+          action: 'settings.version.archive',
+          category: AuditCategory.ADMINISTRATION,
+          resourceType: 'site_settings',
+          resourceId: String(version),
+          before: this.adminView(existing),
+          after: view,
+        },
+        session,
       );
-    }
-    const updated = (await this.settingsModel
-      .findOneAndUpdate(
-        { version },
-        { $set: { status: SettingsVersionStatus.ARCHIVED } },
-        { new: true },
-      )
-      .lean({ flattenMaps: true })
-      .exec()) as unknown as Record<string, unknown>;
-    const view = this.adminView(updated);
-    await this.auditService.record({
-      ...actor,
-      action: 'settings.version.archive',
-      category: AuditCategory.ADMINISTRATION,
-      resourceType: 'site_settings',
-      resourceId: String(version),
-      before: this.adminView(existing),
-      after: view,
+      return view;
     });
-    return view;
   }
 
   async list(dto: ListSettingsVersionsDto): Promise<PaginatedSettingsVersions> {
@@ -346,6 +400,32 @@ export class SettingsService {
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };
+    return result;
+  }
+
+  private async transaction<T>(
+    work: (session: ClientSession) => Promise<T>,
+  ): Promise<T> {
+    if (!this.connection) {
+      throw new ServiceUnavailableException(
+        'Las mutaciones de configuración requieren transacciones',
+      );
+    }
+    const session = await this.connection.startSession();
+    let result: T | undefined;
+    try {
+      await session.withTransaction(async () => {
+        result = undefined;
+        result = await work(session);
+      });
+    } finally {
+      await session.endSession();
+    }
+    if (result === undefined) {
+      throw new ServiceUnavailableException(
+        'MongoDB no confirmó la mutación de configuración',
+      );
+    }
     return result;
   }
 

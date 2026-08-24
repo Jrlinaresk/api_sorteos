@@ -86,8 +86,7 @@ export class AuditInterceptor implements NestInterceptor {
               durationMs: Date.now() - startedAt,
             },
             errorCode: this.errorCode(error),
-            errorMessage:
-              error instanceof Error ? error.message : String(error),
+            errorMessage: this.auditErrorMessage(error),
           }),
         ).pipe(mergeMap(() => throwError(() => error))),
       ),
@@ -146,5 +145,11 @@ export class AuditInterceptor implements NestInterceptor {
     if (!error || typeof error !== 'object') return undefined;
     const status = (error as { status?: unknown }).status;
     return typeof status === 'number' ? status : undefined;
+  }
+
+  private auditErrorMessage(error: unknown): string {
+    const status = this.errorStatus(error);
+    if (!status || status >= 500) return 'Unexpected internal error';
+    return error instanceof Error ? error.message : String(error);
   }
 }

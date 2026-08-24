@@ -1,9 +1,16 @@
 name: api-sorteos-prod
 
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: '${DOCKER_LOG_MAX_SIZE:-10m}'
+    max-file: '${DOCKER_LOG_MAX_FILES:-5}'
+
 services:
   mongo-keyfile-init:
     image: mongo:7.0
     restart: 'no'
+    logging: *default-logging
     user: '0:0'
     read_only: true
     cap_drop:
@@ -30,6 +37,7 @@ services:
   mongodb:
     image: mongo:7.0
     restart: unless-stopped
+    logging: *default-logging
     environment:
       MONGO_INITDB_ROOT_USERNAME: '${MONGO_ROOT_USERNAME:?MONGO_ROOT_USERNAME es obligatorio}'
       MONGO_INITDB_ROOT_PASSWORD: '${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD es obligatorio}'
@@ -75,6 +83,7 @@ services:
   mongo-init-replica:
     image: mongo:7.0
     restart: 'no'
+    logging: *default-logging
     environment:
       MONGO_ROOT_USERNAME: '${MONGO_ROOT_USERNAME:?MONGO_ROOT_USERNAME es obligatorio}'
       MONGO_ROOT_PASSWORD: '${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD es obligatorio}'
@@ -142,6 +151,7 @@ services:
   efi-cert-init:
     image: alpine:3.20
     restart: 'no'
+    logging: *default-logging
     user: '0:0'
     read_only: true
     cap_drop:
@@ -211,6 +221,7 @@ services:
       dockerfile: Dockerfile
       target: production
     restart: unless-stopped
+    logging: *default-logging
     read_only: true
     cap_drop:
       - ALL
@@ -291,6 +302,9 @@ services:
       MEDIA_UPLOAD_TMP_DIR: '/tmp/api-sorteos-media'
       MEDIA_MAX_IMAGE_BYTES: '${MEDIA_MAX_IMAGE_BYTES:-10485760}'
       MEDIA_MAX_VIDEO_BYTES: '${MEDIA_MAX_VIDEO_BYTES:-262144000}'
+      MEDIA_MAX_TOTAL_STORED_BYTES: '${MEDIA_MAX_TOTAL_STORED_BYTES:-53687091200}'
+      MEDIA_MAX_STORED_BYTES_PER_USER: '${MEDIA_MAX_STORED_BYTES_PER_USER:-10737418240}'
+      MEDIA_DELETED_RETENTION_DAYS: '${MEDIA_DELETED_RETENTION_DAYS:-30}'
       NOTIFICATION_PUSH_PROVIDER: '${NOTIFICATION_PUSH_PROVIDER:-noop}'
       WEB_PUSH_VAPID_SUBJECT: '${WEB_PUSH_VAPID_SUBJECT:-}'
       WEB_PUSH_VAPID_PUBLIC_KEY: '${WEB_PUSH_VAPID_PUBLIC_KEY:-}'
@@ -305,6 +319,7 @@ services:
       REFERRAL_IP_HASH_SECRET: '${REFERRAL_IP_HASH_SECRET:?REFERRAL_IP_HASH_SECRET es obligatorio}'
       RATE_LIMIT_WINDOW_MS: '${RATE_LIMIT_WINDOW_MS:-60000}'
       RATE_LIMIT_MAX: '${RATE_LIMIT_MAX:-180}'
+      AUDIT_RETENTION_DAYS: '${AUDIT_RETENTION_DAYS:-365}'
     depends_on:
       mongo-init-replica:
         condition: service_completed_successfully
@@ -344,6 +359,7 @@ services:
     profiles:
       - proxy
     restart: unless-stopped
+    logging: *default-logging
     user: '101:101'
     read_only: true
     cap_drop:

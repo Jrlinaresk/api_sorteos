@@ -62,6 +62,36 @@ describe('validateEnvironment', () => {
     ).toThrow('WEB_PUSH_VAPID_SUBJECT');
   });
 
+  it('valida cuotas y retención física del almacenamiento de medios', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        MEDIA_MAX_TOTAL_STORED_BYTES: '10995116277761',
+      }),
+    ).toThrow('MEDIA_MAX_TOTAL_STORED_BYTES');
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        MEDIA_MAX_STORED_BYTES_PER_USER: '0',
+      }),
+    ).toThrow('MEDIA_MAX_STORED_BYTES_PER_USER');
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        MEDIA_DELETED_RETENTION_DAYS: '3651',
+      }),
+    ).toThrow('MEDIA_DELETED_RETENTION_DAYS');
+  });
+
+  it('acota la retención de auditoría entre 1 y 3650 días', () => {
+    expect(() =>
+      validateEnvironment({ NODE_ENV: 'test', AUDIT_RETENTION_DAYS: '0' }),
+    ).toThrow('AUDIT_RETENTION_DAYS');
+    expect(
+      validateEnvironment({ NODE_ENV: 'test', AUDIT_RETENTION_DAYS: '365' }),
+    ).toEqual({ NODE_ENV: 'test', AUDIT_RETENTION_DAYS: '365' });
+  });
+
   it('acepta una configuración de producción transaccional y completa', () => {
     const environment = productionEnvironment();
     expect(validateEnvironment(environment)).toEqual(environment);

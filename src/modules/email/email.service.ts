@@ -4,6 +4,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import * as handlebars from 'handlebars';
 import { createTransport, Transporter } from 'nodemailer';
@@ -75,6 +76,52 @@ export class EmailService {
     }
   }
 
+  async sendTransactionalEmail(
+    rawRecipient: string,
+    eventKey: string,
+    subject: string,
+    body: string,
+  ): Promise<void> {
+    const recipient = rawRecipient.trim().toLowerCase();
+    if (
+      !this.isSafeRecipient(recipient) ||
+      !/^[A-Za-z0-9._:-]{8,160}$/.test(eventKey) ||
+      !subject.trim() ||
+      subject.length > 140 ||
+      /[\r\n]/.test(subject) ||
+      !body.trim() ||
+      body.length > 4_000
+    ) {
+      throw new InternalServerErrorException(
+        'No se pudo preparar el correo transaccional',
+      );
+    }
+    const messageId = `<${createHash('sha256').update(eventKey).digest('hex')}@api-sorteos.local>`;
+    const escapedBody = body
+      .split(/\r?\n/)
+      .map((line) => handlebars.escapeExpression(line))
+      .join('<br>');
+    try {
+      await this.getTransporter().sendMail({
+        from: this.sender(),
+        to: recipient,
+        messageId,
+        subject: subject.trim(),
+        text: body,
+        html: `<!doctype html><html lang="es"><body><p>${escapedBody}</p></body></html>`,
+      });
+      this.logger.log('Correo transaccional aceptado por el servidor SMTP');
+    } catch (error) {
+      const errorCode = this.smtpErrorCode(error);
+      this.logger.error(
+        `Falló el envío SMTP transaccional${errorCode ? ` (${errorCode})` : ''}`,
+      );
+      throw new InternalServerErrorException(
+        'No se pudo enviar el correo transaccional',
+      );
+    }
+  }
+
   private getTransporter(): Transporter {
     if (this.transporter) return this.transporter;
 
@@ -113,6 +160,16 @@ export class EmailService {
       },
     });
     return this.transporter;
+  }
+
+  private sender(): string {
+    const from =
+      this.config.get<string>('SMTP_FROM')?.trim() ||
+      this.config.get<string>('SMTP_USER')?.trim();
+    if (!from || /[\r\n]/.test(from)) {
+      throw this.configurationError('SMTP_FROM');
+    }
+    return from;
   }
 
   private loadTemplate(): string {

@@ -27,7 +27,7 @@ import { CampaignStatus, DrawMethod, MediaType } from '../schema/raffle.schema';
 
 export class CampaignMediaDto {
   @ValidateIf((item: CampaignMediaDto) => !item.mediaId)
-  @IsUrl({ require_tld: false })
+  @IsUrl({ protocols: ['https'], require_protocol: true })
   url?: string;
 
   @ValidateIf((item: CampaignMediaDto) => !item.url)
@@ -132,10 +132,11 @@ export class SeoDto {
   @IsArray()
   @ArrayMaxSize(30)
   @IsString({ each: true })
+  @MaxLength(80, { each: true })
   keywords?: string[];
 
   @IsOptional()
-  @IsUrl({ require_tld: false })
+  @IsUrl({ protocols: ['https'], require_protocol: true })
   shareImageUrl?: string;
 }
 
@@ -146,11 +147,13 @@ export class AnalyticsDto {
   @IsOptional()
   @IsString()
   @MaxLength(80)
+  @Matches(/^\d{5,32}$/)
   metaPixelId?: string;
 
   @IsOptional()
   @IsString()
   @MaxLength(80)
+  @Matches(/^GTM-[A-Z0-9]{4,32}$/)
   googleTagManagerId?: string;
 }
 
@@ -265,7 +268,7 @@ export class CreateRaffleDto {
   termsVersion?: string;
 
   @IsOptional()
-  @IsUrl({ require_tld: false })
+  @IsUrl({ protocols: ['https'], require_protocol: true })
   imageUrl?: string;
 
   @IsOptional()
