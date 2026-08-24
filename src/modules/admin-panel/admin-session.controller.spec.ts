@@ -1,7 +1,4 @@
-import {
-  ForbiddenException,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { AdminSessionController } from './admin-session.controller';
 import { UserRole } from '../users/enums/user-role.enum';
 
@@ -117,10 +114,7 @@ describe('AdminSessionController', () => {
 
   it('rechaza refresh sin cookie administrativa', async () => {
     await expect(
-      controller.refresh(
-        { headers: {} } as never,
-        response as never,
-      ),
+      controller.refresh({ headers: {} } as never, response as never),
     ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(auth.refresh).not.toHaveBeenCalled();
   });

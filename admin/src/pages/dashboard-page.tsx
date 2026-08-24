@@ -101,7 +101,7 @@ export function DashboardPage() {
 
       <section className="metric-grid" aria-label="Indicadores principales">
         <MetricCard
-          label="Ingreso neto"
+          label="Ingreso neto acumulado"
           value={formatCents(data.finance.netCents)}
           meta={`${formatInteger(data.finance.paymentCount)} pagos`}
           icon={CircleDollarSign}

@@ -1,11 +1,24 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, Edit3, Plus, Trash2, Trophy } from 'lucide-react';
+import {
+  CheckCircle2,
+  Edit3,
+  Eye,
+  Gift,
+  Plus,
+  Trash2,
+  Trophy,
+} from 'lucide-react';
 import { api } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 import { formatDateTime, formatMoney } from '@/lib/format';
 import { useToast } from '@/lib/toast-context';
-import type { CampaignSummary, DataPage, PrizeAward } from '@/lib/types';
+import type {
+  CampaignSummary,
+  DataPage,
+  MainAward,
+  PrizeAward,
+} from '@/lib/types';
 import {
   AccessDenied,
   ConfirmDialog,
@@ -23,7 +36,7 @@ import {
   submitForm,
 } from './resource-page-shared';
 
-type PrizeTab = 'inventory' | 'awards';
+type PrizeTab = 'inventory' | 'awards' | 'main';
 type Mechanic = 'winning_title' | 'roulette' | 'scratch';
 
 interface AdminPrize {
@@ -61,6 +74,13 @@ interface PrizeInput {
   sortOrder?: number;
 }
 
+interface AdminMainAward extends MainAward {
+  notificationAttempts?: number;
+  notificationCompletedAt?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export function PrizesPage() {
   const queryClient = useQueryClient();
   const { can } = useAuth();
@@ -74,6 +94,10 @@ export function PrizesPage() {
   const [editing, setEditing] = useState<AdminPrize | 'new' | null>(null);
   const [deleting, setDeleting] = useState<AdminPrize | null>(null);
   const [fulfilling, setFulfilling] = useState<PrizeAward | null>(null);
+  const [mainDetail, setMainDetail] = useState<AdminMainAward | null>(null);
+  const [fulfillingMain, setFulfillingMain] = useState<AdminMainAward | null>(
+    null,
+  );
   const limit = 25;
 
   const prizes = useQuery({
@@ -99,6 +123,14 @@ export function PrizesPage() {
         query: { page, limit, search, campaignId, status },
       }),
     enabled: tab === 'awards' && can('operator', 'admin'),
+  });
+  const mainAwards = useQuery({
+    queryKey: ['admin-main-awards', page, limit, campaignId, status],
+    queryFn: () =>
+      api.get<DataPage<AdminMainAward>>('/admin/main-awards', {
+        query: { page, limit, campaignId, status },
+      }),
+    enabled: tab === 'main' && can('admin'),
   });
   const save = useMutation({
     mutationFn: (input: { id?: string; body: PrizeInput }) =>
@@ -150,8 +182,40 @@ export function PrizesPage() {
         message: errorMessage(error),
       }),
   });
+  const fulfillMain = useMutation({
+    mutationFn: (input: {
+      publicId: string;
+      reference: string;
+      notes?: string;
+    }) =>
+      api.post<AdminMainAward>(
+        `/admin/main-awards/${encodeURIComponent(input.publicId)}/fulfill`,
+        { reference: input.reference, notes: input.notes },
+      ),
+    onSuccess: async (updated) => {
+      await queryClient.invalidateQueries({
+        queryKey: ['admin-main-awards'],
+      });
+      setMainDetail((current) =>
+        current?.publicId === updated.publicId ? updated : current,
+      );
+      setFulfillingMain(null);
+      showToast({
+        tone: 'success',
+        title: 'Entrega principal registrada',
+        message: `Comprobante: ${updated.fulfillmentReference ?? 'registrado'}`,
+      });
+    },
+    onError: (error) =>
+      showToast({
+        tone: 'error',
+        title: 'No se pudo registrar la entrega',
+        message: errorMessage(error),
+      }),
+  });
 
-  const activeQuery = tab === 'inventory' ? prizes : awards;
+  const activeQuery =
+    tab === 'inventory' ? prizes : tab === 'awards' ? awards : mainAwards;
   const setFilter = (setter: (value: string) => void, value: string) => {
     setter(value);
     setPage(1);
@@ -171,8 +235,8 @@ export function PrizesPage() {
   return (
     <main className="page">
       <ResourcePageHeader
-        title="Premios instantáneos"
-        description="Configura el inventario y gestiona la cola de premios adjudicados."
+        title="Premios y entregas"
+        description="Configura premios instantáneos y controla la entrega trazable del premio principal."
         actions={
           tab === 'inventory' ? (
             <button
@@ -212,23 +276,41 @@ export function PrizesPage() {
         >
           Adjudicaciones
         </button>
+        {can('admin') ? (
+          <button
+            role="tab"
+            aria-selected={tab === 'main'}
+            className={tab === 'main' ? 'is-active' : ''}
+            type="button"
+            onClick={() => {
+              setTab('main');
+              setPage(1);
+              setStatus('');
+              setSearch('');
+            }}
+          >
+            Premio principal
+          </button>
+        ) : null}
       </div>
       <section className="panel" role="tabpanel">
         <div className="filters">
-          <label>
-            <span>Buscar</span>
-            <input
-              type="search"
-              maxLength={120}
-              value={search}
-              onChange={(event) => setFilter(setSearch, event.target.value)}
-              placeholder={
-                tab === 'inventory'
-                  ? 'Título o número'
-                  : 'Ganador o identificador'
-              }
-            />
-          </label>
+          {tab !== 'main' ? (
+            <label>
+              <span>Buscar</span>
+              <input
+                type="search"
+                maxLength={120}
+                value={search}
+                onChange={(event) => setFilter(setSearch, event.target.value)}
+                placeholder={
+                  tab === 'inventory'
+                    ? 'Título o número'
+                    : 'Ganador o identificador'
+                }
+              />
+            </label>
+          ) : null}
           <label>
             <span>ID de campaña</span>
             <input
@@ -268,7 +350,9 @@ export function PrizesPage() {
                     'fulfilled',
                     'cancelled',
                   ]
-                : ['awarded', 'claimed', 'fulfilled', 'reversed']
+                : tab === 'awards'
+                  ? ['awarded', 'claimed', 'fulfilled', 'reversed']
+                  : ['pending', 'claimed', 'fulfilled']
               ).map((item) => (
                 <option key={item} value={item}>
                   {item}
@@ -299,6 +383,13 @@ export function PrizesPage() {
         ) : null}
         {tab === 'awards' && awards.data?.data.length ? (
           <AwardsTable items={awards.data.data} onFulfill={setFulfilling} />
+        ) : null}
+        {tab === 'main' && mainAwards.data?.data.length ? (
+          <MainAwardsTable
+            items={mainAwards.data.data}
+            onDetail={setMainDetail}
+            onFulfill={setFulfillingMain}
+          />
         ) : null}
         {activeQuery.data ? (
           <Pagination
@@ -342,6 +433,30 @@ export function PrizesPage() {
           busy={fulfill.isPending}
           onClose={() => setFulfilling(null)}
           onConfirm={() => fulfill.mutate(fulfilling.publicId)}
+        />
+      ) : null}
+      {mainDetail ? (
+        <MainAwardDetail
+          item={mainDetail}
+          onClose={() => setMainDetail(null)}
+          onFulfill={() => {
+            setFulfillingMain(mainDetail);
+            setMainDetail(null);
+          }}
+        />
+      ) : null}
+      {fulfillingMain ? (
+        <MainAwardFulfillment
+          item={fulfillingMain}
+          busy={fulfillMain.isPending}
+          onClose={() => !fulfillMain.isPending && setFulfillingMain(null)}
+          onSave={(reference, notes) =>
+            fulfillMain.mutate({
+              publicId: fulfillingMain.publicId,
+              reference,
+              notes,
+            })
+          }
         />
       ) : null}
     </main>
@@ -484,6 +599,276 @@ function AwardsTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function MainAwardsTable({
+  items,
+  onDetail,
+  onFulfill,
+}: {
+  items: AdminMainAward[];
+  onDetail: (item: AdminMainAward) => void;
+  onFulfill: (item: AdminMainAward) => void;
+}) {
+  return (
+    <div className="table-wrap">
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Premio</th>
+            <th>Ganador</th>
+            <th>Campaña</th>
+            <th>Elección</th>
+            <th>Estado</th>
+            <th>Fecha</th>
+            <th className="table-actions">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => (
+            <tr key={item.publicId}>
+              <td>
+                <strong>{item.prizeTitle}</strong>
+                <small className="table-note">
+                  Título {item.winningNumber} · pedido {item.orderPublicId}
+                </small>
+              </td>
+              <td>
+                {item.winnerSnapshot.name}
+                <small className="table-note">
+                  {item.winnerSnapshot.phone}
+                </small>
+              </td>
+              <td>{campaignLabel(item.campaign)}</td>
+              <td>
+                {item.choice === 'cash'
+                  ? `Efectivo · ${formatMoney(item.cashAlternative ?? 0, item.currency)}`
+                  : item.choice === 'physical'
+                    ? 'Premio físico'
+                    : 'Sin reclamar'}
+              </td>
+              <td>
+                <StatusBadge status={item.status} />
+              </td>
+              <td>{formatDateTime(item.awardedAt)}</td>
+              <td className="table-actions">
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label={`Ver premio de ${item.winnerSnapshot.name}`}
+                  onClick={() => onDetail(item)}
+                >
+                  <Eye aria-hidden="true" size={18} />
+                </button>
+                {item.status === 'claimed' ? (
+                  <button
+                    className="button button--primary button--compact"
+                    type="button"
+                    onClick={() => onFulfill(item)}
+                  >
+                    <Gift aria-hidden="true" size={16} /> Registrar entrega
+                  </button>
+                ) : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function MainAwardDetail({
+  item,
+  onClose,
+  onFulfill,
+}: {
+  item: AdminMainAward;
+  onClose: () => void;
+  onFulfill: () => void;
+}) {
+  return (
+    <Modal
+      title="Trazabilidad del premio principal"
+      description={`${item.publicId} · título ganador ${item.winningNumber}`}
+      onClose={onClose}
+      wide
+    >
+      <div className="detail-layout">
+        <section>
+          <h3>Ganador y elección</h3>
+          <dl className="detail-list">
+            <div>
+              <dt>Nombre</dt>
+              <dd>{item.winnerSnapshot.name}</dd>
+            </div>
+            <div>
+              <dt>Teléfono</dt>
+              <dd>{item.winnerSnapshot.phone}</dd>
+            </div>
+            <div>
+              <dt>Correo</dt>
+              <dd>{item.winnerSnapshot.email}</dd>
+            </div>
+            <div>
+              <dt>Pedido</dt>
+              <dd>{item.orderPublicId}</dd>
+            </div>
+            <div>
+              <dt>Elección</dt>
+              <dd>
+                {item.choice === 'cash'
+                  ? 'Alternativa en efectivo'
+                  : item.choice === 'physical'
+                    ? 'Premio físico'
+                    : 'Pendiente'}
+              </dd>
+            </div>
+          </dl>
+        </section>
+        <section>
+          <h3>Entrega y notificación</h3>
+          <dl className="detail-list">
+            <div>
+              <dt>Estado</dt>
+              <dd>
+                <StatusBadge status={item.status} />
+              </dd>
+            </div>
+            <div>
+              <dt>Adjudicado</dt>
+              <dd>{formatDateTime(item.awardedAt)}</dd>
+            </div>
+            <div>
+              <dt>Reclamado</dt>
+              <dd>{formatDateTime(item.claimedAt)}</dd>
+            </div>
+            <div>
+              <dt>Entregado</dt>
+              <dd>{formatDateTime(item.fulfilledAt)}</dd>
+            </div>
+            <div>
+              <dt>Comprobante</dt>
+              <dd>{item.fulfillmentReference || '—'}</dd>
+            </div>
+            <div>
+              <dt>Intentos de aviso</dt>
+              <dd>{item.notificationAttempts ?? 0}</dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+      {item.fulfillmentNotes ? (
+        <div className="message-preview">
+          <h3>Notas de entrega</h3>
+          <p>{item.fulfillmentNotes}</p>
+        </div>
+      ) : null}
+      {item.lastNotificationError ? (
+        <div className="inline-alert inline-alert--danger" role="alert">
+          {item.lastNotificationError}
+        </div>
+      ) : null}
+      <div className="modal__actions">
+        <button
+          className="button button--secondary"
+          type="button"
+          onClick={onClose}
+        >
+          Cerrar
+        </button>
+        {item.status === 'claimed' ? (
+          <button
+            className="button button--primary"
+            type="button"
+            onClick={onFulfill}
+          >
+            <Gift aria-hidden="true" size={17} /> Registrar entrega
+          </button>
+        ) : null}
+      </div>
+    </Modal>
+  );
+}
+
+function MainAwardFulfillment({
+  item,
+  busy,
+  onClose,
+  onSave,
+}: {
+  item: AdminMainAward;
+  busy: boolean;
+  onClose: () => void;
+  onSave: (reference: string, notes?: string) => void;
+}) {
+  return (
+    <Modal
+      title="Registrar entrega del premio principal"
+      description={`${item.winnerSnapshot.name} · ${item.prizeTitle}`}
+      onClose={onClose}
+    >
+      <div className="inline-alert inline-alert--warning">
+        <strong>Registro irreversible</strong>
+        <p>
+          {item.choice === 'cash'
+            ? 'Marcar como entregado no ejecuta la transferencia. Confirma primero el pago externo.'
+            : 'Confirma primero el acta, tracking o comprobante de entrega física.'}
+        </p>
+      </div>
+      <form
+        onSubmit={(event) =>
+          submitForm(event, (form) =>
+            onSave(
+              String(form.get('reference') ?? '').trim(),
+              optionalString(form, 'notes'),
+            ),
+          )
+        }
+      >
+        <Field
+          label="Comprobante o referencia"
+          htmlFor="main-award-reference"
+          hint="Transferencia, tracking o acta; obligatorio en este panel."
+          required
+        >
+          <input
+            id="main-award-reference"
+            name="reference"
+            required
+            minLength={4}
+            maxLength={160}
+            autoFocus
+          />
+        </Field>
+        <Field label="Notas verificables" htmlFor="main-award-notes">
+          <textarea
+            id="main-award-notes"
+            name="notes"
+            rows={4}
+            maxLength={1000}
+          />
+        </Field>
+        <div className="modal__actions">
+          <button
+            className="button button--secondary"
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+          >
+            Cancelar
+          </button>
+          <button
+            className="button button--danger"
+            type="submit"
+            disabled={busy}
+          >
+            {busy ? 'Registrando…' : 'Confirmar entrega'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

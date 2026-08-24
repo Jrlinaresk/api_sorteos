@@ -1,24 +1,90 @@
+import { lazy } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import { AppShell } from '@/components/app-shell';
 import { ProtectedRoute, RoleRoute } from '@/components/protected-route';
-import { AuditPage } from '@/pages/audit-page';
-import { CampaignEditorPage } from '@/pages/campaign-editor-page';
-import { CampaignsPage } from '@/pages/campaigns-page';
-import { CategoriesPage } from '@/pages/categories-page';
-import { DashboardPage } from '@/pages/dashboard-page';
-import { DrawsPage } from '@/pages/draws-page';
 import { LoginPage } from '@/pages/login-page';
-import { MediaPage } from '@/pages/media-page';
 import { NotFoundPage } from '@/pages/not-found-page';
-import { NotificationsPage } from '@/pages/notifications-page';
-import { OrderDetailPage } from '@/pages/order-detail-page';
-import { OrdersPage } from '@/pages/orders-page';
-import { PaymentDetailPage } from '@/pages/payment-detail-page';
-import { PaymentsPage } from '@/pages/payments-page';
-import { PrizesPage } from '@/pages/prizes-page';
-import { ReferralsPage } from '@/pages/referrals-page';
-import { SettingsPage } from '@/pages/settings-page';
-import { UsersPage } from '@/pages/users-page';
+
+const AuditPage = lazy(() =>
+  import('@/pages/audit-page').then(({ AuditPage }) => ({
+    default: AuditPage,
+  })),
+);
+const CampaignEditorPage = lazy(() =>
+  import('@/pages/campaign-editor-page').then(({ CampaignEditorPage }) => ({
+    default: CampaignEditorPage,
+  })),
+);
+const CampaignsPage = lazy(() =>
+  import('@/pages/campaigns-page').then(({ CampaignsPage }) => ({
+    default: CampaignsPage,
+  })),
+);
+const CategoriesPage = lazy(() =>
+  import('@/pages/categories-page').then(({ CategoriesPage }) => ({
+    default: CategoriesPage,
+  })),
+);
+const DashboardPage = lazy(() =>
+  import('@/pages/dashboard-page').then(({ DashboardPage }) => ({
+    default: DashboardPage,
+  })),
+);
+const DrawsPage = lazy(() =>
+  import('@/pages/draws-page').then(({ DrawsPage }) => ({
+    default: DrawsPage,
+  })),
+);
+const MediaPage = lazy(() =>
+  import('@/pages/media-page').then(({ MediaPage }) => ({
+    default: MediaPage,
+  })),
+);
+const NotificationsPage = lazy(() =>
+  import('@/pages/notifications-page').then(({ NotificationsPage }) => ({
+    default: NotificationsPage,
+  })),
+);
+const OrderDetailPage = lazy(() =>
+  import('@/pages/order-detail-page').then(({ OrderDetailPage }) => ({
+    default: OrderDetailPage,
+  })),
+);
+const OrdersPage = lazy(() =>
+  import('@/pages/orders-page').then(({ OrdersPage }) => ({
+    default: OrdersPage,
+  })),
+);
+const PaymentDetailPage = lazy(() =>
+  import('@/pages/payment-detail-page').then(({ PaymentDetailPage }) => ({
+    default: PaymentDetailPage,
+  })),
+);
+const PaymentsPage = lazy(() =>
+  import('@/pages/payments-page').then(({ PaymentsPage }) => ({
+    default: PaymentsPage,
+  })),
+);
+const PrizesPage = lazy(() =>
+  import('@/pages/prizes-page').then(({ PrizesPage }) => ({
+    default: PrizesPage,
+  })),
+);
+const ReferralsPage = lazy(() =>
+  import('@/pages/referrals-page').then(({ ReferralsPage }) => ({
+    default: ReferralsPage,
+  })),
+);
+const SettingsPage = lazy(() =>
+  import('@/pages/settings-page').then(({ SettingsPage }) => ({
+    default: SettingsPage,
+  })),
+);
+const UsersPage = lazy(() =>
+  import('@/pages/users-page').then(({ UsersPage }) => ({
+    default: UsersPage,
+  })),
+);
 
 export function App() {
   return (

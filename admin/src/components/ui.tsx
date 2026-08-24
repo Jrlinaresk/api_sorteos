@@ -34,7 +34,9 @@ export function PageHeader({
       <div className="page-header__copy">
         {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
         <h1>{title}</h1>
-        {description ? <p className="page-header__description">{description}</p> : null}
+        {description ? (
+          <p className="page-header__description">{description}</p>
+        ) : null}
       </div>
       {actions ? <div className="page-header__actions">{actions}</div> : null}
     </header>
@@ -62,7 +64,9 @@ export function SectionCard({
             {title ? <h2>{title}</h2> : null}
             {description ? <p>{description}</p> : null}
           </div>
-          {actions ? <div className="section-card__actions">{actions}</div> : null}
+          {actions ? (
+            <div className="section-card__actions">{actions}</div>
+          ) : null}
         </header>
       ) : null}
       <div className="section-card__body">{children}</div>
@@ -97,13 +101,19 @@ export function Button({
       aria-busy={busy || undefined}
       {...props}
     >
-      {busy ? <LoaderCircle className="spin" size={17} aria-hidden="true" /> : null}
+      {busy ? (
+        <LoaderCircle className="spin" size={17} aria-hidden="true" />
+      ) : null}
       {children}
     </button>
   );
 }
 
-export function LoadingState({ label = 'Cargando información…' }: { label?: string }) {
+export function LoadingState({
+  label = 'Cargando información…',
+}: {
+  label?: string;
+}) {
   return (
     <div className="state-panel state-panel--loading" role="status">
       <LoaderCircle className="spin" aria-hidden="true" />
@@ -142,8 +152,10 @@ export function ErrorState({
   onRetry?: () => void;
   title?: string;
 }) {
-  const message = error instanceof Error ? error.message : 'Ocurrió un error inesperado.';
-  const correlationId = error instanceof ApiError ? error.correlationId : undefined;
+  const message =
+    error instanceof Error ? error.message : 'Ocurrió un error inesperado.';
+  const correlationId =
+    error instanceof ApiError ? error.correlationId : undefined;
   return (
     <div className="state-panel state-panel--error" role="alert">
       <span className="state-panel__icon" aria-hidden="true">
@@ -207,17 +219,7 @@ export function Pagination({
   );
 }
 
-export function ConfirmDialog({
-  open,
-  title,
-  description,
-  confirmLabel = 'Confirmar',
-  confirmationText,
-  busy = false,
-  danger = false,
-  onConfirm,
-  onClose,
-}: {
+interface ConfirmDialogProps {
   open: boolean;
   title: string;
   description: ReactNode;
@@ -227,32 +229,68 @@ export function ConfirmDialog({
   danger?: boolean;
   onConfirm: () => void;
   onClose: () => void;
-}) {
+}
+
+export function ConfirmDialog(props: ConfirmDialogProps) {
+  if (!props.open) return null;
+  return <OpenConfirmDialog {...props} />;
+}
+
+function OpenConfirmDialog({
+  title,
+  description,
+  confirmLabel = 'Confirmar',
+  confirmationText,
+  busy = false,
+  danger = false,
+  onConfirm,
+  onClose,
+}: ConfirmDialogProps) {
   const titleId = useId();
   const descriptionId = useId();
+  const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const [typed, setTyped] = useState('');
 
   useEffect(() => {
-    if (!open) {
-      setTyped('');
-      return;
-    }
     closeRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !busy) onClose();
+      if (event.key !== 'Tab') return;
+      const focusable = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [busy, onClose, open]);
+  }, [busy, onClose]);
 
-  if (!open) return null;
   const valid = !confirmationText || typed.trim() === confirmationText;
   return (
-    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
-      if (event.currentTarget === event.target && !busy) onClose();
-    }}>
+    <div
+      className="dialog-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.currentTarget === event.target && !busy) onClose();
+      }}
+    >
       <div
+        ref={dialogRef}
         className="dialog"
         role="alertdialog"
         aria-modal="true"
@@ -260,12 +298,17 @@ export function ConfirmDialog({
         aria-describedby={descriptionId}
       >
         <header className="dialog__header">
-          <span className={`dialog__icon ${danger ? 'dialog__icon--danger' : ''}`} aria-hidden="true">
+          <span
+            className={`dialog__icon ${danger ? 'dialog__icon--danger' : ''}`}
+            aria-hidden="true"
+          >
             <AlertTriangle />
           </span>
           <div>
             <h2 id={titleId}>{title}</h2>
-            <div id={descriptionId} className="dialog__description">{description}</div>
+            <div id={descriptionId} className="dialog__description">
+              {description}
+            </div>
           </div>
           <button
             ref={closeRef}
@@ -291,7 +334,12 @@ export function ConfirmDialog({
           </label>
         ) : null}
         <footer className="dialog__actions">
-          <Button type="button" variant="secondary" onClick={onClose} disabled={busy}>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onClose}
+            disabled={busy}
+          >
             Volver
           </Button>
           <Button
@@ -319,7 +367,10 @@ export function InlineAlert({
   children: ReactNode;
 }) {
   return (
-    <div className={`inline-alert inline-alert--${tone}`} role={tone === 'danger' ? 'alert' : 'status'}>
+    <div
+      className={`inline-alert inline-alert--${tone}`}
+      role={tone === 'danger' ? 'alert' : 'status'}
+    >
       <CircleAlert size={19} aria-hidden="true" />
       <div>
         {title ? <strong>{title}</strong> : null}

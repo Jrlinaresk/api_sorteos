@@ -12,10 +12,12 @@ describe('admin UI primitives', () => {
   it('muestra la referencia de correlación de un error de API', () => {
     render(
       <ErrorState
-        error={new ApiError(409, {
-          message: 'La campaña cambió',
-          correlationId: 'corr-123',
-        })}
+        error={
+          new ApiError(409, {
+            message: 'La campaña cambió',
+            correlationId: 'corr-123',
+          })
+        }
       />,
     );
     expect(screen.getByRole('alert')).toHaveTextContent('La campaña cambió');
@@ -50,7 +52,9 @@ describe('admin UI primitives', () => {
     render(
       <Pagination page={3} totalPages={3} total={52} onPageChange={change} />,
     );
-    expect(screen.getByRole('button', { name: 'Página siguiente' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Página siguiente' }),
+    ).toBeDisabled();
     await user.click(screen.getByRole('button', { name: 'Página anterior' }));
     expect(change).toHaveBeenCalledWith(2);
   });

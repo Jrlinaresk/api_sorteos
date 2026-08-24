@@ -30,13 +30,16 @@ export class ErrorBoundary extends Component<
         <p className="eyebrow">Error de interfaz</p>
         <h1>El panel no pudo mostrar esta pantalla</h1>
         <p>
-          Tus datos no se modificaron. Recarga la página para recuperar una sesión
-          limpia.
+          Tus datos no se modificaron. Recarga la página para recuperar una
+          sesión limpia.
         </p>
         {this.state.error?.message ? (
           <code>{this.state.error.message}</code>
         ) : null}
-        <button className="button button--primary" onClick={() => window.location.reload()}>
+        <button
+          className="button button--primary"
+          onClick={() => window.location.reload()}
+        >
           Recargar el panel
         </button>
       </main>

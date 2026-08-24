@@ -377,7 +377,11 @@ export function NotificationsPage() {
       {delivering ? (
         <ConfirmDialog
           title="Intentar entrega push"
-          description={`Se iniciará un intento real de entrega para “${delivering.title}”. El resultado quedará registrado.`}
+          description={
+            delivering.deliveryCode === 'delivery_uncertain'
+              ? `La entrega anterior de “${delivering.title}” quedó en estado incierto. Reintentarlo podría enviar una notificación duplicada. El nuevo resultado quedará registrado.`
+              : `Se iniciará un intento real de entrega para “${delivering.title}”. El resultado quedará registrado.`
+          }
           confirmLabel="Entregar ahora"
           danger={false}
           busy={deliver.isPending}

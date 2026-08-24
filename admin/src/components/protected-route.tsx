@@ -10,7 +10,9 @@ export function ProtectedRoute() {
   if (auth.status === 'loading') {
     return (
       <main className="session-loading" aria-busy="true">
-        <div className="brand-mark" aria-hidden="true">S</div>
+        <div className="brand-mark" aria-hidden="true">
+          S
+        </div>
         <LoaderCircle className="spin" aria-hidden="true" />
         <p>Preparando tu sesión segura…</p>
       </main>

@@ -18,8 +18,9 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { Suspense, useMemo, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { LoadingState } from '@/components/ui';
 import { useAuth } from '@/lib/auth-context';
 import { useToast } from '@/lib/toast-context';
 import type { UserRole } from '@/lib/types';
@@ -57,7 +58,12 @@ const navSections: Array<{ label: string; items: NavItem[] }> = [
       { label: 'Categorías', path: '/categories', icon: Tags },
       { label: 'Configuración', path: '/settings', icon: Settings },
       { label: 'Usuarios', path: '/users', icon: Users, roles: ['admin'] },
-      { label: 'Auditoría', path: '/audit', icon: ScrollText, roles: ['admin'] },
+      {
+        label: 'Auditoría',
+        path: '/audit',
+        icon: ScrollText,
+        roles: ['admin'],
+      },
     ],
   },
 ];
@@ -116,7 +122,9 @@ export function AppShell() {
 
   return (
     <div className="app-shell">
-      <a className="skip-link" href="#main-content">Saltar al contenido</a>
+      <a className="skip-link" href="#main-content">
+        Saltar al contenido
+      </a>
       {sidebarOpen ? (
         <button
           className="sidebar-scrim"
@@ -125,9 +133,14 @@ export function AppShell() {
           onClick={() => setSidebarOpen(false)}
         />
       ) : null}
-      <aside className={`sidebar ${sidebarOpen ? 'sidebar--open' : ''}`} aria-label="Navegación principal">
+      <aside
+        className={`sidebar ${sidebarOpen ? 'sidebar--open' : ''}`}
+        aria-label="Navegación principal"
+      >
         <div className="sidebar__brand">
-          <span className="brand-mark" aria-hidden="true">S</span>
+          <span className="brand-mark" aria-hidden="true">
+            S
+          </span>
           <div>
             <strong>Sorteos</strong>
             <span>Centro de control</span>
@@ -173,10 +186,14 @@ export function AppShell() {
         </nav>
         <div className="sidebar__footer">
           <div className="user-chip">
-            <span className="avatar" aria-hidden="true">{initials || 'OP'}</span>
+            <span className="avatar" aria-hidden="true">
+              {initials || 'OP'}
+            </span>
             <div>
               <strong>{displayName}</strong>
-              <span>{user?.role === 'admin' ? 'Administrador' : 'Operador'}</span>
+              <span>
+                {user?.role === 'admin' ? 'Administrador' : 'Operador'}
+              </span>
             </div>
           </div>
           <button
@@ -203,16 +220,26 @@ export function AppShell() {
           </button>
           <nav className="breadcrumbs" aria-label="Migas de pan">
             <NavLink to="/">Panel</NavLink>
-            {segments.length ? <ChevronRight size={15} aria-hidden="true" /> : null}
-            {segments.length ? <span aria-current="page">{currentTitle}</span> : null}
+            {segments.length ? (
+              <ChevronRight size={15} aria-hidden="true" />
+            ) : null}
+            {segments.length ? (
+              <span aria-current="page">{currentTitle}</span>
+            ) : null}
           </nav>
           <div className="topbar__identity">
-            <span className="topbar__status"><i /> Sesión protegida</span>
-            <span className="avatar" aria-hidden="true">{initials || 'OP'}</span>
+            <span className="topbar__status">
+              <i /> Sesión protegida
+            </span>
+            <span className="avatar" aria-hidden="true">
+              {initials || 'OP'}
+            </span>
           </div>
         </header>
         <main id="main-content" className="page-content" tabIndex={-1}>
-          <Outlet />
+          <Suspense fallback={<LoadingState label="Cargando módulo…" />}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
     </div>

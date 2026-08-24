@@ -58,9 +58,7 @@ export type CampaignStatus =
   | 'cancelled';
 
 export type DrawMethod =
-  | 'federal_lottery'
-  | 'manual_external'
-  | 'cryptographic';
+  'federal_lottery' | 'manual_external' | 'cryptographic';
 
 export interface Campaign {
   _id?: string;
@@ -342,11 +340,7 @@ export interface PaymentsPage {
 }
 
 export type PrizeMechanic = 'winning_title' | 'roulette' | 'scratch';
-export type PrizeAwardStatus =
-  | 'awarded'
-  | 'claimed'
-  | 'fulfilled'
-  | 'reversed';
+export type PrizeAwardStatus = 'awarded' | 'claimed' | 'fulfilled' | 'reversed';
 
 export interface InstantPrize {
   _id?: string;

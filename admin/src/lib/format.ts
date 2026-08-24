@@ -25,10 +25,7 @@ export function formatDate(value?: string | Date | null): string {
   return Number.isNaN(date.getTime()) ? '—' : dateFormatter.format(date);
 }
 
-export function formatMoney(
-  value: number,
-  currency = 'BRL',
-): string {
+export function formatMoney(value: number, currency = 'BRL'): string {
   return new Intl.NumberFormat('pt-BR', {
     style: 'currency',
     currency,

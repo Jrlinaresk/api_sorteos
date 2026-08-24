@@ -30,10 +30,7 @@ export interface ApiRequestOptions extends Omit<RequestInit, 'body'> {
   skipAuthRefresh?: boolean;
 }
 
-function urlFor(
-  path: string,
-  query?: ApiRequestOptions['query'],
-): string {
+function urlFor(path: string, query?: ApiRequestOptions['query']): string {
   const normalized = path.startsWith('/') ? path : `/${path}`;
   const url = new URL(`${API_ROOT}${normalized}`, window.location.origin);
   for (const [key, value] of Object.entries(query ?? {})) {

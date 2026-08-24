@@ -11,10 +11,7 @@ import {
   OrderDocument,
   OrderStatus,
 } from '../orders/schemas/order.schema';
-import {
-  Payment,
-  PaymentDocument,
-} from '../payments/schemas/payment.schema';
+import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
 import { PaymentStatus } from '../payments/payment.enums';
 import {
   PrizeAward,
@@ -100,7 +97,9 @@ export class AdminDashboardService {
           revenueCents: number;
           titles: number;
         }>([
-          { $match: { status: OrderStatus.Paid, paidAt: { $gte: rangeStart } } },
+          {
+            $match: { status: OrderStatus.Paid, paidAt: { $gte: rangeStart } },
+          },
           {
             $group: {
               _id: {
@@ -111,12 +110,22 @@ export class AdminDashboardService {
                 },
               },
               orders: { $sum: 1 },
-              revenueCents: { $sum: { $round: [{ $multiply: ['$total', 100] }, 0] } },
+              revenueCents: {
+                $sum: { $round: [{ $multiply: ['$total', 100] }, 0] },
+              },
               titles: { $sum: '$allocatedQuantity' },
             },
           },
           { $sort: { _id: 1 } },
-          { $project: { _id: 0, date: '$_id', orders: 1, revenueCents: 1, titles: 1 } },
+          {
+            $project: {
+              _id: 0,
+              date: '$_id',
+              orders: 1,
+              revenueCents: 1,
+              titles: 1,
+            },
+          },
         ])
         .exec(),
       this.orders
@@ -133,7 +142,9 @@ export class AdminDashboardService {
             $group: {
               _id: '$campaign',
               orders: { $sum: 1 },
-              revenueCents: { $sum: { $round: [{ $multiply: ['$total', 100] }, 0] } },
+              revenueCents: {
+                $sum: { $round: [{ $multiply: ['$total', 100] }, 0] },
+              },
               titles: { $sum: '$allocatedQuantity' },
             },
           },
@@ -207,20 +218,18 @@ export class AdminDashboardService {
       finance: {
         receivedCents: money.receivedCents ?? 0,
         refundedCents: money.refundedCents ?? 0,
-        netCents:
-          (money.receivedCents ?? 0) - (money.refundedCents ?? 0),
+        netCents: (money.receivedCents ?? 0) - (money.refundedCents ?? 0),
         paymentCount: money.paymentCount ?? 0,
-        paymentsUnderReview:
-          await this.payments.countDocuments({
-            status: {
-              $in: [
-                PaymentStatus.UnderReview,
-                PaymentStatus.Disputed,
-                PaymentStatus.Chargeback,
-                PaymentStatus.RefundPending,
-              ],
-            },
-          }),
+        paymentsUnderReview: await this.payments.countDocuments({
+          status: {
+            $in: [
+              PaymentStatus.UnderReview,
+              PaymentStatus.Disputed,
+              PaymentStatus.Chargeback,
+              PaymentStatus.RefundPending,
+            ],
+          },
+        }),
       },
       users: { total: userTotal, active: userActive },
       prizes: {

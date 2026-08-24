@@ -389,12 +389,18 @@ function UserEditor({
           <Field
             label={creating ? 'Contraseña' : 'Nueva contraseña'}
             htmlFor="user-password"
-            hint="8–72 caracteres, con mayúscula, minúscula y número. Déjala vacía para conservarla."
+            required={creating}
+            hint={
+              creating
+                ? 'Obligatoria. Usa 8–72 caracteres, con mayúscula, minúscula y número.'
+                : '8–72 caracteres, con mayúscula, minúscula y número. Déjala vacía para conservarla.'
+            }
           >
             <input
               id="user-password"
               name="password"
               type="password"
+              required={creating}
               minLength={8}
               maxLength={72}
               autoComplete="new-password"
