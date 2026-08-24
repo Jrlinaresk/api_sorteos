@@ -1,74 +1,48 @@
-# Imagen base con Node.js 18
-FROM node:18-alpine AS base
+# syntax=docker/dockerfile:1.7
 
-# Establecer directorio de trabajo
+ARG NODE_VERSION=20-alpine
+ARG PNPM_VERSION=9.12.1
+
+FROM node:${NODE_VERSION} AS dependencies
+ARG PNPM_VERSION
+ENV PNPM_HOME=/pnpm
+ENV PATH=${PNPM_HOME}:${PATH}
 WORKDIR /app
 
-# Instalar dependencias necesarias para compilación y healthcheck
-RUN apk add --no-cache libc6-compat wget
+RUN corepack enable \
+  && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 
-# Copiar archivos de configuración de dependencias
-COPY package*.json ./
-COPY .npmrc ./
+COPY package.json pnpm-lock.yaml .npmrc ./
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+  pnpm install --frozen-lockfile
 
-# Limpiar cache de npm y generar package-lock fresh
-RUN npm cache clean --force
-
-# Instalar dependencias con npm install (no ci para evitar conflictos)
-RUN npm install --omit=dev --verbose && npm cache clean --force
-
-# Etapa de desarrollo/construcción
-FROM node:18-alpine AS builder
-
-WORKDIR /app
-
-# Copiar archivos de configuración
-COPY package*.json ./
-COPY .npmrc ./
-COPY tsconfig*.json ./
-COPY nest-cli.json ./
-
-# Instalar todas las dependencias (incluyendo dev)
-RUN npm install --verbose
-
-# Copiar código fuente
+FROM dependencies AS builder
+COPY nest-cli.json tsconfig.json tsconfig.build.json ./
 COPY src ./src
+RUN pnpm build \
+  && pnpm prune --prod
 
-# Construir la aplicación
-RUN npm run build
-
-# Etapa de producción
-FROM node:18-alpine AS production
-
-# Crear usuario no root para seguridad
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nestjs -u 1001
-
-# Instalar wget para healthcheck
-RUN apk add --no-cache wget
-
+FROM node:${NODE_VERSION} AS production
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV PORT=8080
 WORKDIR /app
 
-# Copiar dependencias de producción
-COPY --from=base --chown=nestjs:nodejs /app/node_modules ./node_modules
-COPY --from=base --chown=nestjs:nodejs /app/package.json ./package.json
+RUN apk add --no-cache dumb-init \
+  && addgroup --system --gid 10001 api \
+  && adduser --system --uid 10001 --ingroup api --home /app api \
+  && mkdir -p /app/uploads/media /tmp/api-sorteos-media \
+  && chown -R api:api /app /tmp/api-sorteos-media
 
-# Copiar aplicación construida
-COPY --from=builder --chown=nestjs:nodejs /app/dist ./dist
+COPY --from=builder --chown=api:api /app/package.json ./package.json
+COPY --from=builder --chown=api:api /app/node_modules ./node_modules
+COPY --from=builder --chown=api:api /app/dist ./dist
+# EmailService todavía resuelve estas plantillas desde process.cwd()/src.
+COPY --from=builder --chown=api:api /app/src/templates ./src/templates
+COPY --from=builder --chown=api:api /app/src/assets ./src/assets
 
-# Copiar archivos estáticos si existen
-COPY --from=builder --chown=nestjs:nodejs /app/src/assets ./src/assets
-COPY --from=builder --chown=nestjs:nodejs /app/src/templates ./src/templates
-
-# Cambiar a usuario no root
-USER nestjs
-
-# Exponer puerto
+USER api:api
 EXPOSE 8080
 
-# Variables de entorno por defecto
-ENV NODE_ENV=production
-ENV PORT=8080
-
-# Comando de inicio
-CMD ["node", "dist/main"]
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "dist/main.js"]

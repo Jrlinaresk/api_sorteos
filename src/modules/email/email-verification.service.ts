@@ -1,15 +1,15 @@
-// src/modules/email/email-verification.service.ts
-
 import {
-  Injectable,
   BadRequestException,
+  Injectable,
   InternalServerErrorException,
   Logger,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
+import { createHmac, randomInt, timingSafeEqual } from 'crypto';
 import { Model } from 'mongoose';
-import * as crypto from 'crypto';
-
 import { EmailService } from './email.service';
 import {
   EmailVerification,
@@ -24,89 +24,89 @@ export class EmailVerificationService {
     @InjectModel(EmailVerification.name)
     private readonly verificationModel: Model<EmailVerificationDocument>,
     private readonly emailService: EmailService,
+    private readonly config: ConfigService,
   ) {}
 
-  /**
-   * Crea un código de verificación para el email dado.
-   */
-  async createVerificationCode(email: string): Promise<void> {
-    // 1) Limpiar cualquier código previo
-    try {
-      await this.verificationModel.deleteMany({ email });
-    } catch (err) {
-      this.logger.error(
-        `Error limpiando códigos previos para ${email}: ${err.message}`,
-      );
+  async createVerificationCode(rawEmail: string): Promise<void> {
+    const email = rawEmail.trim().toLowerCase();
+    const previous = await this.verificationModel.findOne({ email }).lean();
+    if (previous && previous.createdAt.getTime() > Date.now() - 60_000) {
+      throw new HttpException('Espere antes de solicitar otro código', HttpStatus.TOO_MANY_REQUESTS);
     }
 
-    // 2) Generar código alfanumérico de 6 chars
-    const code = crypto
-      .randomBytes(4)
-      .toString('base64')
-      .replace(/[^a-zA-Z0-9]/g, '')
-      .substring(0, 6)
-      .toUpperCase();
-
-    // 3) Guardar en MongoDB (TTL index en schema)
-    const doc = new this.verificationModel({
-      email,
-      code,
-      createdAt: new Date(),
-    });
-    try {
-      await doc.save();
-    } catch (err) {
-      this.logger.error(`Error guardando token para ${email}: ${err.message}`);
-      throw new InternalServerErrorException(
-        'No se pudo generar el código de verificación.',
-      );
+    const code = String(randomInt(100_000, 1_000_000));
+    const codeHash = this.hash(email, code);
+    const document = await this.verificationModel.findOneAndUpdate(
+      { email },
+      { $set: { email, codeHash, attempts: 0, createdAt: new Date() }, $unset: { code: 1 } },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    );
+    if (!document) {
+      throw new InternalServerErrorException('No se pudo generar el código de verificación');
     }
 
-    // 4) Enviar el correo con el código
     try {
       await this.emailService.sendVerificationEmail(email, code);
-      this.logger.log(`Código de verificación enviado a ${email}`);
-    } catch (err) {
-      // Limpia el token si falla el envío
-      await this.verificationModel.deleteOne({ _id: doc._id }).catch(() => {});
-      throw err;
+    } catch (error) {
+      await this.verificationModel.deleteOne({ _id: document._id }).catch(() => undefined);
+      throw error;
     }
   }
 
-  /**
-   * Verifica que el código coincida para el email dado y lo elimina.
-   * NO toca la colección de clientes: solo autoriza la creación posterior.
-   */
-  async verifyCode(email: string, code: string): Promise<void> {
-    // 1) Buscar el token en la colección de verificaciones
-    const record = await this.verificationModel.findOne({ email, code });
-    if (!record) {
-      throw new BadRequestException(
-        'Código de verificación inválido o expirado.',
-      );
+  async verifyCode(rawEmail: string, rawCode: string): Promise<void> {
+    const email = rawEmail.trim().toLowerCase();
+    const code = rawCode.trim().toUpperCase();
+    const record = await this.verificationModel
+      .findOne({ email })
+      .select('+codeHash +code')
+      .exec();
+    if (!record || record.attempts >= 5) {
+      if (record) await record.deleteOne();
+      throw this.invalidCode();
     }
 
-    // 2) Eliminar el token verificado para que no se reutilice
-    try {
-      await this.verificationModel.deleteOne({ _id: record._id });
-      this.logger.log(`Token de verificación eliminado para ${email}`);
-    } catch (err) {
-      this.logger.error(`Error eliminando token para ${email}: ${err.message}`);
-      // No interrumpimos: la verificación ya es válida
+    const candidate = this.hash(email, code);
+    const expected = record.codeHash || '';
+    const hashMatches = this.safeEqual(candidate, expected);
+    const legacyMatches = Boolean(record.code && this.safeEqual(code, record.code));
+    if (!hashMatches && !legacyMatches) {
+      record.attempts += 1;
+      if (record.attempts >= 5) await record.deleteOne();
+      else await record.save();
+      throw this.invalidCode();
     }
+    await record.deleteOne();
   }
 
-  /**
-   * Elimina cualquier token pendiente (por ejemplo, tras un registro).
-   */
-  async invalidateEmail(email: string): Promise<void> {
-    try {
-      await this.verificationModel.deleteMany({ email });
-      this.logger.log(`Tokens pendientes invalidados para ${email}`);
-    } catch (err) {
-      this.logger.error(
-        `Error invalidando tokens para ${email}: ${err.message}`,
-      );
+  async invalidateEmail(rawEmail: string): Promise<void> {
+    await this.verificationModel
+      .deleteMany({ email: rawEmail.trim().toLowerCase() })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`No se pudieron invalidar códigos: ${message}`);
+      });
+  }
+
+  private hash(email: string, code: string) {
+    return createHmac('sha256', this.secret()).update(`${email}:${code}`).digest('hex');
+  }
+
+  private secret() {
+    const secret =
+      this.config.get<string>('EMAIL_CODE_SECRET') || this.config.get<string>('JWT_SECRET');
+    if (!secret || secret.length < 32) {
+      throw new InternalServerErrorException('EMAIL_CODE_SECRET no está configurado de forma segura');
     }
+    return secret;
+  }
+
+  private safeEqual(left: string, right: string) {
+    const a = Buffer.from(left);
+    const b = Buffer.from(right);
+    return a.length === b.length && timingSafeEqual(a, b);
+  }
+
+  private invalidCode() {
+    return new BadRequestException('Código de verificación inválido o expirado');
   }
 }

@@ -1,98 +1,120 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# API Sorteos
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend NestJS para campañas y rifas, usuarios, pedidos con reserva temporal,
+checkout, pagos Pix, premios, sorteos, medios, notificaciones, referidos,
+configuración pública y auditoría administrativa.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Requisitos
 
-## Description
+- Node.js 20 o superior y pnpm 9 para desarrollo local.
+- Docker Engine y Docker Compose v2.20 o superior para el entorno recomendado.
+- MongoDB en replica set. Los pedidos, pagos y premios usan transacciones; una
+  instancia Mongo standalone no es una configuración válida.
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Inicio rápido con Docker
 
-## Project setup
+El script crea un archivo local ignorado por Git, genera secretos aleatorios y
+levanta Mongo como replica set de un nodo:
 
 ```bash
-$ pnpm install
+./deploy-dev.sh
 ```
 
-## Compile and run the project
+La API queda en `http://127.0.0.1:8080/api/v1`, el health check en
+`/api/v1/health` y Swagger en `/api/docs`. Para seguir los logs:
 
 ```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
+./deploy-dev.sh --follow
 ```
 
-## Run tests
+La base de datos de desarrollo se publica únicamente en loopback. En producción
+Mongo no publica ningún puerto.
+
+## Desarrollo local de Nest
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+corepack enable
+pnpm install --frozen-lockfile
+pnpm start:dev
 ```
 
-## Deployment
+Para ejecutar Nest fuera de Compose hay que proporcionar una URI de Mongo válida
+con `replicaSet`, además de las variables de `.env.example`. No se debe conectar
+el proceso local al usuario raíz de Mongo.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## Autenticación y acceso público
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+- Los endpoints protegidos usan `Authorization: Bearer <access-token>`.
+- Los roles disponibles son `customer`, `operator` y `admin`.
+- El pedido público se consulta con `X-Order-Token`.
+- El pago público se consulta con `X-Payment-Token`; el secreto nunca se envía
+  en la URL ni en query params.
+- Las operaciones idempotentes usan `Idempotency-Key`.
+- `X-Correlation-Id` permite trazar una petición en logs y auditoría.
+
+Las rutas de autenticación incluyen registro, login, refresh, logout,
+recuperación/cambio de contraseña y `GET /api/v1/auth/me`. Las respuestas
+públicas de usuario no contienen hashes ni contraseñas.
+
+## Configuración
+
+[`.env.example`](./.env.example) es el contrato documentado. Los grupos críticos
+son:
+
+| Grupo | Variables principales |
+| --- | --- |
+| Mongo | `MONGO_ROOT_*`, `MONGO_APP_*`, `MONGO_REPLICA_SET`, `MONGO_REPLICA_KEY`, `MONGODB_URI` |
+| Auth | `JWT_SECRET`, `EMAIL_CODE_SECRET`, `CHECKOUT_ACCESS_SECRET_KEY` |
+| Navegador | `CORS_ORIGINS`, `TRUST_PROXY`, `SWAGGER_ENABLED` |
+| Correo | `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, y opcionalmente `SMTP_USER` + `SMTP_PASS` |
+| Pagos | `PAYMENTS_PROVIDER`, `PAYMENTS_PUBLIC_SECRET_KEY`, `EFI_PIX_*`, `EFI_WEBHOOK_*` |
+| Medios | `MEDIA_LOCAL_ROOT`, límites de imagen/video y directorio temporal |
+| Push | las tres variables `WEB_PUSH_VAPID_*` y sus límites opcionales |
+
+En producción, los secretos de aplicación deben tener al menos 32 caracteres.
+Las tres variables VAPID (`SUBJECT`, `PUBLIC_KEY`, `PRIVATE_KEY`) son opcionales,
+pero si se configura una deben configurarse las tres. Sin ellas permanece
+operativo el inbox interno, sin envío Web Push.
+
+Para generar el entorno de producción:
 
 ```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
+./setup-env.sh
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+El resultado es `.env.server` con permisos `0600`; Git lo ignora. El script no
+inventa credenciales SMTP o EFI: deben completarse con los valores del proveedor.
 
-## Resources
+## Persistencia y seguridad del contenedor
 
-Check out a few resources that may come in handy when working with NestJS:
+- La imagen usa Node 20, instala con `pnpm --frozen-lockfile` y se ejecuta con un
+  usuario sin privilegios.
+- El filesystem de la API es de solo lectura. `/tmp` es efímero y los medios se
+  guardan en un volumen persistente.
+- Mongo usa un keyfile interno, autenticación y usuarios raíz/aplicación
+  separados. La aplicación solo recibe permisos `readWrite` sobre su base.
+- El proxy Nginx opcional escucha HTTP en loopback; TLS se termina en el proxy de
+  borde (CloudPanel, balanceador o equivalente).
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+No use `docker compose down -v`: elimina de forma irreversible la base, el
+keyfile y los medios.
 
-## Support
+## Pruebas y calidad
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+```bash
+pnpm lint
+pnpm test
+pnpm build
+```
 
-## Stay in touch
+## Producción
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+La guía operativa, backups, rotación de secretos, proxy y recuperación está en
+[DEPLOYMENT.md](./DEPLOYMENT.md). El flujo validado es:
 
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+```bash
+./setup-env.sh
+# completar .env.server y copiar el certificado EFI
+./deploy-prod.sh
+./diagnose.sh
+```

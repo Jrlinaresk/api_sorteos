@@ -9,14 +9,19 @@ import {
   Delete,
   Query,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { CategoriesService } from './categories.service';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { Category } from './schemas/category.schema';
 import { CategoryOperationSummaries } from './enums/category-operation-summaries.enum';
 import { CategoryMessages } from './enums/category-messages.enum.ts';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from '../users/enums/user-role.enum';
 
 @ApiTags('Categories')
 @Controller('categories')
@@ -25,6 +30,9 @@ export class CategoriesController {
   constructor(private readonly categoriesService: CategoriesService) {}
 
   @Post()
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.OPERATOR, UserRole.ADMIN)
+  @ApiBearerAuth()
   @ApiOperation({ summary: CategoryOperationSummaries.CREATE })
   @ApiResponse({
     status: HttpStatus.CREATED,
@@ -73,6 +81,9 @@ export class CategoriesController {
   }
 
   @Patch(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.OPERATOR, UserRole.ADMIN)
+  @ApiBearerAuth()
   @ApiOperation({ summary: CategoryOperationSummaries.UPDATE })
   @ApiResponse({
     status: HttpStatus.OK,
@@ -91,6 +102,9 @@ export class CategoriesController {
   }
 
   @Delete(':id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiBearerAuth()
   @ApiOperation({ summary: CategoryOperationSummaries.DELETE })
   @ApiResponse({
     status: HttpStatus.NO_CONTENT,

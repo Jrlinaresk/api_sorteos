@@ -1,77 +1,334 @@
+name: api-sorteos-prod
+
 services:
-  # Aplicación NestJS - Producción
-  api-sorteos:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: production
-    container_name: api-sorteos-prod
-    restart: unless-stopped
-    ports:
-      - '8017:8080'
-    env_file:
-      - .env.server
+  mongo-keyfile-init:
+    image: mongo:7.0
+    restart: "no"
+    user: "0:0"
     environment:
-      - NODE_ENV=production
-      - PORT=8080
-      - MONGODB_URI=mongodb://develop:Dbabnsmdb2024@mongodb:27017/api_rest_sorteos_nestjs_mongodb?authSource=admin
+      MONGO_REPLICA_KEY: "${MONGO_REPLICA_KEY:?MONGO_REPLICA_KEY es obligatorio}"
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        umask 077
+        printf '%s\n' "$${MONGO_REPLICA_KEY}" > /keyfile/keyfile
+        chown 999:999 /keyfile/keyfile
+        chmod 400 /keyfile/keyfile
+    volumes:
+      - mongo-keyfile-prod:/keyfile
+    networks:
+      - sorteos-network
+
+  mongodb:
+    image: mongo:7.0
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: "${MONGO_ROOT_USERNAME:?MONGO_ROOT_USERNAME es obligatorio}"
+      MONGO_INITDB_ROOT_PASSWORD: "${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD es obligatorio}"
+      MONGO_INITDB_DATABASE: "${MONGO_DATABASE:-api_sorteos}"
+    command:
+      - mongod
+      - --replSet
+      - "${MONGO_REPLICA_SET:-rs0}"
+      - --bind_ip_all
+      - --keyFile
+      - /run/mongo-keyfile/keyfile
+      - --auth
+    depends_on:
+      mongo-keyfile-init:
+        condition: service_completed_successfully
+    volumes:
+      - mongo-data-prod:/data/db
+      - mongo-keyfile-prod:/run/mongo-keyfile:ro
+    networks:
+      - sorteos-network
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --host 127.0.0.1
+          --username "$$MONGO_INITDB_ROOT_USERNAME"
+          --password "$$MONGO_INITDB_ROOT_PASSWORD"
+          --authenticationDatabase admin
+          --eval "quit(db.adminCommand('ping').ok ? 0 : 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 45s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.50"
+          memory: 1536M
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+
+  mongo-init-replica:
+    image: mongo:7.0
+    restart: "no"
+    environment:
+      MONGO_ROOT_USERNAME: "${MONGO_ROOT_USERNAME:?MONGO_ROOT_USERNAME es obligatorio}"
+      MONGO_ROOT_PASSWORD: "${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD es obligatorio}"
+      MONGO_APP_USERNAME: "${MONGO_APP_USERNAME:?MONGO_APP_USERNAME es obligatorio}"
+      MONGO_APP_PASSWORD: "${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD es obligatorio}"
+      MONGO_DATABASE: "${MONGO_DATABASE:-api_sorteos}"
+      MONGO_REPLICA_SET: "${MONGO_REPLICA_SET:-rs0}"
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        mongo=(mongosh --quiet --host mongodb:27017
+          --username "$${MONGO_ROOT_USERNAME}"
+          --password "$${MONGO_ROOT_PASSWORD}"
+          --authenticationDatabase admin)
+
+        "$${mongo[@]}" --eval '
+          try {
+            rs.status();
+          } catch (error) {
+            if (error.code === 94 || error.codeName === "NotYetInitialized") {
+              rs.initiate({
+                _id: process.env.MONGO_REPLICA_SET,
+                members: [{ _id: 0, host: "mongodb:27017" }]
+              });
+            } else {
+              throw error;
+            }
+          }
+        '
+
+        for attempt in $$(seq 1 60); do
+          if "$${mongo[@]}" --eval 'quit(db.hello().isWritablePrimary ? 0 : 1)'; then
+            break
+          fi
+          if [ "$${attempt}" -eq 60 ]; then
+            echo "MongoDB no eligió un primario dentro del plazo" >&2
+            exit 1
+          fi
+          sleep 2
+        done
+
+        "$${mongo[@]}" --eval '
+          const database = db.getSiblingDB(process.env.MONGO_DATABASE);
+          const username = process.env.MONGO_APP_USERNAME;
+          const roles = [{ role: "readWrite", db: process.env.MONGO_DATABASE }];
+          if (database.getUser(username)) {
+            database.updateUser(username, {
+              pwd: process.env.MONGO_APP_PASSWORD,
+              roles
+            });
+          } else {
+            database.createUser({
+              user: username,
+              pwd: process.env.MONGO_APP_PASSWORD,
+              roles
+            });
+          }
+        '
     depends_on:
       mongodb:
         condition: service_healthy
     networks:
       - sorteos-network
-    volumes:
-      - ./logs:/app/logs
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/api/v1/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
 
-  # Base de datos MongoDB - Producción
-  mongodb:
-    image: mongo:7.0
-    container_name: mongodb-prod
-    restart: unless-stopped
+  efi-cert-init:
+    image: alpine:3.20
+    restart: "no"
+    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
     environment:
-      MONGO_INITDB_ROOT_USERNAME: develop
-      MONGO_INITDB_ROOT_PASSWORD: Dbabnsmdb2024
-      MONGO_INITDB_DATABASE: api_rest_sorteos_nestjs_mongodb
-    ports:
-      - '27017:27017'
+      EFI_PIX_CERTIFICATE_PATH: "${EFI_PIX_CERTIFICATE_PATH:-}"
+      EFI_PIX_CERT_PATH: "${EFI_PIX_CERT_PATH:-}"
+      EFI_PIX_KEY_PATH: "${EFI_PIX_KEY_PATH:-}"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+        copy_secret() {
+          requested="$${1}"
+          [ -n "$${requested}" ] || return 0
+          case "$${requested}" in
+            /run/secrets/efi/*) ;;
+            *) echo "Ruta EFI fuera de /run/secrets/efi" >&2; exit 1 ;;
+          esac
+          relative="$${requested#/run/secrets/efi/}"
+          case "/$${relative}/" in
+            */../*|*/./*) echo "Ruta EFI insegura" >&2; exit 1 ;;
+          esac
+          [ -f "/source/$${relative}" ] || {
+            echo "No se encontró un archivo EFI configurado" >&2
+            exit 1
+          }
+          mkdir -p "/target/$$(dirname "$${relative}")"
+          cp "/source/$${relative}" "/target/$${relative}"
+          chown 10001:10001 "/target/$${relative}"
+          chmod 0400 "/target/$${relative}"
+        }
+        copy_secret "$${EFI_PIX_CERTIFICATE_PATH}"
+        copy_secret "$${EFI_PIX_CERT_PATH}"
+        copy_secret "$${EFI_PIX_KEY_PATH}"
     volumes:
-      - mongo-data-prod:/data/db
-      - ./mongodb-init:/docker-entrypoint-initdb.d
-      - ./mongodb-config:/etc/mongo
+      - "${EFI_CERTS_DIR:-./runtime/efi}:/source:ro"
+      - efi-secrets-prod:/target
+    network_mode: none
+
+  api-sorteos:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:${API_PORT:-8017}:8080"
+    environment:
+      NODE_ENV: "production"
+      HOST: "0.0.0.0"
+      PORT: "8080"
+      TRUST_PROXY: "${TRUST_PROXY:-true}"
+      CORS_ORIGINS: "${CORS_ORIGINS:?CORS_ORIGINS es obligatorio}"
+      SWAGGER_ENABLED: "${SWAGGER_ENABLED:-false}"
+      DB_HOST: "mongodb"
+      DB_PORT: "27017"
+      DB_NAME: "${MONGO_DATABASE:-api_sorteos}"
+      DB_USER: "${MONGO_APP_USERNAME:?MONGO_APP_USERNAME es obligatorio}"
+      DB_PASSWORD: "${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD es obligatorio}"
+      DB_AUTH_SOURCE: "${MONGO_DATABASE:-api_sorteos}"
+      MONGODB_URI: "${MONGODB_URI:?MONGODB_URI es obligatorio y debe incluir replicaSet}"
+      MONGODB_REPLICA_SET: "${MONGO_REPLICA_SET:-rs0}"
+      MONGODB_MAX_POOL_SIZE: "${MONGODB_MAX_POOL_SIZE:-30}"
+      MONGODB_AUTO_INDEX: "${MONGODB_AUTO_INDEX:-true}"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET es obligatorio}"
+      JWT_ACCESS_EXPIRES_IN: "${JWT_ACCESS_EXPIRES_IN:-15m}"
+      JWT_ISSUER: "${JWT_ISSUER:-api-sorteos}"
+      JWT_AUDIENCE: "${JWT_AUDIENCE:-api-sorteos-clients}"
+      JWT_REFRESH_DAYS: "${JWT_REFRESH_DAYS:-30}"
+      SMTP_HOST: "${SMTP_HOST:?SMTP_HOST es obligatorio}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_USER: "${SMTP_USER:-}"
+      SMTP_PASS: "${SMTP_PASS:-}"
+      SMTP_FROM: "${SMTP_FROM:?SMTP_FROM es obligatorio}"
+      SMTP_SECURE: "${SMTP_SECURE:-false}"
+      SMTP_REQUIRE_TLS: "${SMTP_REQUIRE_TLS:-true}"
+      SMTP_TLS_REJECT_UNAUTHORIZED: "${SMTP_TLS_REJECT_UNAUTHORIZED:-true}"
+      SMTP_CONNECTION_TIMEOUT_MS: "${SMTP_CONNECTION_TIMEOUT_MS:-10000}"
+      SMTP_GREETING_TIMEOUT_MS: "${SMTP_GREETING_TIMEOUT_MS:-10000}"
+      SMTP_SOCKET_TIMEOUT_MS: "${SMTP_SOCKET_TIMEOUT_MS:-20000}"
+      EMAIL_CODE_SECRET: "${EMAIL_CODE_SECRET:?EMAIL_CODE_SECRET es obligatorio}"
+      ORDER_RESERVATION_MINUTES: "${ORDER_RESERVATION_MINUTES:-15}"
+      CHECKOUT_ACCESS_SECRET_KEY: "${CHECKOUT_ACCESS_SECRET_KEY:?CHECKOUT_ACCESS_SECRET_KEY es obligatorio}"
+      PAYMENTS_PROVIDER: "${PAYMENTS_PROVIDER:-efi}"
+      PAYMENTS_ALLOW_MOCK: "${PAYMENTS_ALLOW_MOCK:-false}"
+      PAYMENTS_ADMIN_GUARD_ENABLED: "${PAYMENTS_ADMIN_GUARD_ENABLED:-true}"
+      PAYMENTS_ADMIN_API_KEY: "${PAYMENTS_ADMIN_API_KEY:?PAYMENTS_ADMIN_API_KEY es obligatorio}"
+      PAYMENTS_PUBLIC_SECRET_KEY: "${PAYMENTS_PUBLIC_SECRET_KEY:?PAYMENTS_PUBLIC_SECRET_KEY es obligatorio}"
+      EFI_PIX_ENV: "${EFI_PIX_ENV:-production}"
+      EFI_PIX_CLIENT_ID: "${EFI_PIX_CLIENT_ID:?EFI_PIX_CLIENT_ID es obligatorio}"
+      EFI_PIX_CLIENT_SECRET: "${EFI_PIX_CLIENT_SECRET:?EFI_PIX_CLIENT_SECRET es obligatorio}"
+      EFI_PIX_KEY: "${EFI_PIX_KEY:?EFI_PIX_KEY es obligatorio}"
+      EFI_PIX_TIMEOUT_MS: "${EFI_PIX_TIMEOUT_MS:-15000}"
+      EFI_PIX_BASE_URL: "${EFI_PIX_BASE_URL:-}"
+      EFI_PIX_CERTIFICATE_PATH: "${EFI_PIX_CERTIFICATE_PATH:-}"
+      EFI_PIX_CERT_PATH: "${EFI_PIX_CERT_PATH:-}"
+      EFI_PIX_KEY_PATH: "${EFI_PIX_KEY_PATH:-}"
+      EFI_PIX_CERTIFICATE_PASSPHRASE: "${EFI_PIX_CERTIFICATE_PASSPHRASE:-}"
+      EFI_WEBHOOK_HMAC: "${EFI_WEBHOOK_HMAC:-}"
+      EFI_WEBHOOK_REQUIRE_MTLS: "${EFI_WEBHOOK_REQUIRE_MTLS:-false}"
+      EFI_WEBHOOK_MTLS_HEADER: "${EFI_WEBHOOK_MTLS_HEADER:-x-ssl-client-verify}"
+      EFI_WEBHOOK_MTLS_SUCCESS_VALUE: "${EFI_WEBHOOK_MTLS_SUCCESS_VALUE:-SUCCESS}"
+      MEDIA_STORAGE_PROVIDER: "${MEDIA_STORAGE_PROVIDER:-local}"
+      MEDIA_LOCAL_ROOT: "/app/uploads/media"
+      MEDIA_UPLOAD_TMP_DIR: "/tmp/api-sorteos-media"
+      MEDIA_MAX_IMAGE_BYTES: "${MEDIA_MAX_IMAGE_BYTES:-10485760}"
+      MEDIA_MAX_VIDEO_BYTES: "${MEDIA_MAX_VIDEO_BYTES:-262144000}"
+      NOTIFICATION_PUSH_PROVIDER: "${NOTIFICATION_PUSH_PROVIDER:-noop}"
+      WEB_PUSH_VAPID_SUBJECT: "${WEB_PUSH_VAPID_SUBJECT:-}"
+      WEB_PUSH_VAPID_PUBLIC_KEY: "${WEB_PUSH_VAPID_PUBLIC_KEY:-}"
+      WEB_PUSH_VAPID_PRIVATE_KEY: "${WEB_PUSH_VAPID_PRIVATE_KEY:-}"
+      WEB_PUSH_ALLOWED_ENDPOINT_HOSTS: "${WEB_PUSH_ALLOWED_ENDPOINT_HOSTS:-}"
+      WEB_PUSH_TTL_SECONDS: "${WEB_PUSH_TTL_SECONDS:-300}"
+      WEB_PUSH_TIMEOUT_MS: "${WEB_PUSH_TIMEOUT_MS:-10000}"
+      WEB_PUSH_URGENCY: "${WEB_PUSH_URGENCY:-normal}"
+      WEB_PUSH_MAX_PAYLOAD_BYTES: "${WEB_PUSH_MAX_PAYLOAD_BYTES:-3500}"
+      WEB_PUSH_MAX_CONCURRENCY: "${WEB_PUSH_MAX_CONCURRENCY:-10}"
+      REFERRAL_IP_HASH_SECRET: "${REFERRAL_IP_HASH_SECRET:?REFERRAL_IP_HASH_SECRET es obligatorio}"
+      RATE_LIMIT_WINDOW_MS: "${RATE_LIMIT_WINDOW_MS:-60000}"
+      RATE_LIMIT_MAX: "${RATE_LIMIT_MAX:-180}"
+    depends_on:
+      mongo-init-replica:
+        condition: service_completed_successfully
+      efi-cert-init:
+        condition: service_completed_successfully
+    volumes:
+      - media-data-prod:/app/uploads/media
+      - efi-secrets-prod:/run/secrets/efi:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m,uid=10001,gid=10001,mode=1770
     networks:
       - sorteos-network
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          fetch('http://127.0.0.1:8080/api/v1/health')
+          .then(response => { if (!response.ok) process.exit(1); })
+          .catch(() => process.exit(1))
+      interval: 20s
+      timeout: 5s
+      retries: 8
       start_period: 60s
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 1G
+          cpus: "1.00"
+          memory: 768M
         reservations:
-          cpus: '0.5'
-          memory: 512M
+          cpus: "0.25"
+          memory: 256M
+
+  nginx:
+    image: nginx:1.27-alpine
+    profiles:
+      - proxy
+    restart: unless-stopped
+    user: "101:101"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8081}:8080"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=1770
+    depends_on:
+      api-sorteos:
+        condition: service_healthy
+    networks:
+      - sorteos-network
 
 volumes:
   mongo-data-prod:
-    driver: local
+  mongo-keyfile-prod:
+  media-data-prod:
+  efi-secrets-prod:
 
 networks:
   sorteos-network:

@@ -4,15 +4,18 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { RafflesController } from './raffles.controller';
 import { RafflesService } from './raffles.service';
 import { Raffle, RaffleSchema } from './schema/raffle.schema';
-import { WinnersModule } from '../winners/winners.module';
+import { CampaignsController } from './campaigns.controller';
+import { AuthModule } from '../auth/auth.module';
+import { MediaModule } from '../media/media.module';
 
 @Module({
   imports: [
     MongooseModule.forFeature([{ name: Raffle.name, schema: RaffleSchema }]),
-    WinnersModule,
+    AuthModule,
+    MediaModule,
   ],
-  controllers: [RafflesController],
+  controllers: [RafflesController, CampaignsController],
   providers: [RafflesService],
-  exports: [RafflesService],
+  exports: [RafflesService, MongooseModule],
 })
 export class RafflesModule {}

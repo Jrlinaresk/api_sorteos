@@ -1,22 +1,21 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { HealthController } from '../health/health.controller';
 
-describe('AppController', () => {
-  let appController: AppController;
-
-  beforeEach(async () => {
-    const app: TestingModule = await Test.createTestingModule({
-      controllers: [AppController],
-      providers: [AppService],
-    }).compile();
-
-    appController = app.get<AppController>(AppController);
+describe('HealthController', () => {
+  it('reports a live process without exposing secrets', () => {
+    const response = new HealthController({} as any).live();
+    expect(response.status).toBe('ok');
+    expect(response.uptime).toBeGreaterThanOrEqual(0);
+    expect(response).not.toHaveProperty('env');
   });
 
-  describe('root', () => {
-    it('should return "Hello World!"', () => {
-      expect(appController.getHello()).toBe('Hello World!');
-    });
+  it('reports MongoDB readiness', async () => {
+    const command = jest.fn().mockResolvedValue({ ok: 1 });
+    const controller = new HealthController({
+      readyState: 1,
+      db: { admin: () => ({ command }) },
+    } as any);
+    await expect(controller.check()).resolves.toEqual(
+      expect.objectContaining({ dependencies: { mongodb: 'ok' } }),
+    );
   });
 });

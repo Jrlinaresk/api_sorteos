@@ -1,118 +1,51 @@
-/* src/modules/raffles/raffles.controller.ts */
-import {
-  Controller,
-  Get,
-  Post,
-  Body,
-  Patch,
-  Param,
-  Delete,
-  HttpStatus,
-} from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
-import { RafflesService } from './raffles.service';
+import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { UserRole } from '../users/enums/user-role.enum';
+import { ChangeCampaignStatusDto } from './dto/change-campaign-status.dto';
 import { CreateRaffleDto } from './dto/create-raffle.dto';
-import { RaffleMessages } from './enums/raffle-messages.enum';
-import { RaffleOperationSummaries } from './enums/raffle-operation-summaries.enum';
-import { Raffle } from './schema/raffle.schema';
 import { UpdateRaffleDto } from './enums/update-raffle.dto';
-import { WinnersService } from '../winners/winners.service';
+import { RafflesService } from './raffles.service';
 
-@ApiTags('Raffles')
-@Controller('raffles')
+@ApiTags('Admin campaigns')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.OPERATOR, UserRole.ADMIN)
+@Controller('admin/campaigns')
 export class RafflesController {
-  constructor(
-    private readonly rafflesService: RafflesService,
-    private readonly winnersService: WinnersService,
-  ) {}
+  constructor(private readonly campaigns: RafflesService) {}
 
   @Post()
-  @ApiOperation({ summary: RaffleOperationSummaries.CREATE })
-  @ApiResponse({
-    status: HttpStatus.CREATED,
-    description: RaffleMessages.RAFFLE_CREATED,
-    type: Raffle,
-  })
-  create(@Body() dto: CreateRaffleDto): Promise<Raffle> {
-    return this.rafflesService.create(dto);
+  @ApiOperation({ summary: 'Crea una campaña en borrador o programada' })
+  create(@Body() dto: CreateRaffleDto) {
+    return this.campaigns.create(dto);
   }
 
   @Get()
-  @ApiOperation({ summary: RaffleOperationSummaries.FIND_ALL })
-  @ApiResponse({
-    status: HttpStatus.OK,
-    description: RaffleMessages.RAFFLES_LISTED,
-    type: [Raffle],
-  })
-  findAll(): Promise<Raffle[]> {
-    return this.rafflesService.findAll();
+  @ApiOperation({ summary: 'Lista todas las campañas, incluidos borradores y canceladas' })
+  list() {
+    return this.campaigns.findAll();
   }
 
   @Get(':id')
-  @ApiOperation({ summary: RaffleOperationSummaries.FIND_ONE })
-  @ApiResponse({
-    status: HttpStatus.OK,
-    description: RaffleMessages.RAFFLES_LISTED,
-    type: Raffle,
-  })
-  findOne(@Param('id') id: string): Promise<Raffle> {
-    return this.rafflesService.findOne(id);
+  find(@Param('id') id: string) {
+    return this.campaigns.findOne(id);
   }
 
   @Patch(':id')
-  @ApiOperation({ summary: RaffleOperationSummaries.UPDATE })
-  @ApiResponse({
-    status: HttpStatus.OK,
-    description: RaffleMessages.RAFFLE_UPDATED,
-    type: Raffle,
-  })
-  update(
-    @Param('id') id: string,
-    @Body() dto: UpdateRaffleDto,
-  ): Promise<Raffle> {
-    return this.rafflesService.update(id, dto);
+  update(@Param('id') id: string, @Body() dto: UpdateRaffleDto) {
+    return this.campaigns.update(id, dto);
+  }
+
+  @Patch(':id/status')
+  changeStatus(@Param('id') id: string, @Body() dto: ChangeCampaignStatusDto) {
+    return this.campaigns.changeStatus(id, dto.status);
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: RaffleOperationSummaries.DELETE })
-  @ApiResponse({
-    status: HttpStatus.NO_CONTENT,
-    description: RaffleMessages.RAFFLE_DELETED,
-  })
-  remove(@Param('id') id: string): Promise<void> {
-    return this.rafflesService.remove(id);
-  }
-
-  @Post(':id/participants')
-  @ApiOperation({ summary: RaffleOperationSummaries.ADD_PARTICIPANT })
-  @ApiResponse({
-    status: HttpStatus.OK,
-    description: RaffleMessages.PARTICIPATION_ADDED,
-    type: Raffle,
-  })
-  addParticipant(
-    @Param('id') raffleId: string,
-    @Body('userId') userId: string,
-  ): Promise<Raffle> {
-    return this.rafflesService.addParticipant(raffleId, userId);
-  }
-
-  @Post(':id/close')
-  @ApiOperation({ summary: 'Cerrar y sortear rifa manualmente' })
-  @ApiResponse({
-    status: HttpStatus.OK,
-    description: 'Rifa cerrada y sorteada exitosamente',
-    type: Raffle,
-  })
-  @ApiResponse({
-    status: HttpStatus.BAD_REQUEST,
-    description: 'ID inválido o rifa ya cerrada',
-  })
-  async close(@Param('id') id: string): Promise<Raffle> {
-    // 1) Cerrar y sortear
-    await this.rafflesService.closeRaffle(id);
-
-    // 2) Recuperar con población
-    return this.rafflesService.findOne(id);
+  remove(@Param('id') id: string) {
+    return this.campaigns.remove(id);
   }
 }

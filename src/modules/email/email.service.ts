@@ -3,206 +3,175 @@ import {
   InternalServerErrorException,
   Logger,
 } from '@nestjs/common';
-import { connect, TLSSocket } from 'tls';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as crypto from 'crypto';
+import { ConfigService } from '@nestjs/config';
+import { existsSync, readFileSync } from 'fs';
 import * as handlebars from 'handlebars';
+import { createTransport, Transporter } from 'nodemailer';
+import { join } from 'path';
 
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
-  private readonly host: string;
-  private readonly port: number;
-  private readonly user: string;
-  private readonly pass: string;
-  private socket: TLSSocket;
-
-  // Plantilla compilada (con <img src="cid:logo" />)
   private readonly htmlTemplate: HandlebarsTemplateDelegate;
+  private readonly logoPath?: string;
+  private transporter?: Transporter;
 
-  constructor() {
-    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
-    if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASS) {
-      throw new Error(
-        'EmailService: faltan variables de entorno SMTP_HOST, SMTP_PORT, SMTP_USER o SMTP_PASS',
+  constructor(private readonly config: ConfigService) {
+    this.htmlTemplate = handlebars.compile(this.loadTemplate());
+    this.logoPath = this.findAsset('assets/img/full_logo_color.png');
+  }
+
+  async sendVerificationEmail(
+    rawRecipient: string,
+    code: string,
+  ): Promise<void> {
+    const recipient = rawRecipient.trim().toLowerCase();
+    if (!this.isSafeRecipient(recipient) || !/^\d{6}$/.test(code)) {
+      throw new InternalServerErrorException(
+        'No se pudo preparar el correo de verificación',
       );
     }
-    this.host = SMTP_HOST;
-    this.port = parseInt(SMTP_PORT, 10);
-    this.user = SMTP_USER;
-    this.pass = SMTP_PASS;
 
-    // Cargo y compilo la plantilla HTML una sola vez
-    const tplPath = path.join(
-      process.cwd(),
-      'src',
-      'templates',
-      'verification.html',
-    );
-    const tplSource = fs.readFileSync(tplPath, 'utf-8');
-    this.htmlTemplate = handlebars.compile(tplSource);
-  }
+    const from =
+      this.config.get<string>('SMTP_FROM')?.trim() ||
+      this.config.get<string>('SMTP_USER')?.trim();
+    if (!from || /[\r\n]/.test(from)) {
+      throw this.configurationError('SMTP_FROM');
+    }
 
-  private async openConnection(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.socket = connect(
-        { host: this.host, port: this.port, rejectUnauthorized: true },
-        () => resolve(),
-      );
-      this.socket.once('error', (err) => {
-        this.logger.error('Error en conexión SMTP', err);
-        reject(err);
-      });
-    });
-  }
-
-  private async sendCmd(cmd: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      let response = '';
-      const onData = (data: Buffer) => {
-        response += data.toString();
-        const lines = response.split('\r\n');
-        const last = lines[lines.length - 2] || '';
-        if (/^\d{3} /.test(last)) {
-          cleanup();
-          resolve(response);
-        }
-      };
-      const onError = (err: Error) => {
-        cleanup();
-        reject(err);
-      };
-      const cleanup = () => {
-        this.socket.removeListener('data', onData);
-        this.socket.removeListener('error', onError);
-      };
-      this.socket.on('data', onData);
-      this.socket.once('error', onError);
-      if (cmd) this.socket.write(cmd + '\r\n');
-    });
-  }
-
-  async sendVerificationEmail(to: string, code: string) {
     try {
-      this.logger.debug(`Enviando correo a "${to}" con código "${code}"`);
-
-      // 0) Abrir TLS
-      await this.openConnection();
-
-      // 1) EHLO
-      await this.sendCmd(`EHLO ${this.host}`);
-
-      // 2) AUTH LOGIN
-      await this.sendCmd('AUTH LOGIN');
-      await this.sendCmd(Buffer.from(this.user).toString('base64'));
-      await this.sendCmd(Buffer.from(this.pass).toString('base64'));
-
-      // 3) MAIL FROM, RCPT TO, DATA
-      await this.sendCmd(`MAIL FROM:<${this.user}>`);
-      await this.sendCmd(`RCPT TO:<${to}>`);
-      await this.sendCmd('DATA');
-
-      // 4) Leer logo y convertir a Base64
-      const logoPath = path.join(
-        process.cwd(),
-        'src',
-        'assets',
-        'img',
-        'full_logo_color.png',
-      );
-      const logoData = fs.readFileSync(logoPath);
-      const logoBase64 = logoData.toString('base64');
-
-      // 5) Preparar cuerpos de texto y HTML (HTML referencia cid:logo)
-      const textBody = `Hola,\n\nTu código de verificación es: ${code}\n\nSi no lo solicitaste, ignora este correo.`;
-      const htmlBody = this.htmlTemplate({ code });
-
-      // 6) Definir boundaries
-      const boundaryRelated = '----=_Rel_' + crypto.randomUUID();
-      const boundaryAlt = '----=_Alt_' + crypto.randomUUID();
-
-      // 7) Cabeceras principales
-      const headers = [
-        `From: ${this.user}`,
-        `To: ${to}`,
-        `Subject: Tu código de verificación`,
-        `Date: ${new Date().toUTCString()}`,
-        `Message-ID: <${crypto.randomUUID()}@${this.host}>`,
-        `MIME-Version: 1.0`,
-        `Content-Type: multipart/related; boundary="${boundaryRelated}"`,
-        '',
-      ];
-
-      // 8) Parte multipart/alternative (texto + HTML)
-      const altPart = [
-        `--${boundaryRelated}`,
-        `Content-Type: multipart/alternative; boundary="${boundaryAlt}"`,
-        '',
-        // Texto plano
-        `--${boundaryAlt}`,
-        `Content-Type: text/plain; charset="utf-8"`,
-        '',
-        textBody,
-        '',
-        // HTML
-        `--${boundaryAlt}`,
-        `Content-Type: text/html; charset="utf-8"`,
-        '',
-        htmlBody,
-        '',
-        `--${boundaryAlt}--`,
-        '',
-      ].join('\r\n');
-
-      // 9) Parte de la imagen inline
-      const imagePart = [
-        `--${boundaryRelated}`,
-        `Content-Type: image/png; name="logo.png"`,
-        `Content-Transfer-Encoding: base64`,
-        `Content-ID: <logo>`,
-        `Content-Disposition: inline; filename="logo.png"`,
-        '',
-        logoBase64,
-        '',
-        `--${boundaryRelated}--`,
-        '',
-      ].join('\r\n');
-
-      // 10) Unir todo y enviar
-      const emailContent = [
-        ...headers,
-        altPart,
-        imagePart,
-        '.', // fin DATA
-        '',
-      ].join('\r\n');
-
-      this.socket.write(emailContent + '\r\n');
-
-      // 11) Esperar respuesta tras DATA
-      await new Promise<void>((resolve, reject) => {
-        const onData = (data: Buffer) => {
-          const text = data.toString('utf-8').trim();
-          this.logger.debug(`RESPUESTA SMTP: ${text}`);
-          resolve();
-        };
-        const onError = (err: Error) => reject(err);
-        this.socket.once('data', onData);
-        this.socket.once('error', onError);
+      await this.getTransporter().sendMail({
+        from,
+        to: recipient,
+        subject: 'Tu código de verificación',
+        text: [
+          'Hola,',
+          '',
+          `Tu código de verificación es: ${code}`,
+          '',
+          'Si no lo solicitaste, ignora este correo.',
+        ].join('\n'),
+        html: this.htmlTemplate({ code }),
+        attachments: this.logoPath
+          ? [
+              {
+                filename: 'logo.png',
+                path: this.logoPath,
+                cid: 'logo',
+                contentDisposition: 'inline',
+              },
+            ]
+          : undefined,
       });
-
-      // 12) QUIT y cerrar
-      await this.sendCmd('QUIT');
-      this.socket.end();
-
-      this.logger.log(`✅ Correo enviado correctamente a ${to}`);
-    } catch (err: any) {
-      this.logger.error(`❌ Error al enviar correo: ${err.message}`, err.stack);
-      if (this.socket && !this.socket.destroyed) this.socket.destroy();
+      this.logger.log('Correo de verificación aceptado por el servidor SMTP');
+    } catch (error) {
+      const errorCode = this.smtpErrorCode(error);
+      this.logger.error(
+        `Falló el envío SMTP${errorCode ? ` (${errorCode})` : ''}`,
+      );
       throw new InternalServerErrorException(
         'No se pudo enviar el correo de verificación',
       );
     }
+  }
+
+  private getTransporter(): Transporter {
+    if (this.transporter) return this.transporter;
+
+    const host = this.config.get<string>('SMTP_HOST')?.trim();
+    const portValue = this.config.get<string>('SMTP_PORT')?.trim() ?? '587';
+    const port = Number(portValue);
+    const user = this.config.get<string>('SMTP_USER')?.trim();
+    const pass = this.config.get<string>('SMTP_PASS');
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw this.configurationError('SMTP_HOST/SMTP_PORT');
+    }
+    if (Boolean(user) !== Boolean(pass)) {
+      throw this.configurationError('SMTP_USER/SMTP_PASS');
+    }
+
+    const secure = this.booleanConfig('SMTP_SECURE', port === 465);
+    const production = this.config.get<string>('NODE_ENV') === 'production';
+    this.transporter = createTransport({
+      host,
+      port,
+      secure,
+      requireTLS: this.booleanConfig('SMTP_REQUIRE_TLS', production && !secure),
+      auth: user && pass ? { user, pass } : undefined,
+      connectionTimeout: this.integerConfig(
+        'SMTP_CONNECTION_TIMEOUT_MS',
+        10_000,
+      ),
+      greetingTimeout: this.integerConfig('SMTP_GREETING_TIMEOUT_MS', 10_000),
+      socketTimeout: this.integerConfig('SMTP_SOCKET_TIMEOUT_MS', 20_000),
+      tls: {
+        minVersion: 'TLSv1.2',
+        rejectUnauthorized: this.booleanConfig(
+          'SMTP_TLS_REJECT_UNAUTHORIZED',
+          true,
+        ),
+      },
+    });
+    return this.transporter;
+  }
+
+  private loadTemplate(): string {
+    const templatePath = this.findAsset('templates/verification.html');
+    if (templatePath) return readFileSync(templatePath, 'utf8');
+
+    this.logger.warn(
+      'No se encontró la plantilla de verificación; se usará la plantilla segura integrada',
+    );
+    return [
+      '<!doctype html><html lang="es"><body>',
+      '<h1>Verificación de correo</h1>',
+      '<p>Tu código de verificación es:</p>',
+      '<p style="font-size:28px;font-weight:bold;letter-spacing:4px">{{code}}</p>',
+      '<p>Si no lo solicitaste, ignora este correo.</p>',
+      '</body></html>',
+    ].join('');
+  }
+
+  private findAsset(relativePath: string): string | undefined {
+    const candidates = [
+      join(process.cwd(), 'src', relativePath),
+      join(process.cwd(), 'dist', relativePath),
+      join(__dirname, '..', '..', relativePath),
+    ];
+    return candidates.find((candidate) => existsSync(candidate));
+  }
+
+  private booleanConfig(name: string, fallback: boolean): boolean {
+    const value = this.config.get<string>(name);
+    if (value === undefined || value === '') return fallback;
+    return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+  }
+
+  private integerConfig(name: string, fallback: number): number {
+    const value = Number(this.config.get<string>(name) ?? fallback);
+    return Number.isInteger(value) && value > 0 ? value : fallback;
+  }
+
+  private isSafeRecipient(value: string): boolean {
+    return (
+      value.length <= 254 &&
+      !/[\r\n]/.test(value) &&
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+    );
+  }
+
+  private configurationError(variable: string) {
+    this.logger.error(`Configuración SMTP incompleta o inválida: ${variable}`);
+    return new InternalServerErrorException(
+      'El servicio de correo no está configurado',
+    );
+  }
+
+  private smtpErrorCode(error: unknown): string | undefined {
+    if (!error || typeof error !== 'object' || !('code' in error)) {
+      return undefined;
+    }
+    const code = String((error as { code?: unknown }).code ?? '');
+    return /^[A-Z0-9_-]{1,32}$/.test(code) ? code : undefined;
   }
 }

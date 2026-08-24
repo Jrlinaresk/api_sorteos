@@ -4,17 +4,16 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
 import { User, UserSchema } from './schemas/user.schema';
-import { TransactionsModule } from '../transactions/transactions.module';
-import { Raffle, RaffleSchema } from '../riffles/schema/raffle.schema';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { MyProfileController } from './my-profile.controller';
 
 @Module({
   imports: [
     MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
-    MongooseModule.forFeature([{ name: Raffle.name, schema: RaffleSchema }]),
-    TransactionsModule,
   ],
-  controllers: [UsersController],
-  providers: [UsersService],
+  controllers: [UsersController, MyProfileController],
+  providers: [UsersService, JwtAuthGuard, RolesGuard],
   exports: [UsersService],
 })
 export class UsersModule {}

@@ -7,15 +7,16 @@ import {
   EmailVerification,
   EmailVerificationSchema,
 } from './schema/email-verification.schema';
-import { EmailController } from './email_controller';
+import { ConfigModule } from '@nestjs/config';
 
 @Module({
   imports: [
+    ConfigModule,
     MongooseModule.forFeature([
       { name: EmailVerification.name, schema: EmailVerificationSchema },
     ]),
   ],
-  controllers: [EmailController],
+  controllers: [],
   providers: [EmailService, EmailVerificationService],
   exports: [EmailService, EmailVerificationService],
 })

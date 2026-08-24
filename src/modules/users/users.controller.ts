@@ -9,105 +9,117 @@ import {
   Delete,
   Query,
   HttpStatus,
+  UseGuards,
+  HttpCode,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiForbiddenResponse,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
-import { User } from './schemas/user.schema';
 import { UserOperationSummaries } from './enums/user-operation-summaries.enum';
 import { UserMessages } from './enums/user-messages.enum';
-import { Types } from 'mongoose';
-import { LoginUserDto } from './dto/login-user.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../auth/guards/roles.guard';
+import { Roles } from '../auth/decorators/roles.decorator';
+import { UserRole } from './enums/user-role.enum';
+import { PublicUserDto } from './dto/public-user.dto';
 
 @ApiTags('Users')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard, RolesGuard)
+@ApiForbiddenResponse({ description: 'El rol no permite esta operación' })
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Post()
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: UserOperationSummaries.CREATE })
   @ApiResponse({
     status: HttpStatus.CREATED,
     description: UserMessages.USER_CREATED,
-    type: User,
+    type: PublicUserDto,
   })
-  create(@Body() dto: CreateUserDto): Promise<User> {
-    return this.usersService.create(dto);
-  }
-
-  @Post('login')
-  @ApiOperation({ summary: 'Login de usuario por phone + nickname' })
-  @ApiResponse({
-    status: HttpStatus.OK,
-    description: 'Credenciales válidas, devuelve objeto User',
-    type: User,
-  })
-  @ApiResponse({
-    status: HttpStatus.NOT_FOUND,
-    description: 'No existe un usuario con esas credenciales',
-  })
-  login(@Body() dto: LoginUserDto): Promise<User> {
-    return this.usersService.login(dto);
+  async create(@Body() dto: CreateUserDto): Promise<PublicUserDto> {
+    return this.usersService.toPublicUser(await this.usersService.create(dto));
   }
 
   @Get()
+  @Roles(UserRole.OPERATOR, UserRole.ADMIN)
   @ApiOperation({ summary: UserOperationSummaries.FIND_ALL })
   @ApiResponse({
     status: HttpStatus.OK,
     description: UserMessages.USERS_LISTED,
-    type: [User],
+    type: [PublicUserDto],
   })
-  findAll(): Promise<User[]> {
-    return this.usersService.findAll();
-  }
-
-  @Get(':id')
-  @ApiOperation({ summary: UserOperationSummaries.FIND_ONE })
-  @ApiResponse({
-    status: HttpStatus.OK,
-    description: UserMessages.USER_CREATED,
-    type: User,
-  })
-  @ApiResponse({
-    status: HttpStatus.NOT_FOUND,
-    description: UserMessages.USER_NOT_FOUND,
-  })
-  findOne(@Param('id') id: string): Promise<User> {
-    return this.usersService.findOne(id);
+  async findAll(): Promise<PublicUserDto[]> {
+    return this.usersService.toPublicUsers(await this.usersService.findAll());
   }
 
   @Get('by-phone')
+  @Roles(UserRole.OPERATOR, UserRole.ADMIN)
   @ApiOperation({ summary: UserOperationSummaries.FIND_BY_PHONE })
   @ApiResponse({
     status: HttpStatus.OK,
     description: UserMessages.USER_CREATED,
-    type: User,
+    type: PublicUserDto,
   })
   @ApiResponse({
     status: HttpStatus.NOT_FOUND,
     description: UserMessages.USER_NOT_FOUND,
   })
-  findByPhone(@Query('phone') phone: string): Promise<User> {
-    return this.usersService.findByPhone(phone);
+  async findByPhone(@Query('phone') phone: string): Promise<PublicUserDto> {
+    return this.usersService.toPublicUser(
+      await this.usersService.findByPhone(phone),
+    );
+  }
+
+  @Get(':id')
+  @Roles(UserRole.OPERATOR, UserRole.ADMIN)
+  @ApiOperation({ summary: UserOperationSummaries.FIND_ONE })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: UserMessages.USER_CREATED,
+    type: PublicUserDto,
+  })
+  @ApiResponse({
+    status: HttpStatus.NOT_FOUND,
+    description: UserMessages.USER_NOT_FOUND,
+  })
+  async findOne(@Param('id') id: string): Promise<PublicUserDto> {
+    return this.usersService.toPublicUser(await this.usersService.findOne(id));
   }
 
   @Patch(':id')
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: UserOperationSummaries.UPDATE })
   @ApiResponse({
     status: HttpStatus.OK,
     description: UserMessages.USER_UPDATED,
-    type: User,
+    type: PublicUserDto,
   })
   @ApiResponse({
     status: HttpStatus.NOT_FOUND,
     description: UserMessages.USER_NOT_FOUND,
   })
-  update(@Param('id') id: string, @Body() dto: UpdateUserDto): Promise<User> {
-    return this.usersService.update(id, dto);
+  async update(
+    @Param('id') id: string,
+    @Body() dto: UpdateUserDto,
+  ): Promise<PublicUserDto> {
+    return this.usersService.toPublicUser(
+      await this.usersService.update(id, dto),
+    );
   }
 
   @Delete(':id')
+  @Roles(UserRole.ADMIN)
+  @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: UserOperationSummaries.DELETE })
   @ApiResponse({
     status: HttpStatus.NO_CONTENT,
@@ -121,42 +133,4 @@ export class UsersController {
     return this.usersService.remove(id);
   }
 
-  @Post(':id/participations')
-  @ApiOperation({ summary: UserOperationSummaries.ADD_PARTICIPATION })
-  @ApiResponse({
-    status: HttpStatus.OK,
-    description: UserMessages.PARTICIPATION_ADDED,
-    type: User,
-  })
-  addParticipation(
-    @Param('id') userId: string,
-    @Body('raffleId') raffleId: string,
-  ): Promise<User> {
-    return this.usersService.addParticipation(userId, raffleId);
-  }
-
-  @Delete(':id/participations/:raffleId')
-  @ApiOperation({ summary: UserOperationSummaries.REMOVE_PARTICIPATION })
-  @ApiResponse({
-    status: HttpStatus.OK,
-    description: UserMessages.PARTICIPATION_REMOVED,
-    type: User,
-  })
-  removeParticipation(
-    @Param('id') userId: string,
-    @Param('raffleId') raffleId: string,
-  ): Promise<User> {
-    return this.usersService.removeParticipation(userId, raffleId);
-  }
-
-  @Get(':id/participations')
-  @ApiOperation({ summary: UserOperationSummaries.FIND_ONE })
-  @ApiResponse({
-    status: HttpStatus.OK,
-    description: UserMessages.USERS_LISTED,
-    type: [String],
-  })
-  getParticipations(@Param('id') userId: string): Promise<Types.ObjectId[]> {
-    return this.usersService.getParticipations(userId);
-  }
 }

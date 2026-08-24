@@ -5,11 +5,17 @@ export type EmailVerificationDocument = EmailVerification & Document;
 
 @Schema()
 export class EmailVerification {
-  @Prop({ required: true, index: true })
+  @Prop({ required: true, index: true, unique: true, lowercase: true, trim: true })
   email: string;
 
-  @Prop({ required: true })
-  code: string;
+  @Prop({ select: false })
+  code?: string;
+
+  @Prop({ required: true, select: false })
+  codeHash: string;
+
+  @Prop({ required: true, min: 0, default: 0 })
+  attempts: number;
 
   // Índice TTL: elimina este documento 15 minutos después de `createdAt`
   @Prop({

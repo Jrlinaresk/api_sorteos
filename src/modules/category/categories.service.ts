@@ -66,8 +66,12 @@ export class CategoriesService {
   }
 
   async searchByName(name: string): Promise<Category[]> {
+    const normalized = (name || '').trim().slice(0, 80);
+    if (!normalized) return [];
+    const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return this.categoryModel
-      .find({ name: { $regex: name, $options: 'i' } })
+      .find({ name: { $regex: escaped, $options: 'i' } })
+      .limit(50)
       .exec();
   }
 }

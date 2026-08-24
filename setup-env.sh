@@ -1,57 +1,121 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# Script para configurar rápidamente las variables de entorno
-echo "⚙️  Configurando variables de entorno para producción..."
+umask 077
 
-# Verificar si ya existe el archivo
-if [ -f .env.server ]; then
-    echo "📝 El archivo .env.server ya existe."
-    read -p "¿Deseas sobrescribirlo? (y/n): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "❌ Configuración cancelada."
-        exit 1
-    fi
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+template_path="${script_dir}/.env.example"
+output_path="${script_dir}/.env.server"
+force_write=false
+development_mode=false
+
+usage() {
+  printf 'Uso: %s [--output RUTA] [--development] [--force]\n' "${0##*/}"
+}
+
+while (($#)); do
+  case "$1" in
+    --output)
+      [[ $# -ge 2 ]] || { printf 'Falta la ruta para --output\n' >&2; exit 2; }
+      output_path="$2"
+      shift 2
+      ;;
+    --force)
+      force_write=true
+      shift
+      ;;
+    --development)
+      development_mode=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'Opción desconocida: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+command -v openssl >/dev/null 2>&1 || {
+  printf 'openssl es obligatorio para generar secretos seguros.\n' >&2
+  exit 1
+}
+
+[[ -f "${template_path}" ]] || {
+  printf 'No se encontró la plantilla %s\n' "${template_path}" >&2
+  exit 1
+}
+
+if [[ -e "${output_path}" && "${force_write}" != true ]]; then
+  printf '%s ya existe; use --force solo si desea reemplazarlo.\n' "${output_path}" >&2
+  exit 1
 fi
 
-# Crear archivo de variables de entorno
-cat > .env.server << 'EOF'
-# Variables de entorno para producción
-NODE_ENV=production
-PORT=8080
+mkdir -p -- "$(dirname -- "${output_path}")"
+cp -- "${template_path}" "${output_path}"
 
-# Base de datos
-DB_HOST=mongodb
-DB_PORT=27017
-DB_USER=develop
-DB_PASSWORD=Dbabnsmdb2024
-DB_NAME=api_rest_sorteos_nestjs_mongodb
-MONGODB_URI=mongodb://develop:Dbabnsmdb2024@mongodb:27017/api_rest_sorteos_nestjs_mongodb?authSource=admin
+set_value() {
+  local variable_name="$1"
+  local variable_value="$2"
+  local replacement_path
+  replacement_path="$(mktemp "${output_path}.tmp.XXXXXX")"
+  awk -v key="${variable_name}" -v value="${variable_value}" '
+    BEGIN { replaced = 0 }
+    index($0, key "=") == 1 {
+      print key "=" value
+      replaced = 1
+      next
+    }
+    { print }
+    END {
+      if (!replaced) print key "=" value
+    }
+  ' "${output_path}" > "${replacement_path}"
+  mv -- "${replacement_path}" "${output_path}"
+}
 
-# JWT - CAMBIAR EN PRODUCCIÓN
-JWT_SECRET=sorteos-cuba-jwt-secret-key-production-2025-change-me
+random_secret() {
+  openssl rand -hex 32
+}
 
-# Email - CONFIGURAR CON VALORES REALES
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=noreply@sorteoscuba.everom.net
-SMTP_PASS=temporal-password-change-me
+mongo_root_password="$(random_secret)"
+mongo_app_password="$(random_secret)"
+mongo_replica_key="$(random_secret)"
 
-# Configuraciones adicionales
-API_VERSION=v1
-CORS_ORIGINS=https://sorteoscuba.everom.net
-RATE_LIMIT_TTL=60
-RATE_LIMIT_MAX=100
-LOG_LEVEL=info
-LOG_FILE=./logs/app.log
-EOF
+set_value MONGO_ROOT_PASSWORD "${mongo_root_password}"
+set_value MONGO_APP_PASSWORD "${mongo_app_password}"
+set_value MONGO_REPLICA_KEY "${mongo_replica_key}"
+set_value MONGODB_URI "mongodb://sorteos_app:${mongo_app_password}@mongodb:27017/api_sorteos?authSource=api_sorteos&replicaSet=rs0&retryWrites=true&w=majority"
+set_value JWT_SECRET "$(random_secret)"
+set_value EMAIL_CODE_SECRET "$(random_secret)"
+set_value CHECKOUT_ACCESS_SECRET_KEY "$(random_secret)"
+set_value PAYMENTS_ADMIN_API_KEY "$(random_secret)"
+set_value PAYMENTS_PUBLIC_SECRET_KEY "$(random_secret)"
+set_value EFI_WEBHOOK_HMAC "$(random_secret)"
+set_value REFERRAL_IP_HASH_SECRET "$(random_secret)"
 
-echo "✅ Archivo .env.server creado exitosamente"
-echo ""
-echo "🔐 IMPORTANTE: Configurar las siguientes variables antes de desplegar:"
-echo "   - JWT_SECRET: Cambia por una clave segura"
-echo "   - SMTP_USER: Email real para envío de correos"
-echo "   - SMTP_PASS: Contraseña de aplicación del email"
-echo ""
-echo "💡 Edita el archivo con: nano .env.server"
-echo "🚀 Después ejecuta: ./deploy-prod.sh"
+if [[ "${development_mode}" == true ]]; then
+  set_value NODE_ENV development
+  set_value API_PORT 8080
+  set_value TRUST_PROXY false
+  set_value CORS_ORIGINS http://localhost:3000
+  set_value SWAGGER_ENABLED true
+  set_value PAYMENTS_PROVIDER mock
+  set_value PAYMENTS_ALLOW_MOCK true
+  set_value EFI_PIX_ENV sandbox
+  set_value EFI_PIX_CERTIFICATE_PATH ''
+fi
+
+chmod 600 "${output_path}"
+install -d -m 700 "${script_dir}/runtime/efi"
+
+printf 'Entorno creado en %s con permisos 0600.\n' "${output_path}"
+if [[ "${development_mode}" == true ]]; then
+  printf '%s\n' 'Entorno de desarrollo listo para Docker Compose; los pagos usan el proveedor mock.'
+else
+  printf '%s\n' 'Complete CORS_ORIGINS, SMTP_*, EFI_PIX_* y copie el certificado en runtime/efi antes de desplegar.'
+fi

@@ -76,11 +76,13 @@ build/
 # Optional lockfiles
 package-lock.json
 yarn.lock
-pnpm-lock.yaml
 
 # Docker and deployment
-.dockerignore
 docker-compose.override.yml
+runtime/
+uploads/
+.env.server
+.env.*.local
 
 # SSL certificates
 nginx/ssl/*.pem

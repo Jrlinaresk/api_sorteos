@@ -1,19 +1,45 @@
 /* src/modules/users/schemas/user.schema.ts */
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
-import { Document, Types } from 'mongoose';
-import { ApiProperty } from '@nestjs/swagger';
+import { HydratedDocument, Types } from 'mongoose';
+import {
+  ApiHideProperty,
+  ApiProperty,
+  ApiPropertyOptional,
+} from '@nestjs/swagger';
+import { UserRole } from '../enums/user-role.enum';
 
-export type UserDocument = User & Document;
+export type UserDocument = HydratedDocument<User>;
 
 @Schema({ timestamps: true })
 export class User {
   @ApiProperty({ description: 'Número de teléfono único del usuario' })
-  @Prop({ required: true, unique: true })
+  @Prop({ required: true, unique: true, trim: true, index: true })
   phone: string;
 
   @ApiProperty({ description: 'Nickname del usuario' })
-  @Prop({ required: true })
+  @Prop({ required: true, trim: true, maxlength: 50 })
   nickname: string;
+
+  @ApiPropertyOptional({ description: 'Nombre completo' })
+  @Prop({ required: false, trim: true, maxlength: 120 })
+  name?: string;
+
+  @ApiPropertyOptional({ description: 'CPF sin puntuación' })
+  @Prop({ required: false, unique: true, sparse: true, index: true })
+  cpf?: string;
+
+  @ApiProperty({ enum: UserRole, default: UserRole.CUSTOMER })
+  @Prop({
+    type: String,
+    enum: Object.values(UserRole),
+    default: UserRole.CUSTOMER,
+    required: true,
+  })
+  role: UserRole;
+
+  @ApiProperty({ default: true })
+  @Prop({ type: Boolean, default: true, required: true })
+  isActive: boolean;
 
   @ApiProperty({
     description: 'Lista de IDs de rifas en las que participa',
@@ -23,7 +49,7 @@ export class User {
   participations: Types.ObjectId[];
 
   @ApiProperty({ description: 'Saldo actual del usuario', example: 100.5 })
-  @Prop({ required: true, default: 5.5 })
+  @Prop({ required: true, default: 0 })
   balance: number;
 
   // NUEVOS CAMPOS OPCIONALES
@@ -59,12 +85,26 @@ export class User {
   @Prop({ type: Boolean, default: false, required: false })
   emailVerified: boolean;
 
-  @ApiProperty({
-    description: 'La contraseña del cliente.',
-    example: 'password123',
-  })
-  @Prop({ required: false, minlength: 8 })
-  password: string;
+  @ApiHideProperty()
+  @Prop({ required: false, select: false })
+  passwordHash?: string;
+
+  /** Campo heredado. Nunca se serializa y se elimina al iniciar sesión. */
+  @ApiHideProperty()
+  @Prop({ required: false, select: false })
+  password?: string;
+
+  @ApiHideProperty()
+  @Prop({ type: Number, default: 0, select: false })
+  failedLoginAttempts?: number;
+
+  @ApiHideProperty()
+  @Prop({ type: Date, required: false, select: false })
+  lockedUntil?: Date;
+
+  @ApiHideProperty()
+  @Prop({ type: Number, required: true, default: 0, min: 0 })
+  authVersion: number;
 
   @ApiProperty({
     description: 'El correo electrónico del cliente.',
@@ -74,7 +114,8 @@ export class User {
   @Prop({
     required: false,
     unique: true,
-    index: 1,
+    sparse: true,
+    index: true,
     minlength: 5,
     maxlength: 150,
     trim: true,
@@ -88,3 +129,24 @@ export class User {
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
+
+type SerializedUser = Omit<User, 'authVersion'> & {
+  authVersion?: number;
+  __v?: number;
+};
+
+function removePrivateFields(
+  _document: unknown,
+  returned: SerializedUser,
+): SerializedUser {
+  delete returned.password;
+  delete returned.passwordHash;
+  delete returned.failedLoginAttempts;
+  delete returned.lockedUntil;
+  delete returned.authVersion;
+  delete returned.__v;
+  return returned;
+}
+
+UserSchema.set('toJSON', { transform: removePrivateFields });
+UserSchema.set('toObject', { transform: removePrivateFields });
