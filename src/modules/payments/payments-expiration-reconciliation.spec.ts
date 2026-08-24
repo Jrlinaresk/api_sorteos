@@ -121,4 +121,47 @@ describe('PaymentsService safe Pix expiration', () => {
     expect(payment.status).toBe(PaymentStatus.Paid);
     expect(payment.statusHistory).toHaveLength(0);
   });
+
+  it('allows an operator reconciliation to expire a quarantined charge once the PSP recovers', async () => {
+    const payment = duePayment();
+    const findPayment = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('provider unavailable'))
+      .mockResolvedValueOnce({
+        txid: payment.txid,
+        status: PaymentStatus.Active,
+      });
+    const { service } = setup(payment, findPayment);
+
+    await service.expireDuePayments();
+    expect(payment.status).toBe(PaymentStatus.UnderReview);
+
+    await service.reconcile(payment._id.toString());
+    expect(payment.status).toBe(PaymentStatus.Expired);
+  });
+
+  it('never releases an expired review that already contains a Pix receipt', async () => {
+    const payment = duePayment();
+    payment.status = PaymentStatus.UnderReview;
+    payment.receivedAmountCents = 400;
+    payment.receipts = [
+      {
+        endToEndId: 'E1234567890123456789012345678901',
+        amountCents: 400,
+        paidAt: new Date(),
+      },
+    ];
+    const { service } = setup(
+      payment,
+      jest.fn().mockResolvedValue({
+        txid: payment.txid,
+        status: PaymentStatus.Active,
+      }),
+    );
+
+    await service.reconcile(payment._id.toString());
+
+    expect(payment.status).toBe(PaymentStatus.UnderReview);
+    expect(payment.statusHistory).toHaveLength(0);
+  });
 });

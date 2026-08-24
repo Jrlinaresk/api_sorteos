@@ -228,6 +228,7 @@ const ALLOWED_TRANSITIONS: Record<PaymentStatus, ReadonlySet<PaymentStatus>> = {
   [PaymentStatus.UnderReview]: new Set([
     PaymentStatus.Active,
     PaymentStatus.Paid,
+    PaymentStatus.Expired,
     PaymentStatus.Cancelled,
     PaymentStatus.Rejected,
     PaymentStatus.RefundPending,
@@ -753,6 +754,7 @@ export class PaymentsService {
           );
           if (previousStatus !== payment.status) {
             payment.transitionSequence = (payment.transitionSequence ?? 0) + 1;
+            await this.touchCampaignFinancialState(payment.campaign, session);
           }
           await payment.save({ session });
           if (previousStatus !== payment.status) {
@@ -1167,6 +1169,7 @@ export class PaymentsService {
           );
           if (previousStatus !== payment.status) {
             payment.transitionSequence = (payment.transitionSequence ?? 0) + 1;
+            await this.touchCampaignFinancialState(payment.campaign, session);
           }
           await Promise.all([
             operation.save({ session }),
@@ -1689,8 +1692,10 @@ export class PaymentsService {
             metadata,
           );
           changed = previousStatus !== fresh.status;
-          if (changed)
+          if (changed) {
             fresh.transitionSequence = (fresh.transitionSequence ?? 0) + 1;
+            await this.touchCampaignFinancialState(fresh.campaign, session);
+          }
           await fresh.save({ session });
           if (changed) {
             await this.createOutboxEvent(
@@ -1808,6 +1813,19 @@ export class PaymentsService {
       ) {
         status = PaymentStatus.Refunded;
       }
+    }
+
+    if (
+      status === PaymentStatus.Expired &&
+      ((payment.receivedAmountCents ?? 0) > 0 ||
+        (payment.refundedAmountCents ?? 0) > 0 ||
+        (payment.refundReservedAmountCents ?? 0) > 0 ||
+        (payment.receipts?.length ?? 0) > 0 ||
+        (payment.providerRefunds?.length ?? 0) > 0)
+    ) {
+      status = PaymentStatus.UnderReview;
+      resolvedReason =
+        'El cobro venció con movimientos financieros registrados; no se libera sin conciliación manual';
     }
 
     if (
@@ -2692,6 +2710,29 @@ export class PaymentsService {
     ) {
       throw new ConflictException(
         'No se puede devolver automáticamente el pedido ganador después de publicar el resultado',
+      );
+    }
+  }
+
+  /**
+   * Usa la versión optimista de la campaña como mutex financiero. La
+   * publicación del resultado guarda el mismo documento en su transacción, de
+   * modo que una transición Pix concurrente obliga a releer las invariantes en
+   * vez de confirmar un snapshot financiero obsoleto.
+   */
+  private async touchCampaignFinancialState(
+    campaignId: Types.ObjectId,
+    session: ClientSession,
+  ): Promise<void> {
+    if (!this.campaignModel) return;
+    const touched = await this.campaignModel.updateOne(
+      { _id: campaignId },
+      { $inc: { __v: 1 } },
+      { session },
+    );
+    if ((touched.matchedCount ?? touched.modifiedCount ?? 0) !== 1) {
+      throw new ConflictException(
+        'La campaña del pago cambió o dejó de existir durante la transición financiera',
       );
     }
   }

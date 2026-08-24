@@ -1055,9 +1055,10 @@ export class OrdersService {
     const closingFuture =
       !campaign.closesAt || new Date(campaign.closesAt) > now;
     const drawFuture = !campaign.drawDate || new Date(campaign.drawDate) > now;
-    campaign.status = launchReached && closingFuture && drawFuture
-      ? CampaignStatus.Active
-      : CampaignStatus.Expired;
+    campaign.status =
+      launchReached && closingFuture && drawFuture
+        ? CampaignStatus.Active
+        : CampaignStatus.Expired;
     campaign.salesClosedAt = undefined;
   }
 

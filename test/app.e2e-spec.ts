@@ -181,6 +181,7 @@ describe('Sorteos API transaction journey (e2e)', () => {
         ticketPrice: 1,
         itemCondition: 'new',
         prizeTitle: 'Premio E2E',
+        cashAlternative: 10000,
         minimumOrderAmount: 1,
         maxTitlesPerOrder: 20,
         quantitySuggestions: [10],
@@ -367,6 +368,39 @@ describe('Sorteos API transaction journey (e2e)', () => {
         expect(body.outcomes[0].winner.name).toContain('Compradora');
       });
 
+    const mainAward = await request(http)
+      .get(`/api/v1/main-awards/order/${orderPublicId}`)
+      .set('Authorization', authorization)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.status).toBe('pending');
+        expect(body.campaignId).toBe(campaignId);
+        expect(body.availableChoices).toEqual(['physical', 'cash']);
+      });
+
+    await request(http)
+      .post(`/api/v1/main-awards/${mainAward.body.publicId}/claim`)
+      .set('Authorization', authorization)
+      .send({ choice: 'cash' })
+      .expect(201)
+      .expect(({ body }) => {
+        expect(body.status).toBe('claimed');
+        expect(body.choice).toBe('cash');
+      });
+
+    await request(http)
+      .post(`/api/v1/admin/main-awards/${mainAward.body.publicId}/fulfill`)
+      .set('Authorization', publisherAuthorization)
+      .send({
+        reference: 'E2E-MAIN-PRIZE-TRANSFER',
+        notes: 'Entrega integral validada por la prueba E2E',
+      })
+      .expect(201)
+      .expect(({ body }) => {
+        expect(body.status).toBe('fulfilled');
+        expect(body.fulfillmentReference).toBe('E2E-MAIN-PRIZE-TRANSFER');
+      });
+
     const concurrentRefunds = await Promise.all([
       request(http)
         .post(`/api/v1/payments/admin/${refundablePaymentId}/refund`)
@@ -417,6 +451,10 @@ describe('Sorteos API transaction journey (e2e)', () => {
 
     expect(transactionalEmails).toEqual(
       expect.arrayContaining([
+        expect.objectContaining({
+          recipient: 'buyer-e2e@example.test',
+          eventKey: `main-award:${mainAward.body.publicId}:email`,
+        }),
         expect.objectContaining({
           recipient: 'refund-e2e@example.test',
           eventKey: `fulfillment:${refundablePaymentId}:paid`,

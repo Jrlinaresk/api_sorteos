@@ -27,7 +27,7 @@ En las tablas se omite ese prefijo para facilitar la lectura. Si Swagger está h
 | Premio | Requiere `X-Prize-Token`. |
 | Operación | Requiere rol `operator` o `admin`. |
 | Administración | Requiere rol `admin`. |
-| PSP | Llamada del proveedor de pagos protegida por HMAC y/o mTLS. |
+| PSP | Llamada de Efí protegida obligatoriamente por mTLS; HMAC solo como defensa adicional del proxy. |
 
 ## Páginas que puede alimentar
 
@@ -40,9 +40,9 @@ En las tablas se omite ese prefijo para facilitar la lectura. Si Swagger está h
 | Pantalla Pix | Estado, QR, copia y pega, vencimiento, conciliación por webhook y cancelación mientras el cobro sea pagable. | La respuesta de `POST /checkout`; `GET /payments/:id`; `GET /checkout/:publicId`; `POST /checkout/:publicId/cancel` |
 | “Mis títulos” sin cuenta | Recuperación por teléfono + correo mediante desafío opaco y código de seis dígitos; respuesta antienumeración; desafío con caducidad, cooldown y límite de intentos; confirmación de un solo uso y rotación de los tokens de los pedidos recuperados. Si una identidad supera el máximo seguro, obliga a acotar por campaña. | `POST /orders/access/request`, `POST /orders/access/confirm` |
 | Registro, acceso y recuperación de contraseña | Alta pendiente versionada por `registrationId` opaco; cada repetición reemplaza credenciales e invalida el intento anterior. El OTP queda ligado al intento y la activación transaccional exige el mismo identificador antes de emitir sesión; reenvío antienumeración; login; access/refresh tokens; logout y recuperación por correo. | `POST /auth/register`, `POST /auth/register/resend`, `POST /auth/register/confirm`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `POST /auth/password/change`, `POST /auth/password/reset/request`, `POST /auth/password/reset/confirm`, `GET /auth/me` |
-| Área del cliente | Perfil, historial paginado de pedidos, detalle de un pedido, títulos pagados por campaña y premios del usuario. | `PATCH /me/profile`, `GET /me/orders`, `GET /me/orders/:publicId`, `GET /me/titles`, `GET /me/prize-awards`, `POST /me/prize-awards/:publicId/claim` |
+| Área del cliente | Perfil, historial paginado de pedidos, detalle de un pedido, títulos pagados, premios instantáneos y premio principal. | `PATCH /me/profile`, `GET /me/orders`, `GET /me/orders/:publicId`, `GET /me/titles`, `GET /me/prize-awards`, `GET /main-awards/order/:orderPublicId` |
 | Premios instantáneos | Catálogo público de premios y ganadores enmascarados; títulos premiados; intentos de ruleta o raspadinha adjudicados al confirmar un pago; jugada de un solo uso; consulta y reclamación del premio. | `GET /campaigns/:campaignId/prizes`, `GET /prizes/attempts/order/:orderPublicId`, `POST /prizes/attempts/:publicId/play`, `GET /prize-awards/order/:orderPublicId`, `POST /prize-awards/:publicId/claim` |
-| Resultados y ganadores | Resultado publicado por campaña o slug, archivo paginado, números ganadores, premios, ganador enmascarado y evidencia verificable. | `GET /campaigns/:campaignIdOrSlug/result`, `GET /results` |
+| Resultados y ganadores | Resultado publicado por campaña o slug, archivo paginado, ganador enmascarado, evidencia verificable y reclamación del premio principal físico o en efectivo. | `GET /campaigns/:campaignIdOrSlug/result`, `GET /results`, `GET /main-awards/order/:orderPublicId`, `POST /main-awards/:publicId/claim` |
 | Afiliado / referidos | Resolución de código sin revelar beneficiario, registro idempotente de click y UTM, resumen y comisiones del afiliado autenticado. La atribución y comisión se ejecutan al confirmar el pago. | `GET /referrals/resolve/:code`, `POST /referrals/clicks`, `GET /referrals/me/summary`, `GET /referrals/me/commissions` |
 | Inbox y notificaciones web | Inbox paginado, contador, leído individual/masivo, preferencias, suscripción Web Push y baja de dispositivos. | Rutas bajo `/notifications`; requieren Bearer, incluida actualmente `GET /notifications/push/config`. |
 | Legal, contacto y redes | Marca, contacto, WhatsApp, redes, enlaces legales, CNPJ, texto legal y reglamentos versionados por campaña. | `GET /settings/public`, `GET /campaigns/:slug/regulations/:version` |
@@ -99,6 +99,9 @@ La creación devuelve `orderAccessToken` y `paymentAccessSecret`; deben tratarse
 | Premio | `POST /prizes/attempts/:publicId/play` | Consume un intento una sola vez y devuelve resultado y evidencia de la jugada. |
 | Pedido | `GET /prize-awards/order/:orderPublicId` | Adjudicaciones del pedido. |
 | Pedido | `POST /prize-awards/:publicId/claim` | Reclama una adjudicación del pedido; el cuerpo incluye `orderPublicId`. |
+| Pedido o titular Bearer | `GET /main-awards/order/:orderPublicId` | Descubre el contrato del premio principal desde el pedido ganador. |
+| Pedido o titular Bearer | `GET /main-awards/:publicId` | Consulta el premio principal como propietario. |
+| Pedido o titular Bearer | `POST /main-awards/:publicId/claim` | Elige el bien físico o la alternativa en efectivo disponible. |
 | Público | `GET /campaigns/:campaignIdOrSlug/result` | Resultado publicado de una campaña, o `null` si aún no existe. |
 | Público | `GET /results` | Archivo paginado de resultados publicados. |
 
@@ -183,6 +186,7 @@ Todas las rutas siguientes requieren Bearer:
 | Operación | `GET /admin/campaigns/:id` | Detalle interno. |
 | Operación | `PATCH /admin/campaigns/:id` | Edita configuración; protege campos incompatibles con ventas iniciadas. |
 | Operación | `PATCH /admin/campaigns/:id/status` | Transición controlada de estado. |
+| Administración | `POST /admin/campaigns/:id/extension` | Prorroga una campaña vencida mediante CAS, con actor, motivo e historial auditado. |
 | Operación | `DELETE /admin/campaigns/:id` | Elimina una campaña cuando las reglas del servicio lo permiten. |
 | Operación | `POST /admin/media` | Sube JPEG, PNG, WebP, MP4 o WebM mediante `multipart/form-data` (`file`). |
 | Administración | `DELETE /admin/media/:mediaId` | Borrado lógico solo si el medio no tiene referencias. |
@@ -190,9 +194,9 @@ Todas las rutas siguientes requieren Bearer:
 | Operación | `PATCH /categories/:id` | Actualiza categoría. |
 | Administración | `DELETE /categories/:id` | Elimina categoría. |
 | Administración | `POST /users` | Crea usuario, incluido rol administrativo si lo especifica el DTO. |
-| Operación | `GET /users` | Lista usuarios con DTO público, sin hashes de contraseña. |
-| Operación | `GET /users/by-phone` | Busca por teléfono. |
-| Operación | `GET /users/:id` | Consulta usuario. |
+| Administración | `GET /users` | Lista usuarios con DTO público, sin hashes de contraseña. |
+| Administración | `GET /users/by-phone` | Busca por teléfono. |
+| Administración | `GET /users/:id` | Consulta usuario. |
 | Administración | `PATCH /users/:id` | Actualiza usuario, rol, estado o contraseña según DTO. |
 | Administración | `DELETE /users/:id` | Desactiva el usuario; no borra físicamente el historial. |
 
@@ -215,11 +219,11 @@ Las campañas soportan, entre otros campos, galería ordenada, portada, categor�
 | PSP | `POST /payments/webhooks/:provider` | Webhook idempotente del proveedor. |
 | PSP | `POST /payments/webhooks/:provider/pix` | Alias Pix del webhook. |
 
-En producción el proveedor esperado es Efí Pix con OAuth y certificado cliente. El webhook acepta el secreto solo por cabecera `x-efi-webhook-token`; no lo lee de la query string. Puede exigir además la señal mTLS del proxy.
+En producción el proveedor esperado es Efí Pix con OAuth y certificado cliente. El webhook exige mTLS validado en el proxy. Un token `x-efi-webhook-token` puede añadirse como segunda defensa desde un gateway confiable, nunca como sustituto ni en la query string.
 
 ### Sorteos y publicación de resultados
 
-Todas estas rutas requieren rol `operator` o `admin`:
+Estas rutas requieren `operator` o `admin`, salvo la verificación manual y la publicación final, que exigen `admin`:
 
 | Ruta | Función |
 | --- | --- |
@@ -227,19 +231,31 @@ Todas estas rutas requieren rol `operator` o `admin`:
 | `POST /admin/campaigns/:campaignId/draw/verify/federal-lottery` | Obtiene y concilia dos lecturas del concurso oficial de Lotería Federal CAIXA; el número principal se deriva en servidor de la regla fijada en la campaña. |
 | `POST /admin/campaigns/:campaignId/draw/verify/manual-external` | Registra número y evidencia externa manual. |
 | `POST /admin/campaigns/:campaignId/draw/verify/cryptographic` | Revela secreto, valida compromiso y combina entropía externa. |
-| `POST /admin/campaigns/:campaignId/draw/publish` | Publica un resultado verificado y notifica al ganador autenticado. |
+| `POST /admin/campaigns/:campaignId/draw/publish` | Publica con doble actor, crea el contrato de premio principal y agenda avisos durables para registrado o invitado. |
 | `GET /admin/campaigns/:campaignId/draw` | Vista de auditoría con evidencia íntegra. |
 
-Un resultado solo se verifica cuando la campaña está agotada/lista para sorteo y el 100 % de los títulos está vendido. Una vez publicado es inmutable a nivel de esquema. En el método Federal, el concurso debe quedar fijado antes de activar ventas; el adaptador solo admite el endpoint HTTPS oficial permitido, rechaza redirecciones, limita tiempo/tamaño, valida el JSON y exige que ambas lecturas normalizadas coincidan. Se conservan hashes SHA-256 y evidencia operativa.
+Un resultado solo se verifica cuando la campaña está agotada/lista para sorteo, el 100 % de los títulos está pagado, no quedan reservas, revisiones, disputas ni devoluciones pendientes, y cada pedido participante conserva un pago íntegro. La publicación revalida y serializa cuota, pedido, pago y campaña dentro de la transacción. Una vez publicado es inmutable. En el método Federal, el concurso debe quedar fijado antes de activar ventas; el adaptador solo admite el endpoint HTTPS oficial permitido, rechaza redirecciones, limita tiempo/tamaño, valida el JSON y exige que ambas lecturas normalizadas coincidan. Se conservan hashes SHA-256 y evidencia operativa.
 
 ### Premios instantáneos
 
 | Acceso | Ruta | Función |
 | --- | --- | --- |
 | Operación | `POST /admin/prizes` | Crea premio por título ganador, ruleta o raspadinha, con stock, peso, efectivo/alternativa y medio. |
+| Operación | `GET /admin/prizes` | Lista y filtra definiciones de premios. |
+| Operación | `GET /admin/prizes/:id` | Consulta una definición. |
+| Operación | `GET /admin/prizes/awards` | Lista adjudicaciones con filtros y búsqueda. |
+| Operación | `GET /admin/prizes/awards/:publicId` | Consulta una adjudicación. |
 | Operación | `PATCH /admin/prizes/:id` | Actualiza el premio respetando adjudicaciones existentes. |
 | Operación | `DELETE /admin/prizes/:id` | Elimina o cancela según su historial. |
 | Operación | `POST /admin/prizes/awards/:publicId/fulfill` | Marca como entregado un premio previamente reclamado. |
+
+### Premio principal
+
+| Acceso | Ruta | Función |
+| --- | --- | --- |
+| Administración | `GET /admin/main-awards` | Lista contratos de entrega por estado o campaña. |
+| Administración | `GET /admin/main-awards/:publicId` | Consulta ganador, elección y trazabilidad operativa. |
+| Administración | `POST /admin/main-awards/:publicId/fulfill` | Registra entrega, actor, referencia y notas después del reclamo. |
 
 ### Configuración versionada
 
@@ -301,7 +317,7 @@ Aunque hay código fuente para `ProductsModule`, `TransactionsModule` y `Winners
 - Los precios, promociones, cantidades bonus y elegibilidad se recalculan en servidor; el importe del navegador no es fuente de verdad.
 - Cada pedido conserva versión, hash y fecha de aceptación del reglamento.
 - La participación pública y los resultados enmascaran nombre/teléfono; el CSV administrativo completo exige rol. Las vistas públicas eliminan IDs/campos internos de asignación y evidencia privada.
-- El webhook Efí se protege con cabecera HMAC y/o mTLS, con comparación de tiempo constante; los secretos no se admiten en la URL.
+- El webhook Efí exige mTLS verificado por el edge. Un HMAC de cabecera puede reforzarlo si lo inyecta un gateway confiable; los secretos no se admiten en la URL.
 - Los uploads validan MIME y firma binaria, tamaño, nombre, rutas y traversal; se sirven con `nosniff`, ETag y tipos permitidos. Los medios referenciados no pueden borrarse.
 - Helmet, CORS de orígenes explícitos, compresión y correlation IDs están configurados en el proceso HTTP. TLS debe terminarse en la infraestructura frontal.
 - El contenedor de producción corre sin root, con filesystem de solo lectura, capacidades eliminadas, secretos/certificados en volúmenes de solo lectura y almacenamiento persistente separado.
@@ -316,7 +332,7 @@ Aunque hay código fuente para `ProductsModule`, `TransactionsModule` y `Winners
 | Portal de Loterías CAIXA | Obligatoria para campañas con método Federal; su URL también se valida en producción | Verificación oficial de concurso Federal mediante dos lecturas. Si CAIXA no responde o cambia el contrato, la verificación falla cerrada y requiere intervención, no inventa un resultado. |
 | Servicios Web Push del navegador | Opcional | Entrega mediante VAPID a hosts permitidos de Google, Mozilla, Apple o Windows. Sin configuración, el proveedor queda en modo `noop` y el inbox sigue funcionando. |
 | Volumen de medios local | Obligatorio con la configuración actual | Imágenes y videos. El backend implementa proveedor local; CDN/object storage no está implementado como proveedor activo. |
-| Proxy/edge con HTTPS | Obligatorio en Internet | Certificado TLS, dominio, forwarding correcto de IP/protocolo y, si se usa, validación mTLS de Efí. El Nginx incluido escucha HTTP interno y está pensado para ir detrás del terminador TLS. |
+| Proxy/edge con HTTPS | Obligatorio en Internet | Certificado TLS, dominio, forwarding correcto de IP/protocolo y validación mTLS obligatoria en la ruta de webhook de Efí. El Nginx incluido escucha HTTP interno y está pensado para ir detrás del terminador TLS. |
 | Meta Pixel / Google Tag Manager | Opcional y frontend | El backend guarda IDs por campaña; la web decide si carga scripts tras aplicar consentimiento. |
 
 ## Qué corresponde exclusivamente al frontend
@@ -343,7 +359,7 @@ No existen actualmente WebSockets/SSE para tiempo real: la web debe actualizar p
 
 ### Infraestructura y secretos
 
-- [ ] Usar Node.js 20 y `pnpm` con lockfile; construir la etapa `production` del `Dockerfile`.
+- [ ] Usar Node.js 24.11+ dentro de la rama 24 y `pnpm` con lockfile; construir la etapa `production` del `Dockerfile`.
 - [ ] Generar `.env.server` con `./setup-env.sh`, completar valores reales, mantener modo `0600` y no versionarlo.
 - [ ] Configurar secretos distintos y de al menos 32 caracteres para JWT, correo, checkout, recuperación de pedidos, pagos y hash de referidos. `ORDER_ACCESS_CODE_SECRET` es obligatorio y dedicado en producción.
 - [ ] Configurar MongoDB autenticado en replica set y una URI con `replicaSet`, `retryWrites=true` y escritura majority.
@@ -355,7 +371,7 @@ No existen actualmente WebSockets/SSE para tiempo real: la web debe actualizar p
 
 - [ ] Usar `PAYMENTS_PROVIDER=efi` y `PAYMENTS_ALLOW_MOCK=false`.
 - [ ] Instalar credenciales, clave Pix y certificado Efí con permisos privados; verificar sandbox antes de producción.
-- [ ] Registrar en Efí el webhook correcto y configurar `EFI_WEBHOOK_HMAC` o mTLS; comprobar pago, duplicado de webhook, expiración, cancelación, conciliación y devolución.
+- [ ] Registrar en Efí el webhook correcto, instalar su CA en el edge y mantener `EFI_WEBHOOK_REQUIRE_MTLS=true`; comprobar pago, duplicado, expiración, cancelación, conciliación y devolución.
 - [ ] Configurar SMTP con TLS y remitente válido; probar recuperación de contraseña y de pedidos, incluidos rebotes/fallos sin enumeración.
 - [ ] Mantener `CAIXA_FEDERAL_API_BASE_URL` en el endpoint HTTPS oficial permitido y autorizar salida de red; ensayar una verificación real antes del primer sorteo Federal.
 - [ ] Fijar el concurso Federal y la regla de cálculo antes de activar ventas; no cambiar el espacio de títulos ni la regla después de vender.

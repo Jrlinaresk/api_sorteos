@@ -80,6 +80,7 @@ describe('DrawsService verifiable draw workflow', () => {
     orderModel = {
       findById: jest.fn(),
       findOne: jest.fn().mockImplementation(() => queryResult(null)),
+      aggregate: jest.fn().mockImplementation(() => aggregateResult([])),
       updateOne: jest.fn().mockResolvedValue({ matchedCount: 1 }),
     };
     paymentModel = {
@@ -798,6 +799,44 @@ describe('DrawsService verifiable draw workflow', () => {
     await expect(
       service.publish(campaignId.toString(), new Types.ObjectId().toString()),
     ).rejects.toThrow('pagos no conciliados');
+
+    expect(result.save).not.toHaveBeenCalled();
+    expect(quotaModel.findOne).not.toHaveBeenCalled();
+  });
+
+  it('bloquea la ventana entre un reembolso confirmado y su reflejo en el pedido', async () => {
+    const campaignId = new Types.ObjectId();
+    const result = document({
+      campaign: campaignId,
+      status: DrawResultStatus.Verified,
+      verifiedBy: new Types.ObjectId(),
+      outcomes: [
+        {
+          winningNumber: '001234',
+          quota: new Types.ObjectId(),
+        },
+      ],
+    });
+    resultModel.findOne.mockReturnValue(queryResult(result));
+    campaignModel.findById.mockReturnValue(
+      queryResult(
+        document({
+          _id: campaignId,
+          status: CampaignStatus.AwaitingDraw,
+          soldCount: 100,
+          totalTitles: 100,
+          reservedCount: 0,
+          winners: [],
+        }),
+      ),
+    );
+    orderModel.aggregate.mockReturnValueOnce(
+      aggregateResult([{ _id: new Types.ObjectId() }]),
+    );
+
+    await expect(
+      service.publish(campaignId.toString(), new Types.ObjectId().toString()),
+    ).rejects.toThrow('no conserva un pago íntegramente liquidado');
 
     expect(result.save).not.toHaveBeenCalled();
     expect(quotaModel.findOne).not.toHaveBeenCalled();

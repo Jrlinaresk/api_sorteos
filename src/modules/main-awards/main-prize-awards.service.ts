@@ -110,6 +110,7 @@ export class MainPrizeAwardsService {
       .exec();
     if (existing) {
       this.assertSameIdentity(existing, identity);
+      this.assertSameContract(existing, campaign, order, outcome.winningNumber);
       return existing;
     }
 
@@ -146,6 +147,21 @@ export class MainPrizeAwardsService {
   async findOwned(publicId: string, orderToken?: string, userId?: string) {
     const award = await this.loadByPublicId(publicId);
     await this.assertOwner(award, orderToken, userId);
+    return this.ownerView(award);
+  }
+
+  async findOwnedByOrder(
+    orderPublicId: string,
+    orderToken?: string,
+    userId?: string,
+  ) {
+    const order = await this.orders.findOwnedForCheckout(
+      orderPublicId,
+      orderToken,
+      userId,
+    );
+    const award = await this.awardModel.findOne({ order: order._id }).exec();
+    if (!award) throw new NotFoundException('Premio principal no encontrado');
     return this.ownerView(award);
   }
 
@@ -506,6 +522,33 @@ export class MainPrizeAwardsService {
     }
   }
 
+  private assertSameContract(
+    award: MainPrizeAwardDocument,
+    campaign: RaffleDocument,
+    order: OrderDocument,
+    winningNumber: string,
+  ): void {
+    const expectedCashAlternative =
+      typeof campaign.cashAlternative === 'number'
+        ? campaign.cashAlternative
+        : undefined;
+    const same =
+      award.orderPublicId === order.publicId &&
+      award.user?.toString() === order.user?.toString() &&
+      award.prizeTitle === campaign.prizeTitle &&
+      award.cashAlternative === expectedCashAlternative &&
+      award.currency === (campaign.currency || 'BRL') &&
+      award.winningNumber === winningNumber &&
+      award.winnerSnapshot.name === order.buyer.name &&
+      award.winnerSnapshot.phone === order.buyer.phone &&
+      award.winnerSnapshot.email === order.buyer.email;
+    if (!same) {
+      throw new ConflictException(
+        'El contrato existente del premio no coincide con el resultado publicado',
+      );
+    }
+  }
+
   private dueNotificationFilter(
     now: Date,
   ): FilterQuery<MainPrizeAwardDocument> {
@@ -566,6 +609,7 @@ export class MainPrizeAwardsService {
 
   private ownerView(award: MainPrizeAwardDocument) {
     const raw = award.toObject() as unknown as Record<string, unknown>;
+    const campaignId = award.campaign.toString();
     delete raw._id;
     delete raw.__v;
     delete raw.campaign;
@@ -583,7 +627,14 @@ export class MainPrizeAwardsService {
     delete raw.notificationLeaseToken;
     delete raw.notificationLeaseExpiresAt;
     delete raw.lastNotificationError;
-    return raw;
+    return {
+      ...raw,
+      campaignId,
+      availableChoices:
+        typeof award.cashAlternative === 'number' && award.cashAlternative > 0
+          ? [MainPrizeChoice.Physical, MainPrizeChoice.Cash]
+          : [MainPrizeChoice.Physical],
+    };
   }
 
   private adminView(award: MainPrizeAward | MainPrizeAwardDocument) {

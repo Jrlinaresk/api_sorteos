@@ -635,6 +635,66 @@ export class DrawsService {
       );
     }
 
+    // El outbox que refleja una devolución en el pedido es duradero pero
+    // asíncrono. Esta unión impide aprovechar esa breve ventana: cada pedido
+    // que aún participa como Paid debe apuntar a un pago íntegramente Paid.
+    const inconsistentPaidOrderQuery = this.orderModel.aggregate([
+      {
+        $match: {
+          campaign: campaignId,
+          status: OrderStatus.Paid,
+        },
+      },
+      {
+        $lookup: {
+          from: 'payments',
+          localField: 'payment',
+          foreignField: '_id',
+          as: 'financialPayment',
+        },
+      },
+      {
+        $unwind: {
+          path: '$financialPayment',
+          preserveNullAndEmptyArrays: true,
+        },
+      },
+      {
+        $match: {
+          $or: [
+            { 'financialPayment._id': { $exists: false } },
+            { 'financialPayment.status': { $ne: PaymentStatus.Paid } },
+            { 'financialPayment.campaign': { $ne: campaignId } },
+            { $expr: { $ne: ['$financialPayment.order', '$_id'] } },
+            { 'financialPayment.refundedAmountCents': { $gt: 0 } },
+            { 'financialPayment.refundReservedAmountCents': { $gt: 0 } },
+            {
+              'financialPayment.providerRefunds.status': {
+                $in: [PaymentStatus.RefundPending, PaymentStatus.Refunded],
+              },
+            },
+            {
+              'financialPayment.refunds.status': {
+                $in: [
+                  PaymentStatus.RefundPending,
+                  PaymentStatus.PartiallyRefunded,
+                  PaymentStatus.Refunded,
+                ],
+              },
+            },
+          ],
+        },
+      },
+      { $limit: 1 },
+      { $project: { _id: 1 } },
+    ]);
+    if (session) inconsistentPaidOrderQuery.session(session);
+    if ((await inconsistentPaidOrderQuery.exec()).length) {
+      throw new ConflictException(
+        'El sorteo está bloqueado porque un pedido participante no conserva un pago íntegramente liquidado',
+      );
+    }
+
     const paymentQuery = this.paymentModel
       .findOne({
         campaign: campaignId,

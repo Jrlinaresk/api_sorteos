@@ -1,16 +1,11 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { AuthModule } from '../auth/auth.module';
-import {
-  DrawResult,
-  DrawResultSchema,
-} from '../draws/schemas/draw-result.schema';
 import { EmailModule } from '../email/email.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { OrdersModule } from '../orders/orders.module';
 import { Order, OrderSchema } from '../orders/schemas/order.schema';
 import { Quota, QuotaSchema } from '../orders/schemas/quota.schema';
-import { Raffle, RaffleSchema } from '../riffles/schema/raffle.schema';
 import { AdminMainPrizeAwardsController } from './admin-main-prize-awards.controller';
 import { MainPrizeAwardsController } from './main-prize-awards.controller';
 import { MainPrizeAwardsService } from './main-prize-awards.service';
@@ -23,8 +18,6 @@ import {
   imports: [
     MongooseModule.forFeature([
       { name: MainPrizeAward.name, schema: MainPrizeAwardSchema },
-      { name: DrawResult.name, schema: DrawResultSchema },
-      { name: Raffle.name, schema: RaffleSchema },
       { name: Order.name, schema: OrderSchema },
       { name: Quota.name, schema: QuotaSchema },
     ]),

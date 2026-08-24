@@ -198,6 +198,7 @@ describe('MainPrizeAwardsService', () => {
       {
         _id: existing.campaign,
         prizeTitle: existing.prizeTitle,
+        cashAlternative: existing.cashAlternative,
         currency: 'BRL',
       } as never,
       {} as never,
@@ -298,6 +299,31 @@ describe('MainPrizeAwardsService', () => {
         status: MainPrizeAwardStatus.Claimed,
         choice: MainPrizeChoice.Physical,
         claimSource: MainPrizeClaimSource.OrderToken,
+      }),
+    );
+  });
+
+  it('permite descubrir el award desde un pedido propio sin exponerlo públicamente', async () => {
+    const award = awardDocument();
+    orders.findOwnedForCheckout.mockResolvedValue({ _id: award.order });
+    awardModel.findOne.mockReturnValue(queryResult(award));
+
+    const result = await service.findOwnedByOrder(
+      award.orderPublicId,
+      'opaque-order-token',
+    );
+
+    expect(orders.findOwnedForCheckout).toHaveBeenCalledWith(
+      award.orderPublicId,
+      'opaque-order-token',
+      undefined,
+    );
+    expect(awardModel.findOne).toHaveBeenCalledWith({ order: award.order });
+    expect(result).toEqual(
+      expect.objectContaining({
+        publicId: award.publicId,
+        campaignId: award.campaign.toString(),
+        availableChoices: [MainPrizeChoice.Physical, MainPrizeChoice.Cash],
       }),
     );
   });

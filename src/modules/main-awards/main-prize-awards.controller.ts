@@ -32,6 +32,18 @@ import { MainPrizeAwardsService } from './main-prize-awards.service';
 export class MainPrizeAwardsController {
   constructor(private readonly awards: MainPrizeAwardsService) {}
 
+  @Get('order/:orderPublicId')
+  @ApiOperation({
+    summary: 'Descubrir el premio principal desde el pedido propietario',
+  })
+  findByOrder(
+    @Param('orderPublicId') orderPublicId: string,
+    @Headers('x-order-token') orderToken?: string,
+    @CurrentUser() user?: PublicUserDto,
+  ) {
+    return this.awards.findOwnedByOrder(orderPublicId, orderToken, user?.id);
+  }
+
   @Get(':publicId')
   @ApiOperation({
     summary: 'Consultar el premio principal como su propietario',

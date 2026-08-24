@@ -6,7 +6,7 @@ configuración pública y auditoría administrativa.
 
 ## Requisitos
 
-- Node.js 20 o superior y pnpm 9 para desarrollo local.
+- Node.js 24.11 o superior dentro de la rama 24 y pnpm 9 para desarrollo local.
 - Docker Engine y Docker Compose v2.20 o superior para el entorno recomendado.
 - MongoDB en replica set. Los pedidos, pagos y premios usan transacciones; una
   instancia Mongo standalone no es una configuración válida.
@@ -115,7 +115,7 @@ inventa credenciales SMTP o EFI: deben completarse con los valores del proveedor
 
 ## Persistencia y seguridad del contenedor
 
-- La imagen usa Node 20, instala con `pnpm --frozen-lockfile` y se ejecuta con un
+- La imagen usa Node 24, instala con `pnpm --frozen-lockfile` y se ejecuta con un
   usuario sin privilegios.
 - El filesystem de la API es de solo lectura. `/tmp` es efímero y los medios se
   guardan en un volumen persistente.
