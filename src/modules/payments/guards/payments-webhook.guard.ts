@@ -29,13 +29,8 @@ export class PaymentsWebhookGuard implements CanActivate {
     }
 
     if (expectedHmac) {
-      const queryHmac =
-        typeof request.query.hmac === 'string' ? request.query.hmac : '';
       const headerHmac = request.header('x-efi-webhook-token') ?? '';
-      if (
-        !secureEqual(queryHmac, expectedHmac) &&
-        !secureEqual(headerHmac, expectedHmac)
-      ) {
+      if (!secureEqual(headerHmac, expectedHmac)) {
         throw new UnauthorizedException('HMAC de webhook inválido');
       }
     }

@@ -150,20 +150,33 @@ export function slugifyCampaign(value: string): string {
     .slice(0, 120);
 }
 
-@Schema({ timestamps: true, collection: 'raffles', optimisticConcurrency: true })
+@Schema({
+  timestamps: true,
+  collection: 'raffles',
+  optimisticConcurrency: true,
+})
 export class Raffle {
   @ApiProperty({ description: 'Nombre público de la campaña' })
   @Prop({ required: true, trim: true, maxlength: 180 })
   name: string;
 
   @ApiProperty({ description: 'Slug público y estable' })
-  @Prop({ required: true, unique: true, index: true, lowercase: true, trim: true })
+  @Prop({
+    required: true,
+    unique: true,
+    index: true,
+    lowercase: true,
+    trim: true,
+  })
   slug: string;
 
   @Prop({ trim: true, maxlength: 320 })
   shortDescription?: string;
 
-  @ApiProperty({ description: 'Descripción HTML de la campaña', required: false })
+  @ApiProperty({
+    description: 'Descripción HTML de la campaña',
+    required: false,
+  })
   @Prop()
   description?: string;
 
@@ -195,7 +208,11 @@ export class Raffle {
       {
         url: String,
         mediaId: { type: Types.ObjectId, ref: 'MediaAsset' },
-        type: { type: String, enum: Object.values(MediaType), default: MediaType.Image },
+        type: {
+          type: String,
+          enum: Object.values(MediaType),
+          default: MediaType.Image,
+        },
         alt: String,
         sortOrder: { type: Number, default: 0 },
         isCover: { type: Boolean, default: false },
@@ -268,7 +285,13 @@ export class Raffle {
   @Prop()
   drawDate?: Date;
 
-  @Prop({ required: true, default: 'BRL', uppercase: true, minlength: 3, maxlength: 3 })
+  @Prop({
+    required: true,
+    default: 'BRL',
+    uppercase: true,
+    minlength: 3,
+    maxlength: 3,
+  })
   currency: string;
 
   @Prop({ required: true, min: 0 })
@@ -324,15 +347,23 @@ export class Raffle {
     type: {
       firstPrizeDigits: { type: Number, default: 3, min: 1, max: 6 },
       secondPrizeDigits: { type: Number, default: 3, min: 0, max: 6 },
-      combination: { type: String, enum: ['concatenate', 'sum'], default: 'concatenate' },
-      contest: String,
+      combination: {
+        type: String,
+        enum: ['concatenate', 'sum'],
+        default: 'concatenate',
+      },
+      contest: { type: String, match: /^[1-9]\d{0,9}$/ },
       extraction: String,
       firstPrize: String,
       secondPrize: String,
       sourceUrl: String,
       publishedAt: Date,
     },
-    default: () => ({ firstPrizeDigits: 3, secondPrizeDigits: 3, combination: 'concatenate' }),
+    default: () => ({
+      firstPrizeDigits: 3,
+      secondPrizeDigits: 3,
+      combination: 'concatenate',
+    }),
   })
   federalLottery: FederalLotteryConfig;
 
@@ -354,7 +385,11 @@ export class Raffle {
   @Prop({
     type: {
       enabled: { type: Boolean, default: false },
-      mechanic: { type: String, enum: ['roulette', 'scratch'], default: 'roulette' },
+      mechanic: {
+        type: String,
+        enum: ['roulette', 'scratch'],
+        default: 'roulette',
+      },
       noPrizeWeight: { type: Number, min: 0, default: 95 },
       tiers: {
         type: [
@@ -366,7 +401,12 @@ export class Raffle {
         default: [],
       },
     },
-    default: () => ({ enabled: false, mechanic: 'roulette', noPrizeWeight: 95, tiers: [] }),
+    default: () => ({
+      enabled: false,
+      mechanic: 'roulette',
+      noPrizeWeight: 95,
+      tiers: [],
+    }),
   })
   instantGame: InstantGameConfig;
 
@@ -395,11 +435,19 @@ export class Raffle {
   })
   doubleChance: DoubleChanceConfig;
 
-  @Prop({ type: { instagram: String, telegram: String, whatsapp: String }, default: () => ({}) })
+  @Prop({
+    type: { instagram: String, telegram: String, whatsapp: String },
+    default: () => ({}),
+  })
   contacts: CampaignContacts;
 
   @Prop({
-    type: { title: String, description: String, keywords: [String], shareImageUrl: String },
+    type: {
+      title: String,
+      description: String,
+      keywords: [String],
+      shareImageUrl: String,
+    },
     default: () => ({}),
   })
   seo: CampaignSeo;
@@ -437,21 +485,34 @@ export const RaffleSchema = SchemaFactory.createForClass(Raffle);
 
 RaffleSchema.index({ status: 1, featured: -1, sortOrder: 1, launchAt: -1 });
 RaffleSchema.index({ category: 1, status: 1 });
-RaffleSchema.index({ name: 'text', shortDescription: 'text', description: 'text' });
+RaffleSchema.index({
+  name: 'text',
+  shortDescription: 'text',
+  description: 'text',
+});
 
 RaffleSchema.pre('validate', function prepareCampaign(next) {
   if (!this.slug && this.name) this.slug = slugifyCampaign(this.name);
   if (!this.prizeTitle && this.name) this.prizeTitle = this.name;
-  if (!this.totalTitles && this.maxParticipants) this.totalTitles = this.maxParticipants;
-  if (!this.maxParticipants && this.totalTitles) this.maxParticipants = this.totalTitles;
+  if (!this.totalTitles && this.maxParticipants)
+    this.totalTitles = this.maxParticipants;
+  if (!this.maxParticipants && this.totalTitles)
+    this.maxParticipants = this.totalTitles;
   if (!this.quotaDigits && this.totalTitles) {
-    this.quotaDigits = Math.max(1, String(Math.max(0, this.totalTitles - 1)).length);
+    this.quotaDigits = Math.max(
+      1,
+      String(Math.max(0, this.totalTitles - 1)).length,
+    );
   }
-  if (!this.allocationMultiplier || gcd(this.allocationMultiplier, this.totalTitles) !== 1) {
+  if (
+    !this.allocationMultiplier ||
+    gcd(this.allocationMultiplier, this.totalTitles) !== 1
+  ) {
     this.allocationMultiplier = chooseCoprimeMultiplier(this.totalTitles);
   }
   if (this.allocationOffset === undefined || this.allocationOffset === null) {
-    this.allocationOffset = this.totalTitles > 1 ? randomInt(0, this.totalTitles) : 0;
+    this.allocationOffset =
+      this.totalTitles > 1 ? randomInt(0, this.totalTitles) : 0;
   }
   next();
 });

@@ -88,6 +88,11 @@ uploads/
 nginx/ssl/*.pem
 nginx/ssl/*.key
 nginx/ssl/*.crt
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
 
 # Environment variables
 .env

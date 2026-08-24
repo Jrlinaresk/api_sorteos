@@ -23,6 +23,24 @@ export function validateEnvironment(input: Environment): Environment {
     1_000,
     86_400_000,
   );
+  validateInteger(
+    environment.CAIXA_FEDERAL_TIMEOUT_MS,
+    'CAIXA_FEDERAL_TIMEOUT_MS',
+    100,
+    30_000,
+  );
+  validateInteger(
+    environment.CAIXA_FEDERAL_MAX_RESPONSE_BYTES,
+    'CAIXA_FEDERAL_MAX_RESPONSE_BYTES',
+    1_024,
+    1_048_576,
+  );
+  validateInteger(
+    environment.CAIXA_FEDERAL_CONFIRMATION_DELAY_MS,
+    'CAIXA_FEDERAL_CONFIRMATION_DELAY_MS',
+    0,
+    5_000,
+  );
 
   if (nodeEnvironment !== 'production') return environment;
 
@@ -40,6 +58,7 @@ export function validateEnvironment(input: Environment): Environment {
   validateMongo(environment);
   validateSmtp(environment);
   validatePayments(environment);
+  validateCaixaFederal(environment);
 
   const mediaRoot = required(environment, 'MEDIA_LOCAL_ROOT');
   if (!mediaRoot.startsWith('/')) {
@@ -47,6 +66,39 @@ export function validateEnvironment(input: Environment): Environment {
   }
 
   return environment;
+}
+
+function validateCaixaFederal(environment: Environment): void {
+  const raw = required(environment, 'CAIXA_FEDERAL_API_BASE_URL');
+  const configuredAuthority = /^https:\/\/([^/]+)\//i
+    .exec(raw)?.[1]
+    .toLowerCase();
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    fail('CAIXA_FEDERAL_API_BASE_URL no es una URL válida');
+  }
+  if (
+    !configuredAuthority ||
+    !['servicebus2.caixa.gov.br', 'servicebus3.caixa.gov.br'].includes(
+      configuredAuthority,
+    ) ||
+    url!.protocol !== 'https:' ||
+    !['servicebus2.caixa.gov.br', 'servicebus3.caixa.gov.br'].includes(
+      url!.hostname.toLowerCase(),
+    ) ||
+    url!.port ||
+    url!.username ||
+    url!.password ||
+    url!.pathname.replace(/\/$/, '') !== '/portaldeloterias/api/federal' ||
+    url!.search ||
+    url!.hash
+  ) {
+    fail(
+      'CAIXA_FEDERAL_API_BASE_URL debe ser el endpoint HTTPS oficial de Lotería Federal',
+    );
+  }
 }
 
 function validateCors(environment: Environment): void {
@@ -64,7 +116,10 @@ function validateCors(environment: Environment): void {
     } catch {
       fail('CORS_ORIGINS contiene un origen inválido');
     }
-    if (!['http:', 'https:'].includes(parsed!.protocol) || parsed!.pathname !== '/') {
+    if (
+      !['http:', 'https:'].includes(parsed!.protocol) ||
+      parsed!.pathname !== '/'
+    ) {
       fail('CORS_ORIGINS solo admite orígenes HTTP(S), sin rutas');
     }
   }
@@ -78,7 +133,9 @@ function validateMongo(environment: Environment): void {
   const usesSrv = uri.startsWith('mongodb+srv://');
   const hasReplicaSet = /[?&]replicaSet=[^&]+/i.test(uri);
   if (!usesSrv && !hasReplicaSet && !text(environment.MONGODB_REPLICA_SET)) {
-    fail('MongoDB debe usar replica set porque pedidos y premios son transaccionales');
+    fail(
+      'MongoDB debe usar replica set porque pedidos y premios son transaccionales',
+    );
   }
 }
 
@@ -88,7 +145,10 @@ function validateSmtp(environment: Environment): void {
   if (!text(environment.SMTP_FROM) && !text(environment.SMTP_USER)) {
     fail('SMTP_FROM o SMTP_USER es obligatorio');
   }
-  if (Boolean(text(environment.SMTP_USER)) !== Boolean(text(environment.SMTP_PASS))) {
+  if (
+    Boolean(text(environment.SMTP_USER)) !==
+    Boolean(text(environment.SMTP_PASS))
+  ) {
     fail('SMTP_USER y SMTP_PASS deben configurarse juntos');
   }
 }
@@ -100,7 +160,9 @@ function validatePayments(environment: Environment): void {
   }
   if (provider === 'mock') {
     if (text(environment.PAYMENTS_ALLOW_MOCK).toLowerCase() !== 'true') {
-      fail('PAYMENTS_ALLOW_MOCK=true es obligatorio para usar mock en producción');
+      fail(
+        'PAYMENTS_ALLOW_MOCK=true es obligatorio para usar mock en producción',
+      );
     }
     return;
   }
@@ -122,7 +184,8 @@ function validatePayments(environment: Environment): void {
     );
   }
   for (const path of p12 ? [p12] : [cert, key]) {
-    if (!existsSync(path)) fail('No se encontró un certificado Pix configurado');
+    if (!existsSync(path))
+      fail('No se encontró un certificado Pix configurado');
   }
 
   const hmac = text(environment.EFI_WEBHOOK_HMAC);

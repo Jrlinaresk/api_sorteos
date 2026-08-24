@@ -83,7 +83,10 @@ describe('PrizesService inventory and lifecycle', () => {
       endSession: jest.fn().mockResolvedValue(undefined),
     };
     connection = { startSession: jest.fn().mockResolvedValue(session) };
-    orders = { findByPublicId: jest.fn() };
+    orders = {
+      findByPublicId: jest.fn(),
+      findOwnedForCheckout: jest.fn(),
+    };
     media = {
       addReference: jest.fn().mockResolvedValue(undefined),
       removeReference: jest.fn().mockResolvedValue(undefined),
@@ -434,6 +437,27 @@ describe('PrizesService inventory and lifecycle', () => {
     );
   });
 
+  it('autoriza el pedido antes de listar sus premios e intentos usando su ID interno', async () => {
+    const orderId = new Types.ObjectId();
+    orders.findOwnedForCheckout.mockResolvedValue({ _id: orderId });
+    awardModel.find.mockReturnValue(leanable([]));
+    attemptModel.find.mockReturnValue(executable([]));
+
+    await service.listAwardsForOrder('order-public-id', 'order-token');
+    await service.listAttemptsForOrder('order-public-id', 'order-token');
+
+    expect(orders.findOwnedForCheckout).toHaveBeenCalledTimes(2);
+    expect(orders.findOwnedForCheckout).toHaveBeenCalledWith(
+      'order-public-id',
+      'order-token',
+      undefined,
+    );
+    expect(awardModel.find).toHaveBeenCalledWith(
+      expect.objectContaining({ order: orderId }),
+    );
+    expect(attemptModel.find).toHaveBeenCalledWith({ order: orderId });
+  });
+
   it('rechaza reclamar premios de otro usuario o de otro pedido', async () => {
     const award = document({
       publicId: 'award-public-id',
@@ -446,7 +470,9 @@ describe('PrizesService inventory and lifecycle', () => {
       service.claimAsUser('award-public-id', new Types.ObjectId().toString()),
     ).rejects.toBeInstanceOf(ForbiddenException);
 
-    orders.findByPublicId.mockResolvedValue({ _id: new Types.ObjectId() });
+    orders.findOwnedForCheckout.mockResolvedValue({
+      _id: new Types.ObjectId(),
+    });
     await expect(
       service.claimWithOrderToken(
         'award-public-id',
@@ -454,6 +480,11 @@ describe('PrizesService inventory and lifecycle', () => {
         'token',
       ),
     ).rejects.toThrow('El premio no pertenece a este pedido');
+    expect(orders.findOwnedForCheckout).toHaveBeenCalledWith(
+      'order-public-id',
+      'token',
+      undefined,
+    );
   });
 
   it('revierte adjudicaciones tras reembolso y devuelve unidades al inventario', async () => {

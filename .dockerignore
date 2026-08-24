@@ -25,6 +25,8 @@ nginx/ssl
 **/*.pfx
 
 test
+**/*.spec.ts
+**/*.spec.js
 *.md
 docker-compose*.yml
 deploy-*.sh

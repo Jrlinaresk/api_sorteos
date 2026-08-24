@@ -343,7 +343,6 @@ export class PaymentsService {
 
   async retryLifecycleHooks(id: string): Promise<PaymentDocument> {
     const payment = await this.findById(id);
-    await this.assertRefundAllowed(payment);
     if (this.lifecycleHooks.size === 0) {
       throw new ServiceUnavailableException(
         'OrdersService todavía no registró callbacks de ciclo de vida',
@@ -422,6 +421,7 @@ export class PaymentsService {
       throw new BadRequestException('Clave idempotente de devolución inválida');
     }
     const payment = await this.findById(id);
+    await this.assertRefundAllowed(payment);
     if (
       ![
         PaymentStatus.Paid,

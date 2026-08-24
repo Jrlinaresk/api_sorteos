@@ -144,7 +144,6 @@ export class PaymentsController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(PaymentsWebhookGuard)
   @ApiParam({ name: 'provider', enum: PaymentProviderName })
-  @ApiQuery({ name: 'hmac', required: false })
   @ApiHeader({ name: 'x-efi-webhook-token', required: false })
   @ApiOperation({ summary: 'Recibir notificaciones idempotentes del PSP' })
   processWebhook(

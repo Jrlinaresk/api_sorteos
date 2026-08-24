@@ -23,6 +23,9 @@ describe('validateEnvironment', () => {
     EFI_PIX_KEY: 'pix-key',
     EFI_PIX_CERTIFICATE_PATH: __filename,
     EFI_WEBHOOK_HMAC: 'h'.repeat(24),
+    CAIXA_FEDERAL_API_BASE_URL:
+      'https://servicebus3.caixa.gov.br/portaldeloterias/api/federal',
+    CAIXA_FEDERAL_CONFIRMATION_DELAY_MS: '250',
   });
 
   it('permite configuración mínima fuera de producción', () => {
@@ -55,6 +58,39 @@ describe('validateEnvironment', () => {
     environment.PAYMENTS_PROVIDER = 'mock';
     expect(() => validateEnvironment(environment)).toThrow(
       'PAYMENTS_ALLOW_MOCK=true',
+    );
+  });
+
+  it('solo permite el endpoint HTTPS oficial de CAIXA para la Federal', () => {
+    const environment = productionEnvironment();
+    environment.CAIXA_FEDERAL_API_BASE_URL =
+      'https://attacker.example/portaldeloterias/api/federal';
+    expect(() => validateEnvironment(environment)).toThrow(
+      'endpoint HTTPS oficial',
+    );
+  });
+
+  it('acepta los hosts servicebus2 y servicebus3 oficiales', () => {
+    const environment = productionEnvironment();
+    environment.CAIXA_FEDERAL_API_BASE_URL =
+      'https://servicebus2.caixa.gov.br/portaldeloterias/api/federal';
+    expect(validateEnvironment(environment)).toEqual(environment);
+  });
+
+  it('rechaza incluso un puerto HTTPS explícito en el endpoint CAIXA', () => {
+    const environment = productionEnvironment();
+    environment.CAIXA_FEDERAL_API_BASE_URL =
+      'https://servicebus3.caixa.gov.br:443/portaldeloterias/api/federal';
+    expect(() => validateEnvironment(environment)).toThrow(
+      'endpoint HTTPS oficial',
+    );
+  });
+
+  it('valida los límites de red de la conciliación CAIXA', () => {
+    const environment = productionEnvironment();
+    environment.CAIXA_FEDERAL_CONFIRMATION_DELAY_MS = '6000';
+    expect(() => validateEnvironment(environment)).toThrow(
+      'CAIXA_FEDERAL_CONFIRMATION_DELAY_MS',
     );
   });
 });

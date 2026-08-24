@@ -5,6 +5,15 @@ services:
     image: mongo:7.0
     restart: "no"
     user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
     environment:
       MONGO_REPLICA_KEY: "${MONGO_REPLICA_KEY:?MONGO_REPLICA_KEY es obligatorio}"
     entrypoint: ["/bin/bash", "-ec"]
@@ -16,8 +25,7 @@ services:
         chmod 400 /keyfile/keyfile
     volumes:
       - mongo-keyfile:/keyfile
-    networks:
-      - sorteos-network
+    network_mode: none
 
   mongodb:
     image: mongo:7.0
@@ -145,7 +153,10 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
-        find /target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+        new_manifest=/target/.managed.new
+        old_manifest=/target/.managed
+        : > "$${new_manifest}"
+        chmod 0600 "$${new_manifest}"
         copy_secret() {
           requested="$${1}"
           [ -n "$${requested}" ] || return 0
@@ -162,13 +173,27 @@ services:
             exit 1
           }
           mkdir -p "/target/$$(dirname "$${relative}")"
-          cp "/source/$${relative}" "/target/$${relative}"
-          chown 10001:10001 "/target/$${relative}"
-          chmod 0400 "/target/$${relative}"
+          temporary="/target/$${relative}.new"
+          cp "/source/$${relative}" "$${temporary}"
+          chown 10001:10001 "$${temporary}"
+          chmod 0400 "$${temporary}"
+          mv -f "$${temporary}" "/target/$${relative}"
+          printf '%s\n' "$${relative}" >> "$${new_manifest}"
         }
         copy_secret "$${EFI_PIX_CERTIFICATE_PATH}"
         copy_secret "$${EFI_PIX_CERT_PATH}"
         copy_secret "$${EFI_PIX_KEY_PATH}"
+        if [ -f "$${old_manifest}" ]; then
+          while IFS= read -r previous; do
+            case "/$${previous}/" in
+              */../*|*/./*) continue ;;
+            esac
+            if [ -n "$${previous}" ] && ! grep -Fqx "$${previous}" "$${new_manifest}"; then
+              rm -f "/target/$${previous}"
+            fi
+          done < "$${old_manifest}"
+        fi
+        mv -f "$${new_manifest}" "$${old_manifest}"
     volumes:
       - "${EFI_CERTS_DIR:-./runtime/efi}:/source:ro"
       - efi-secrets:/target
@@ -180,7 +205,6 @@ services:
       dockerfile: Dockerfile
       target: production
     restart: unless-stopped
-    init: true
     read_only: true
     cap_drop:
       - ALL
@@ -226,8 +250,6 @@ services:
       CHECKOUT_ACCESS_SECRET_KEY: "${CHECKOUT_ACCESS_SECRET_KEY:?CHECKOUT_ACCESS_SECRET_KEY es obligatorio}"
       PAYMENTS_PROVIDER: "${PAYMENTS_PROVIDER:-mock}"
       PAYMENTS_ALLOW_MOCK: "${PAYMENTS_ALLOW_MOCK:-true}"
-      PAYMENTS_ADMIN_GUARD_ENABLED: "${PAYMENTS_ADMIN_GUARD_ENABLED:-true}"
-      PAYMENTS_ADMIN_API_KEY: "${PAYMENTS_ADMIN_API_KEY:?PAYMENTS_ADMIN_API_KEY es obligatorio}"
       PAYMENTS_PUBLIC_SECRET_KEY: "${PAYMENTS_PUBLIC_SECRET_KEY:?PAYMENTS_PUBLIC_SECRET_KEY es obligatorio}"
       EFI_PIX_ENV: "${EFI_PIX_ENV:-sandbox}"
       EFI_PIX_CLIENT_ID: "${EFI_PIX_CLIENT_ID:-}"
@@ -243,6 +265,10 @@ services:
       EFI_WEBHOOK_REQUIRE_MTLS: "${EFI_WEBHOOK_REQUIRE_MTLS:-false}"
       EFI_WEBHOOK_MTLS_HEADER: "${EFI_WEBHOOK_MTLS_HEADER:-x-ssl-client-verify}"
       EFI_WEBHOOK_MTLS_SUCCESS_VALUE: "${EFI_WEBHOOK_MTLS_SUCCESS_VALUE:-SUCCESS}"
+      CAIXA_FEDERAL_API_BASE_URL: "${CAIXA_FEDERAL_API_BASE_URL:-https://servicebus3.caixa.gov.br/portaldeloterias/api/federal}"
+      CAIXA_FEDERAL_TIMEOUT_MS: "${CAIXA_FEDERAL_TIMEOUT_MS:-10000}"
+      CAIXA_FEDERAL_MAX_RESPONSE_BYTES: "${CAIXA_FEDERAL_MAX_RESPONSE_BYTES:-131072}"
+      CAIXA_FEDERAL_CONFIRMATION_DELAY_MS: "${CAIXA_FEDERAL_CONFIRMATION_DELAY_MS:-250}"
       MEDIA_STORAGE_PROVIDER: "${MEDIA_STORAGE_PROVIDER:-local}"
       MEDIA_LOCAL_ROOT: "/app/uploads/media"
       MEDIA_UPLOAD_TMP_DIR: "/tmp/api-sorteos-media"

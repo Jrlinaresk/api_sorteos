@@ -13,6 +13,7 @@ import { EmailModule } from '../email/email.module';
 import { MongooseModule } from '@nestjs/mongoose';
 import { RefreshSession, RefreshSessionSchema } from './schemas/refresh-session.schema';
 import { RefreshTokensService } from './refresh-tokens.service';
+import { OptionalJwtAuthGuard } from './guards/optional-jwt-auth.guard';
 
 @Module({
   imports: [
@@ -44,7 +45,21 @@ import { RefreshTokensService } from './refresh-tokens.service';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, RefreshTokensService, JwtStrategy, JwtAuthGuard, RolesGuard],
-  exports: [AuthService, JwtModule, PassportModule, JwtAuthGuard, RolesGuard],
+  providers: [
+    AuthService,
+    RefreshTokensService,
+    JwtStrategy,
+    JwtAuthGuard,
+    OptionalJwtAuthGuard,
+    RolesGuard,
+  ],
+  exports: [
+    AuthService,
+    JwtModule,
+    PassportModule,
+    JwtAuthGuard,
+    OptionalJwtAuthGuard,
+    RolesGuard,
+  ],
 })
 export class AuthModule {}

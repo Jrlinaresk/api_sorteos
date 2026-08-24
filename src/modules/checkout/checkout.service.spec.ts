@@ -115,6 +115,31 @@ describe('CheckoutService', () => {
     );
   });
 
+  it('associa la compra a la cuenta cuando el JWT opcional es válido', async () => {
+    const userId = new Types.ObjectId();
+    orders.createReservation.mockResolvedValue({
+      ...reservation(),
+      user: userId,
+    });
+    const dto = {
+      campaignSlug: 'titan-160',
+      quantity: 50,
+      buyer: reservation().buyer,
+      termsVersion: 'v1',
+      idempotencyKey: 'checkout-client-request-account',
+    };
+
+    await service.create(dto, userId.toString());
+
+    expect(orders.createReservation).toHaveBeenCalledWith(
+      dto,
+      userId.toString(),
+    );
+    expect(payments.create).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: userId.toString() }),
+    );
+  });
+
   it('releases the quota reservation when a payment cannot be created or reconciled', async () => {
     payments.create.mockRejectedValue(new Error('provider unavailable'));
 
@@ -198,6 +223,7 @@ describe('CheckoutService', () => {
     expect(orders.findOwnedForCheckout).toHaveBeenCalledWith(
       publicId,
       accessToken,
+      undefined,
     );
     expect(payments.cancel).toHaveBeenCalledWith(
       paymentId.toString(),

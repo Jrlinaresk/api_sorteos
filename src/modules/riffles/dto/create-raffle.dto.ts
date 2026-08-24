@@ -170,23 +170,9 @@ export class FederalLotteryDto {
 
   @IsOptional()
   @IsString()
+  @Matches(/^[1-9]\d{0,9}$/)
+  @MaxLength(10)
   contest?: string;
-
-  @IsOptional()
-  @IsString()
-  extraction?: string;
-
-  @IsOptional()
-  @IsString()
-  firstPrize?: string;
-
-  @IsOptional()
-  @IsString()
-  secondPrize?: string;
-
-  @IsOptional()
-  @IsUrl({ require_tld: false })
-  sourceUrl?: string;
 }
 
 export class ModuleFlagsDto {
@@ -315,7 +301,10 @@ export class CreateRaffleDto {
   @MaxLength(320)
   statusText?: string;
 
-  @ApiProperty({ description: 'Tamaño total del espacio de números', example: 1000000 })
+  @ApiProperty({
+    description: 'Tamaño total del espacio de números',
+    example: 1000000,
+  })
   @IsInt()
   @Min(1)
   totalTitles: number;

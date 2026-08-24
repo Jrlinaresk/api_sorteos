@@ -10,6 +10,7 @@ import { DrawsService } from './draws.service';
 import { DrawResult, DrawResultSchema } from './schemas/draw-result.schema';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { ResultsController } from './results.controller';
+import { CaixaFederalLotteryService } from './caixa-federal-lottery.service';
 
 @Module({
   imports: [
@@ -23,7 +24,7 @@ import { ResultsController } from './results.controller';
     NotificationsModule,
   ],
   controllers: [DrawsController, ResultsController, AdminDrawsController],
-  providers: [DrawsService],
+  providers: [DrawsService, CaixaFederalLotteryService],
   exports: [DrawsService, MongooseModule],
 })
 export class DrawsModule {}

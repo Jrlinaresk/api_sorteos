@@ -7,7 +7,10 @@ import {
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { createHash } from 'crypto';
 import { Connection, Model, Types } from 'mongoose';
-import { AdditionalOutcomeDto, VerifyFederalDrawDto } from './dto/verify-federal-draw.dto';
+import {
+  AdditionalOutcomeDto,
+  VerifyFederalDrawDto,
+} from './dto/verify-federal-draw.dto';
 import { VerifyManualDrawDto } from './dto/verify-manual-draw.dto';
 import {
   CommitCryptographicDrawDto,
@@ -24,10 +27,15 @@ import {
   Raffle,
   RaffleDocument,
 } from '../riffles/schema/raffle.schema';
-import { Quota, QuotaDocument, QuotaStatus } from '../orders/schemas/quota.schema';
+import {
+  Quota,
+  QuotaDocument,
+  QuotaStatus,
+} from '../orders/schemas/quota.schema';
 import { Order, OrderDocument } from '../orders/schemas/order.schema';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/schemas/notification.schema';
+import { CaixaFederalLotteryService } from './caixa-federal-lottery.service';
 
 @Injectable()
 export class DrawsService {
@@ -42,6 +50,7 @@ export class DrawsService {
     private readonly orderModel: Model<OrderDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly notifications: NotificationsService,
+    private readonly caixaFederal: CaixaFederalLotteryService,
   ) {}
 
   async commitCryptographic(
@@ -49,21 +58,36 @@ export class DrawsService {
     dto: CommitCryptographicDrawDto,
     actorId: string,
   ) {
-    if (!Types.ObjectId.isValid(campaignId)) throw new BadRequestException('Campaña inválida');
+    if (!Types.ObjectId.isValid(campaignId))
+      throw new BadRequestException('Campaña inválida');
     const campaign = await this.campaignModel.findById(campaignId).exec();
     if (!campaign) throw new NotFoundException('Campaña no encontrada');
     if (campaign.drawMethod !== DrawMethod.Cryptographic) {
-      throw new ConflictException(`La campaña usa el método ${campaign.drawMethod}`);
+      throw new ConflictException(
+        `La campaña usa el método ${campaign.drawMethod}`,
+      );
     }
-    if (![CampaignStatus.Draft, CampaignStatus.Scheduled].includes(campaign.status)) {
-      throw new ConflictException('El compromiso debe publicarse antes de abrir ventas');
+    if (
+      ![CampaignStatus.Draft, CampaignStatus.Scheduled].includes(
+        campaign.status,
+      )
+    ) {
+      throw new ConflictException(
+        'El compromiso debe publicarse antes de abrir ventas',
+      );
     }
-    if (campaign.drawCommitment && campaign.drawCommitment !== dto.commitment.toLowerCase()) {
-      throw new ConflictException('El compromiso criptográfico ya es inmutable');
+    if (
+      campaign.drawCommitment &&
+      campaign.drawCommitment !== dto.commitment.toLowerCase()
+    ) {
+      throw new ConflictException(
+        'El compromiso criptográfico ya es inmutable',
+      );
     }
     campaign.drawCommitment = dto.commitment.toLowerCase();
     campaign.drawCommittedAt = campaign.drawCommittedAt || new Date();
-    campaign.drawCommittedBy = campaign.drawCommittedBy || new Types.ObjectId(actorId);
+    campaign.drawCommittedBy =
+      campaign.drawCommittedBy || new Types.ObjectId(actorId);
     await campaign.save();
     return {
       campaignId: campaign._id,
@@ -73,16 +97,28 @@ export class DrawsService {
     };
   }
 
-  async verifyFederal(campaignId: string, dto: VerifyFederalDrawDto, actorId: string) {
-    const campaign = await this.loadDrawableCampaign(campaignId, DrawMethod.FederalLottery);
+  async verifyFederal(
+    campaignId: string,
+    dto: VerifyFederalDrawDto,
+    actorId: string,
+  ) {
+    const campaign = await this.loadDrawableCampaign(
+      campaignId,
+      DrawMethod.FederalLottery,
+    );
+    const configuredContest = campaign.federalLottery?.contest;
+    if (!configuredContest) {
+      throw new ConflictException(
+        'La campaña no fijó el concurso Federal antes de abrir ventas',
+      );
+    }
+    const official = await this.caixaFederal.reconcile(configuredContest);
     const firstDigits = campaign.federalLottery?.firstPrizeDigits ?? 3;
     const secondDigits = campaign.federalLottery?.secondPrizeDigits ?? 3;
     const combination = campaign.federalLottery?.combination ?? 'concatenate';
-    const first = dto.firstPrize.padStart(firstDigits, '0').slice(-firstDigits);
+    const first = official.firstPrize.slice(-firstDigits);
     const second =
-      secondDigits === 0
-        ? ''
-        : dto.secondPrize.padStart(secondDigits, '0').slice(-secondDigits);
+      secondDigits === 0 ? '' : official.secondPrize.slice(-secondDigits);
     const primaryNumber =
       combination === 'sum'
         ? ((Number(first) + Number(second || 0)) % campaign.totalTitles)
@@ -97,12 +133,14 @@ export class DrawsService {
     const evidence = {
       method: DrawMethod.FederalLottery,
       campaignId,
-      contest: dto.contest,
-      extraction: dto.extraction,
-      firstPrize: dto.firstPrize,
-      secondPrize: dto.secondPrize,
-      sourceUrl: dto.sourceUrl,
-      sourcePublishedAt: dto.sourcePublishedAt,
+      contest: official.contest,
+      extraction: official.extraction,
+      firstPrize: official.firstPrize,
+      secondPrize: official.secondPrize,
+      sourceUrl: official.sourceUrl,
+      sourceDrawAt: official.sourceDrawAt.toISOString(),
+      sourceReads: official.reads,
+      normalized: official.normalized,
       rule,
       primaryNumber,
       additionalOutcomes: dto.additionalOutcomes || [],
@@ -110,12 +148,16 @@ export class DrawsService {
     return this.storeVerifiedResult(
       campaign,
       {
-        contest: dto.contest,
-        extraction: dto.extraction,
-        firstPrize: dto.firstPrize,
-        secondPrize: dto.secondPrize,
-        sourceUrl: dto.sourceUrl,
-        sourcePublishedAt: dto.sourcePublishedAt ? new Date(dto.sourcePublishedAt) : undefined,
+        contest: official.contest,
+        extraction: official.extraction,
+        firstPrize: official.firstPrize,
+        secondPrize: official.secondPrize,
+        sourceUrl: official.sourceUrl,
+        sourcePublishedAt: official.sourceDrawAt,
+        sourceFetchedAt: new Date(official.reads[0].fetchedAt),
+        sourceConfirmedAt: new Date(official.reads[1].fetchedAt),
+        sourceBodySha256: official.reads[0].bodySha256,
+        sourceConfirmationBodySha256: official.reads[1].bodySha256,
         calculationRule: rule,
         rawEvidence: evidence,
         evidenceHash: this.evidenceHash(evidence),
@@ -126,8 +168,15 @@ export class DrawsService {
     );
   }
 
-  async verifyManual(campaignId: string, dto: VerifyManualDrawDto, actorId: string) {
-    const campaign = await this.loadDrawableCampaign(campaignId, DrawMethod.ManualExternal);
+  async verifyManual(
+    campaignId: string,
+    dto: VerifyManualDrawDto,
+    actorId: string,
+  ) {
+    const campaign = await this.loadDrawableCampaign(
+      campaignId,
+      DrawMethod.ManualExternal,
+    );
     const primaryNumber = dto.winningNumber.padStart(campaign.quotaDigits, '0');
     this.assertNumberInCampaign(campaign, primaryNumber);
     const evidence = {
@@ -157,20 +206,29 @@ export class DrawsService {
     dto: VerifyCryptographicDrawDto,
     actorId: string,
   ) {
-    const campaign = await this.loadDrawableCampaign(campaignId, DrawMethod.Cryptographic);
+    const campaign = await this.loadDrawableCampaign(
+      campaignId,
+      DrawMethod.Cryptographic,
+    );
     if (!campaign.drawCommitment) {
-      throw new ConflictException('La campaña no publicó un compromiso antes de las ventas');
+      throw new ConflictException(
+        'La campaña no publicó un compromiso antes de las ventas',
+      );
     }
     const commitment = createHash('sha256')
       .update(`${campaign._id.toString()}:${dto.reveal}`)
       .digest('hex');
     if (commitment !== campaign.drawCommitment) {
-      throw new ConflictException('La revelación no corresponde al compromiso publicado');
+      throw new ConflictException(
+        'La revelación no corresponde al compromiso publicado',
+      );
     }
     const entropyDigest = createHash('sha256')
       .update(`${dto.reveal}:${dto.externalEntropy}:${campaign._id.toString()}`)
       .digest('hex');
-    const primaryNumber = (BigInt(`0x${entropyDigest}`) % BigInt(campaign.totalTitles))
+    const primaryNumber = (
+      BigInt(`0x${entropyDigest}`) % BigInt(campaign.totalTitles)
+    )
       .toString()
       .padStart(campaign.quotaDigits, '0');
     const rule =
@@ -193,7 +251,9 @@ export class DrawsService {
       campaign,
       {
         sourceUrl: dto.sourceUrl,
-        sourcePublishedAt: dto.sourcePublishedAt ? new Date(dto.sourcePublishedAt) : undefined,
+        sourcePublishedAt: dto.sourcePublishedAt
+          ? new Date(dto.sourcePublishedAt)
+          : undefined,
         commitment: campaign.drawCommitment,
         revealedSecret: dto.reveal,
         externalEntropy: dto.externalEntropy,
@@ -332,7 +392,8 @@ export class DrawsService {
   }
 
   async findAdmin(campaignId: string) {
-    if (!Types.ObjectId.isValid(campaignId)) throw new BadRequestException('Campaña inválida');
+    if (!Types.ObjectId.isValid(campaignId))
+      throw new BadRequestException('Campaña inválida');
     const result = await this.resultModel
       .findOne({ campaign: new Types.ObjectId(campaignId) })
       .select('+rawEvidence')
@@ -341,18 +402,32 @@ export class DrawsService {
     return result;
   }
 
-  private async loadDrawableCampaign(campaignId: string, expectedMethod: DrawMethod) {
-    if (!Types.ObjectId.isValid(campaignId)) throw new BadRequestException('Campaña inválida');
+  private async loadDrawableCampaign(
+    campaignId: string,
+    expectedMethod: DrawMethod,
+  ) {
+    if (!Types.ObjectId.isValid(campaignId))
+      throw new BadRequestException('Campaña inválida');
     const campaign = await this.campaignModel.findById(campaignId).exec();
     if (!campaign) throw new NotFoundException('Campaña no encontrada');
     if (campaign.drawMethod !== expectedMethod) {
-      throw new ConflictException(`La campaña usa el método ${campaign.drawMethod}`);
+      throw new ConflictException(
+        `La campaña usa el método ${campaign.drawMethod}`,
+      );
     }
-    if (![CampaignStatus.SoldOut, CampaignStatus.AwaitingDraw].includes(campaign.status)) {
-      throw new ConflictException('La campaña todavía no está lista para el sorteo');
+    if (
+      ![CampaignStatus.SoldOut, CampaignStatus.AwaitingDraw].includes(
+        campaign.status,
+      )
+    ) {
+      throw new ConflictException(
+        'La campaña todavía no está lista para el sorteo',
+      );
     }
     if (campaign.soldCount !== campaign.totalTitles) {
-      throw new ConflictException('El resultado solo puede verificarse con el 100% vendido');
+      throw new ConflictException(
+        'El resultado solo puede verificarse con el 100% vendido',
+      );
     }
     return campaign;
   }
@@ -456,7 +531,8 @@ export class DrawsService {
     } finally {
       await session.endSession();
     }
-    if (!stored) throw new ConflictException('No se pudo verificar el resultado');
+    if (!stored)
+      throw new ConflictException('No se pudo verificar el resultado');
     return stored;
   }
 
@@ -465,8 +541,14 @@ export class DrawsService {
       throw new BadRequestException(`Número ganador inválido: ${number}`);
     }
     const numeric = Number(number);
-    if (!Number.isSafeInteger(numeric) || numeric < 0 || numeric >= campaign.totalTitles) {
-      throw new BadRequestException(`Número fuera del rango de la campaña: ${number}`);
+    if (
+      !Number.isSafeInteger(numeric) ||
+      numeric < 0 ||
+      numeric >= campaign.totalTitles
+    ) {
+      throw new BadRequestException(
+        `Número fuera del rango de la campaña: ${number}`,
+      );
     }
   }
 
@@ -475,7 +557,8 @@ export class DrawsService {
   }
 
   private stableJson(value: unknown): string {
-    if (Array.isArray(value)) return `[${value.map((item) => this.stableJson(item)).join(',')}]`;
+    if (Array.isArray(value))
+      return `[${value.map((item) => this.stableJson(item)).join(',')}]`;
     if (value && typeof value === 'object') {
       const entries = Object.entries(value as Record<string, unknown>)
         .filter(([, item]) => item !== undefined)
@@ -486,7 +569,9 @@ export class DrawsService {
   }
 
   private publicView(result: DrawResultDocument | Record<string, any>) {
-    const raw = (result as any).toObject ? (result as any).toObject() : { ...(result as any) };
+    const raw = (result as any).toObject
+      ? (result as any).toObject()
+      : { ...(result as any) };
     delete raw.rawEvidence;
     delete raw.verifiedBy;
     delete raw.publishedBy;
@@ -513,6 +598,8 @@ export class DrawsService {
   }
 
   private maskPhone(phone: string) {
-    return phone.length < 6 ? phone : `${phone.slice(0, 4)}****${phone.slice(-2)}`;
+    return phone.length < 6
+      ? phone
+      : `${phone.slice(0, 4)}****${phone.slice(-2)}`;
   }
 }

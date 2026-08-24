@@ -50,6 +50,11 @@ command -v openssl >/dev/null 2>&1 || {
   exit 1
 }
 
+if [[ -L "${output_path}" ]]; then
+  printf '%s es un enlace simbólico; se rechaza por seguridad.\n' "${output_path}" >&2
+  exit 1
+fi
+
 if [[ -e "${output_path}" && "${force_write}" != true ]]; then
   printf '%s ya existe; use --force solo si desea reemplazarlo.\n' "${output_path}" >&2
   exit 1
@@ -93,7 +98,6 @@ set_value MONGODB_URI "mongodb://sorteos_app:${mongo_app_password}@mongodb:27017
 set_value JWT_SECRET "$(random_secret)"
 set_value EMAIL_CODE_SECRET "$(random_secret)"
 set_value CHECKOUT_ACCESS_SECRET_KEY "$(random_secret)"
-set_value PAYMENTS_ADMIN_API_KEY "$(random_secret)"
 set_value PAYMENTS_PUBLIC_SECRET_KEY "$(random_secret)"
 set_value EFI_WEBHOOK_HMAC "$(random_secret)"
 set_value REFERRAL_IP_HASH_SECRET "$(random_secret)"

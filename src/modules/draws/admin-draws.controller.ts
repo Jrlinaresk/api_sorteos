@@ -23,7 +23,9 @@ export class AdminDrawsController {
   constructor(private readonly draws: DrawsService) {}
 
   @Post('cryptographic/commit')
-  @ApiOperation({ summary: 'Publica el compromiso criptográfico antes de abrir ventas' })
+  @ApiOperation({
+    summary: 'Publica el compromiso criptográfico antes de abrir ventas',
+  })
   commitCryptographic(
     @Param('campaignId') campaignId: string,
     @Body() dto: CommitCryptographicDrawDto,
@@ -33,7 +35,10 @@ export class AdminDrawsController {
   }
 
   @Post('verify/federal-lottery')
-  @ApiOperation({ summary: 'Calcula y verifica el resultado desde Lotería Federal' })
+  @ApiOperation({
+    summary:
+      'Concilia dos lecturas del resultado oficial de Lotería Federal CAIXA',
+  })
   verifyFederal(
     @Param('campaignId') campaignId: string,
     @Body() dto: VerifyFederalDrawDto,
@@ -53,7 +58,9 @@ export class AdminDrawsController {
   }
 
   @Post('verify/cryptographic')
-  @ApiOperation({ summary: 'Revela la semilla y combina una entropía externa auditable' })
+  @ApiOperation({
+    summary: 'Revela la semilla y combina una entropía externa auditable',
+  })
   verifyCryptographic(
     @Param('campaignId') campaignId: string,
     @Body() dto: VerifyCryptographicDrawDto,
@@ -63,7 +70,9 @@ export class AdminDrawsController {
   }
 
   @Post('publish')
-  @ApiOperation({ summary: 'Publica de forma inmutable un resultado ya verificado' })
+  @ApiOperation({
+    summary: 'Publica de forma inmutable un resultado ya verificado',
+  })
   publish(
     @Param('campaignId') campaignId: string,
     @CurrentUser() actor: PublicUserDto,
@@ -72,7 +81,9 @@ export class AdminDrawsController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Consulta el resultado y la evidencia íntegra para auditoría' })
+  @ApiOperation({
+    summary: 'Consulta el resultado y la evidencia íntegra para auditoría',
+  })
   find(@Param('campaignId') campaignId: string) {
     return this.draws.findAdmin(campaignId);
   }

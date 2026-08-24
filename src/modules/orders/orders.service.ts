@@ -21,11 +21,25 @@ import {
   RaffleDocument,
 } from '../riffles/schema/raffle.schema';
 import { RafflesService } from '../riffles/raffles.service';
+import {
+  normalizeOrderEmail,
+  normalizeOrderPhone,
+} from './order-normalization';
 
 interface ReservationResult {
   order: OrderDocument;
   accessToken: string;
 }
+
+const PUBLIC_PARTICIPATION_STATUSES = new Set<CampaignStatus>([
+  CampaignStatus.Scheduled,
+  CampaignStatus.Active,
+  CampaignStatus.Open,
+  CampaignStatus.SoldOut,
+  CampaignStatus.AwaitingDraw,
+  CampaignStatus.Drawn,
+  CampaignStatus.Closed,
+]);
 
 @Injectable()
 export class OrdersService {
@@ -644,7 +658,10 @@ export class OrdersService {
   }
 
   async listPublicParticipants(campaignId: string, page = 1, limit = 100) {
-    const campaign = await this.assertPublicModule(campaignId, 'showParticipantsDownload');
+    const campaign = await this.assertPublicModule(
+      campaignId,
+      'showParticipantsDownload',
+    );
     const safePage = Math.max(1, Math.floor(page || 1));
     const safeLimit = Math.min(500, Math.max(1, Math.floor(limit || 100)));
     const filter = {
@@ -675,14 +692,24 @@ export class OrdersService {
             }
           : null,
       })),
-      meta: { page: safePage, limit: safeLimit, total, pages: Math.ceil(total / safeLimit) },
+      meta: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        pages: Math.ceil(total / safeLimit),
+      },
     };
   }
 
   async lookupPublicTitle(campaignId: string, number: string) {
-    if (!Types.ObjectId.isValid(campaignId)) throw new BadRequestException('Campaña inválida');
-    if (!/^\d{1,12}$/.test(number)) throw new BadRequestException('Título inválido');
-    const campaign = await this.assertPublicModule(campaignId, 'showTitleLookup');
+    if (!Types.ObjectId.isValid(campaignId))
+      throw new BadRequestException('Campaña inválida');
+    if (!/^\d{1,12}$/.test(number))
+      throw new BadRequestException('Título inválido');
+    const campaign = await this.assertPublicModule(
+      campaignId,
+      'showTitleLookup',
+    );
     const normalized = number.padStart(campaign.quotaDigits, '0');
     const quota: any = await this.quotaModel
       .findOne({
@@ -709,7 +736,8 @@ export class OrdersService {
   }
 
   async participantsCsv(campaignId: string, admin = false): Promise<Readable> {
-    if (!Types.ObjectId.isValid(campaignId)) throw new BadRequestException('Campaña inválida');
+    if (!Types.ObjectId.isValid(campaignId))
+      throw new BadRequestException('Campaña inválida');
     const campaign = admin
       ? await this.campaignModel.findById(campaignId).lean()
       : await this.assertPublicModule(campaignId, 'showParticipantsDownload');
@@ -724,7 +752,9 @@ export class OrdersService {
       .sort({ number: 1 })
       .lean()
       .cursor();
-    const self = this;
+    const maskName = (value?: string) => this.maskName(value);
+    const maskPhone = (value?: string) => this.maskPhone(value);
+    const csvCell = (value: string) => this.csvCell(value);
     async function* csv() {
       yield Buffer.from(
         `\uFEFF${admin ? 'titulo,status,bonus,pedido,nombre,telefono,email,cpf,pagado_en' : 'titulo,status,bonus,nombre,telefono,pagado_en'}\r\n`,
@@ -747,11 +777,13 @@ export class OrdersService {
               quota.number,
               quota.status,
               quota.isBonus ? '1' : '0',
-              self.maskName(buyer.name) || '',
-              self.maskPhone(buyer.phone) || '',
+              maskName(buyer.name) || '',
+              maskPhone(buyer.phone) || '',
               quota.paidAt?.toISOString?.() || '',
             ];
-        yield Buffer.from(`${row.map((value) => self.csvCell(String(value))).join(',')}\r\n`);
+        yield Buffer.from(
+          `${row.map((value) => csvCell(String(value))).join(',')}\r\n`,
+        );
       }
     }
     return Readable.from(csv());
@@ -938,8 +970,8 @@ export class OrdersService {
       campaignSlug: dto.campaignSlug.trim().toLowerCase(),
       buyer: {
         name: dto.buyer.name.trim().replace(/\s+/g, ' '),
-        phone: dto.buyer.phone.replace(/[^+\d]/g, ''),
-        email: dto.buyer.email.trim().toLowerCase(),
+        phone: normalizeOrderPhone(dto.buyer.phone),
+        email: normalizeOrderEmail(dto.buyer.email),
         cpf: dto.buyer.cpf.replace(/\D/g, ''),
       },
       idempotencyKey: dto.idempotencyKey?.trim(),
@@ -1015,9 +1047,9 @@ export class OrdersService {
   private isDuplicateKeyError(error: unknown): boolean {
     return Boolean(
       error &&
-      typeof error === 'object' &&
-      'code' in error &&
-      (error as { code?: number }).code === 11000,
+        typeof error === 'object' &&
+        'code' in error &&
+        (error as { code?: number }).code === 11000,
     );
   }
 
@@ -1056,9 +1088,11 @@ export class OrdersService {
     delete raw.__v;
     delete raw._id;
     if (
-      [OrderStatus.Expired, OrderStatus.Cancelled, OrderStatus.Refunded].includes(
-        raw.status,
-      ) &&
+      [
+        OrderStatus.Expired,
+        OrderStatus.Cancelled,
+        OrderStatus.Refunded,
+      ].includes(raw.status) &&
       Array.isArray(raw.titleNumbers)
     ) {
       raw.quotas = raw.titleNumbers.map((number: string) => ({
@@ -1077,6 +1111,13 @@ export class OrdersService {
         OrderStatus.PendingPayment,
       ].includes(raw.status),
     };
+  }
+
+  presentRecoveredOrder(
+    order: OrderDocument | Record<string, any>,
+    accessToken: string,
+  ) {
+    return this.toOwnerView(order, accessToken);
   }
 
   private maskPhone(phone?: string): string | undefined {
@@ -1111,11 +1152,16 @@ export class OrdersService {
       | 'showParticipantsDownload'
       | 'showTitleLookup',
   ) {
-    if (!Types.ObjectId.isValid(campaignId)) throw new BadRequestException('Campaña inválida');
+    if (!Types.ObjectId.isValid(campaignId))
+      throw new BadRequestException('Campaña inválida');
     const campaign = await this.campaignModel.findById(campaignId).lean();
-    if (!campaign) throw new NotFoundException('Campaña no encontrada');
+    if (!campaign || !PUBLIC_PARTICIPATION_STATUSES.has(campaign.status)) {
+      throw new NotFoundException('Campaña no encontrada');
+    }
     if (!campaign.modules?.[module]) {
-      throw new NotFoundException('Este módulo no está habilitado en la campaña');
+      throw new NotFoundException(
+        'Este módulo no está habilitado en la campaña',
+      );
     }
     return campaign;
   }

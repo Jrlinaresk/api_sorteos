@@ -43,6 +43,7 @@ describe('DrawsService verifiable draw workflow', () => {
   let connection: Record<string, jest.Mock>;
   let session: Record<string, jest.Mock>;
   let notifications: Record<string, jest.Mock>;
+  let caixaFederal: Record<string, jest.Mock>;
   let service: DrawsService;
 
   beforeEach(() => {
@@ -60,6 +61,7 @@ describe('DrawsService verifiable draw workflow', () => {
     };
     connection = { startSession: jest.fn().mockResolvedValue(session) };
     notifications = { create: jest.fn().mockResolvedValue(undefined) };
+    caixaFederal = { reconcile: jest.fn() };
     service = new DrawsService(
       resultModel as any,
       campaignModel as any,
@@ -67,6 +69,7 @@ describe('DrawsService verifiable draw workflow', () => {
       orderModel as any,
       connection as any,
       notifications as any,
+      caixaFederal as any,
     );
   });
 
@@ -255,30 +258,61 @@ describe('DrawsService verifiable draw workflow', () => {
           firstPrizeDigits: config.firstPrizeDigits,
           secondPrizeDigits: config.secondPrizeDigits,
           combination,
+          contest: '6020',
         },
       });
       campaignModel.findById.mockReturnValue(queryResult(campaign));
+      caixaFederal.reconcile.mockResolvedValue({
+        contest: '6020',
+        sourceUrl:
+          'https://servicebus3.caixa.gov.br/portaldeloterias/api/federal/6020',
+        sourceDrawAt: new Date('2025-11-22T00:00:00.000Z'),
+        extraction: 'ESPAÇO DA SORTE — SAO PAULO, SP',
+        firstPrize,
+        secondPrize,
+        normalized: {
+          contest: '6020',
+          game: 'LOTERIA_FEDERAL',
+          drawDate: '2025-11-22',
+          prizes: [firstPrize, secondPrize, '000003', '000004', '000005'],
+          rateio: [
+            { tier: 1, winners: 1, prizeAmount: 500000 },
+            { tier: 2, winners: 1, prizeAmount: 35000 },
+          ],
+        },
+        reads: [
+          {
+            fetchedAt: '2025-11-22T22:00:00.000Z',
+            bodySha256: 'a'.repeat(64),
+          },
+          {
+            fetchedAt: '2025-11-22T22:00:00.250Z',
+            bodySha256: 'b'.repeat(64),
+          },
+        ],
+      });
       const store = jest
         .spyOn(service as any, 'storeVerifiedResult')
         .mockResolvedValue({ status: DrawResultStatus.Verified });
       const actorId = new Types.ObjectId().toString();
 
-      await service.verifyFederal(
-        campaignId.toString(),
-        {
-          contest: '6020',
-          firstPrize,
-          secondPrize,
-          sourceUrl: 'https://loterias.caixa.gov.br/resultados',
-        },
-        actorId,
-      );
+      await service.verifyFederal(campaignId.toString(), {}, actorId);
 
+      expect(caixaFederal.reconcile).toHaveBeenCalledWith('6020');
       expect(store).toHaveBeenCalledWith(
         campaign,
         expect.objectContaining({
+          contest: '6020',
+          firstPrize,
+          secondPrize,
+          sourceBodySha256: 'a'.repeat(64),
+          sourceConfirmationBodySha256: 'b'.repeat(64),
           evidenceHash: expect.stringMatching(/^[a-f0-9]{64}$/),
-          rawEvidence: expect.objectContaining({ primaryNumber: expected }),
+          rawEvidence: expect.objectContaining({
+            primaryNumber: expected,
+            sourceReads: expect.any(Array),
+            normalized: expect.objectContaining({ game: 'LOTERIA_FEDERAL' }),
+          }),
         }),
         expected,
         [],
@@ -310,17 +344,43 @@ describe('DrawsService verifiable draw workflow', () => {
     await expect(
       service.verifyFederal(
         campaignId.toString(),
-        {
-          contest: '1',
-          firstPrize: '10',
-          secondPrize: '20',
-          sourceUrl: 'https://example.com',
-        },
+        {},
         new Types.ObjectId().toString(),
       ),
     ).rejects.toThrow(
       'El resultado solo puede verificarse con el 100% vendido',
     );
+    expect(caixaFederal.reconcile).not.toHaveBeenCalled();
+  });
+
+  it('rechaza una campaña heredada que abrió ventas sin concurso Federal fijado', async () => {
+    const campaignId = new Types.ObjectId();
+    campaignModel.findById.mockReturnValue(
+      queryResult(
+        document({
+          _id: campaignId,
+          drawMethod: DrawMethod.FederalLottery,
+          status: CampaignStatus.SoldOut,
+          soldCount: 100,
+          totalTitles: 100,
+          quotaDigits: 2,
+          federalLottery: {
+            firstPrizeDigits: 1,
+            secondPrizeDigits: 1,
+            combination: 'sum',
+          },
+        }),
+      ),
+    );
+
+    await expect(
+      service.verifyFederal(
+        campaignId.toString(),
+        {},
+        new Types.ObjectId().toString(),
+      ),
+    ).rejects.toThrow('no fijó el concurso Federal');
+    expect(caixaFederal.reconcile).not.toHaveBeenCalled();
   });
 
   it('hace el hash de evidencia estable ante distinto orden de claves', () => {

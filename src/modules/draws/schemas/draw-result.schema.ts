@@ -21,15 +21,29 @@ export interface DrawOutcome {
   winnerSnapshot?: { name: string; phone: string };
 }
 
-@Schema({ timestamps: true, collection: 'draw_results', optimisticConcurrency: true })
+@Schema({
+  timestamps: true,
+  collection: 'draw_results',
+  optimisticConcurrency: true,
+})
 export class DrawResult {
-  @Prop({ type: Types.ObjectId, ref: 'Raffle', required: true, unique: true, index: true })
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'Raffle',
+    required: true,
+    unique: true,
+    index: true,
+  })
   campaign: Types.ObjectId;
 
   @Prop({ enum: Object.values(DrawMethod), required: true })
   method: DrawMethod;
 
-  @Prop({ enum: Object.values(DrawResultStatus), default: DrawResultStatus.Draft, index: true })
+  @Prop({
+    enum: Object.values(DrawResultStatus),
+    default: DrawResultStatus.Draft,
+    index: true,
+  })
   status: DrawResultStatus;
 
   @Prop()
@@ -49,6 +63,18 @@ export class DrawResult {
 
   @Prop()
   sourcePublishedAt?: Date;
+
+  @Prop()
+  sourceFetchedAt?: Date;
+
+  @Prop()
+  sourceConfirmedAt?: Date;
+
+  @Prop({ match: /^[a-f0-9]{64}$/ })
+  sourceBodySha256?: string;
+
+  @Prop({ match: /^[a-f0-9]{64}$/ })
+  sourceConfirmationBodySha256?: string;
 
   @Prop()
   commitment?: string;

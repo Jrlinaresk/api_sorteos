@@ -46,19 +46,23 @@ const PUBLIC_STATUSES = [
 @Injectable()
 export class RafflesService {
   constructor(
-    @InjectModel(Raffle.name) private readonly raffleModel: Model<RaffleDocument>,
+    @InjectModel(Raffle.name)
+    private readonly raffleModel: Model<RaffleDocument>,
     private readonly media: MediaService,
   ) {}
 
   async create(dto: CreateRaffleDto): Promise<RaffleDocument> {
     const slug = slugifyCampaign(dto.slug || dto.name);
-    if (!slug) throw new BadRequestException('El slug de la campaña no es válido');
+    if (!slug)
+      throw new BadRequestException('El slug de la campaña no es válido');
     const exists = await this.raffleModel.exists({ slug });
-    if (exists) throw new ConflictException('Ya existe una campaña con ese slug');
+    if (exists)
+      throw new ConflictException('Ya existe una campaña con ese slug');
 
     const totalTitles = dto.totalTitles;
     const quotaDigits =
-      dto.quotaDigits ?? Math.max(1, String(Math.max(0, totalTitles - 1)).length);
+      dto.quotaDigits ??
+      Math.max(1, String(Math.max(0, totalTitles - 1)).length);
     if (10 ** quotaDigits < totalTitles) {
       throw new BadRequestException('quotaDigits no alcanza para totalTitles');
     }
@@ -92,25 +96,33 @@ export class RafflesService {
     const reference = `campaign:${campaign._id.toString()}`;
     const mediaIds = this.mediaIds(dto.media);
     try {
-      for (const mediaId of mediaIds) await this.media.addReference(mediaId, reference);
+      for (const mediaId of mediaIds)
+        await this.media.addReference(mediaId, reference);
       return await campaign.save();
     } catch (error) {
       await Promise.all(
-        mediaIds.map((mediaId) => this.media.removeReference(mediaId, reference).catch(() => undefined)),
+        mediaIds.map((mediaId) =>
+          this.media.removeReference(mediaId, reference).catch(() => undefined),
+        ),
       );
       throw error;
     }
   }
 
   async findAll(): Promise<RaffleDocument[]> {
-    return this.raffleModel.find().sort({ featured: -1, sortOrder: 1, createdAt: -1 }).exec();
+    return this.raffleModel
+      .find()
+      .sort({ featured: -1, sortOrder: 1, createdAt: -1 })
+      .exec();
   }
 
   async findPublic(query: ListCampaignsDto) {
     const page = query.page || 1;
     const limit = query.limit || 12;
     if (query.status && !PUBLIC_STATUSES.includes(query.status)) {
-      throw new BadRequestException('Ese estado no está disponible en el catálogo público');
+      throw new BadRequestException(
+        'Ese estado no está disponible en el catálogo público',
+      );
     }
     const filter: FilterQuery<RaffleDocument> = {
       status: query.status || { $in: PUBLIC_STATUSES },
@@ -131,7 +143,9 @@ export class RafflesService {
     ]);
 
     return {
-      data: rows.map((campaign) => this.toPublicView(campaign as unknown as RaffleDocument, false)),
+      data: rows.map((campaign) =>
+        this.toPublicView(campaign as unknown as RaffleDocument, false),
+      ),
       meta: {
         page,
         limit,
@@ -143,7 +157,8 @@ export class RafflesService {
   }
 
   async findOne(id: string): Promise<RaffleDocument> {
-    if (!Types.ObjectId.isValid(id)) throw new BadRequestException('ID de campaña inválido');
+    if (!Types.ObjectId.isValid(id))
+      throw new BadRequestException('ID de campaña inválido');
     const campaign = await this.raffleModel.findById(id).exec();
     if (!campaign) throw new NotFoundException('Campaña no encontrada');
     return campaign;
@@ -151,7 +166,10 @@ export class RafflesService {
 
   async findPublicBySlug(slug: string) {
     const campaign = await this.raffleModel
-      .findOne({ slug: slugifyCampaign(slug), status: { $in: PUBLIC_STATUSES } })
+      .findOne({
+        slug: slugifyCampaign(slug),
+        status: { $in: PUBLIC_STATUSES },
+      })
       .lean()
       .exec();
     if (!campaign) throw new NotFoundException('Campaña no encontrada');
@@ -159,8 +177,23 @@ export class RafflesService {
   }
 
   async findDocumentBySlug(slug: string): Promise<RaffleDocument> {
-    const campaign = await this.raffleModel.findOne({ slug: slugifyCampaign(slug) }).exec();
+    const campaign = await this.raffleModel
+      .findOne({ slug: slugifyCampaign(slug) })
+      .exec();
     if (!campaign) throw new NotFoundException('Campaña no encontrada');
+    return campaign;
+  }
+
+  async findPurchasableBySlug(slug: string): Promise<RaffleDocument> {
+    const campaign = await this.raffleModel
+      .findOne({
+        slug: slugifyCampaign(slug),
+        status: { $in: [CampaignStatus.Active, CampaignStatus.Open] },
+      })
+      .exec();
+    if (!campaign) {
+      throw new NotFoundException('Campaña no disponible para compra');
+    }
     return campaign;
   }
 
@@ -191,9 +224,17 @@ export class RafflesService {
   async update(id: string, dto: UpdateRaffleDto): Promise<RaffleDocument> {
     const campaign = await this.findOne(id);
     const previousMediaIds = this.mediaIds(campaign.media);
+    this.assertDrawConfigurationUpdate(campaign, dto);
     this.prepareRegulationUpdate(campaign, dto);
-    if (dto.totalTitles !== undefined && dto.totalTitles !== campaign.totalTitles) {
-      if (campaign.allocationCursor > 0 || campaign.soldCount > 0 || campaign.reservedCount > 0) {
+    if (
+      dto.totalTitles !== undefined &&
+      dto.totalTitles !== campaign.totalTitles
+    ) {
+      if (
+        campaign.allocationCursor > 0 ||
+        campaign.soldCount > 0 ||
+        campaign.reservedCount > 0
+      ) {
         throw new ConflictException(
           'No se puede cambiar totalTitles después de reservar o vender cuotas',
         );
@@ -202,66 +243,118 @@ export class RafflesService {
     }
     if (dto.slug) {
       const slug = slugifyCampaign(dto.slug);
-      const duplicate = await this.raffleModel.exists({ slug, _id: { $ne: campaign._id } });
-      if (duplicate) throw new ConflictException('Ya existe una campaña con ese slug');
+      const duplicate = await this.raffleModel.exists({
+        slug,
+        _id: { $ne: campaign._id },
+      });
+      if (duplicate)
+        throw new ConflictException('Ya existe una campaña con ese slug');
       dto.slug = slug;
     }
-    const nextMediaIds = dto.media === undefined ? previousMediaIds : this.mediaIds(dto.media);
-    const added = nextMediaIds.filter((mediaId) => !previousMediaIds.includes(mediaId));
-    const removed = previousMediaIds.filter((mediaId) => !nextMediaIds.includes(mediaId));
+    const nextMediaIds =
+      dto.media === undefined ? previousMediaIds : this.mediaIds(dto.media);
+    const added = nextMediaIds.filter(
+      (mediaId) => !previousMediaIds.includes(mediaId),
+    );
+    const removed = previousMediaIds.filter(
+      (mediaId) => !nextMediaIds.includes(mediaId),
+    );
     const reference = `campaign:${campaign._id.toString()}`;
     try {
-      for (const mediaId of added) await this.media.addReference(mediaId, reference);
-      Object.assign(campaign, dto);
+      for (const mediaId of added)
+        await this.media.addReference(mediaId, reference);
+      const federalLotteryUpdate = dto.federalLottery;
+      const campaignUpdate = { ...dto };
+      delete campaignUpdate.federalLottery;
+      Object.assign(campaign, campaignUpdate);
+      if (federalLotteryUpdate) {
+        if (campaign.federalLottery) {
+          Object.assign(campaign.federalLottery, federalLotteryUpdate);
+        } else {
+          campaign.federalLottery = {
+            firstPrizeDigits: federalLotteryUpdate.firstPrizeDigits ?? 3,
+            secondPrizeDigits: federalLotteryUpdate.secondPrizeDigits ?? 3,
+            combination: federalLotteryUpdate.combination ?? 'concatenate',
+            contest: federalLotteryUpdate.contest,
+          };
+        }
+      }
       this.assertDocumentConfiguration(campaign);
       const saved = await campaign.save();
       await Promise.all(
-        removed.map((mediaId) => this.media.removeReference(mediaId, reference).catch(() => undefined)),
+        removed.map((mediaId) =>
+          this.media.removeReference(mediaId, reference).catch(() => undefined),
+        ),
       );
       return saved;
     } catch (error) {
       await Promise.all(
-        added.map((mediaId) => this.media.removeReference(mediaId, reference).catch(() => undefined)),
+        added.map((mediaId) =>
+          this.media.removeReference(mediaId, reference).catch(() => undefined),
+        ),
       );
       throw error;
     }
   }
 
-  async changeStatus(id: string, status: CampaignStatus): Promise<RaffleDocument> {
+  async changeStatus(
+    id: string,
+    status: CampaignStatus,
+  ): Promise<RaffleDocument> {
     const campaign = await this.findOne(id);
     const allowed = this.allowedTransitions(campaign.status);
     if (!allowed.includes(status)) {
-      throw new ConflictException(`Transición inválida: ${campaign.status} → ${status}`);
+      throw new ConflictException(
+        `Transición inválida: ${campaign.status} → ${status}`,
+      );
     }
     if (status === CampaignStatus.Active || status === CampaignStatus.Open) {
       this.assertActivationReady(campaign);
     }
     campaign.status = status;
-    if (status === CampaignStatus.Active && !campaign.launchAt) campaign.launchAt = new Date();
+    if (status === CampaignStatus.Active && !campaign.launchAt)
+      campaign.launchAt = new Date();
     return campaign.save();
   }
 
   async remove(id: string): Promise<void> {
     const campaign = await this.findOne(id);
-    if (campaign.allocationCursor > 0 || campaign.soldCount > 0 || campaign.reservedCount > 0) {
-      throw new ConflictException('No se puede eliminar una campaña con actividad; cancélela');
+    if (
+      campaign.allocationCursor > 0 ||
+      campaign.soldCount > 0 ||
+      campaign.reservedCount > 0
+    ) {
+      throw new ConflictException(
+        'No se puede eliminar una campaña con actividad; cancélela',
+      );
     }
     const mediaIds = this.mediaIds(campaign.media);
     const reference = `campaign:${campaign._id.toString()}`;
     await campaign.deleteOne();
     await Promise.all(
-      mediaIds.map((mediaId) => this.media.removeReference(mediaId, reference).catch(() => undefined)),
+      mediaIds.map((mediaId) =>
+        this.media.removeReference(mediaId, reference).catch(() => undefined),
+      ),
     );
   }
 
   async addParticipant(_raffleId?: string, _userId?: string): Promise<never> {
+    void _raffleId;
+    void _userId;
     throw new BadRequestException(
       'La participación directa fue deshabilitada. Use POST /orders/reservations.',
     );
   }
 
-  async removeParticipant(_raffleId?: string, _userId?: string): Promise<never> {
-    throw new BadRequestException('Las cuotas se liberan cancelando o expirando el pedido');
+  async removeParticipant(
+    _raffleId?: string,
+    _userId?: string,
+  ): Promise<never> {
+    void _raffleId;
+    void _userId;
+    throw new BadRequestException(
+      'Las cuotas se liberan cancelando o expirando el pedido',
+    );
   }
 
   async closeRaffle(id: string): Promise<RaffleDocument> {
@@ -275,9 +368,19 @@ export class RafflesService {
           status: CampaignStatus.Scheduled,
           launchAt: { $lte: at },
           regulationHtml: { $exists: true, $nin: ['', null] },
-          $or: [
-            { drawMethod: { $ne: DrawMethod.Cryptographic } },
-            { drawCommitment: { $type: 'string' } },
+          $and: [
+            {
+              $or: [
+                { drawMethod: { $ne: DrawMethod.Cryptographic } },
+                { drawCommitment: { $type: 'string' } },
+              ],
+            },
+            {
+              $or: [
+                { drawMethod: { $ne: DrawMethod.FederalLottery } },
+                { 'federalLottery.contest': { $regex: /^[1-9]\d{0,9}$/ } },
+              ],
+            },
           ],
         },
         { $set: { status: CampaignStatus.Active } },
@@ -304,7 +407,11 @@ export class RafflesService {
     };
   }
 
-  calculatePrice(campaign: Raffle, selectedQuantity: number, at = new Date()): CampaignPriceQuote {
+  calculatePrice(
+    campaign: Raffle,
+    selectedQuantity: number,
+    at = new Date(),
+  ): CampaignPriceQuote {
     if (!Number.isInteger(selectedQuantity) || selectedQuantity < 1) {
       throw new BadRequestException('La cantidad debe ser un entero positivo');
     }
@@ -329,7 +436,10 @@ export class RafflesService {
       );
     }
 
-    const doubleChanceMultiplier = this.isTimedContentActive(campaign.doubleChance, at)
+    const doubleChanceMultiplier = this.isTimedContentActive(
+      campaign.doubleChance,
+      at,
+    )
       ? campaign.doubleChance.multiplier || 2
       : 1;
     const allocatedQuantity = selectedQuantity * doubleChanceMultiplier;
@@ -344,7 +454,11 @@ export class RafflesService {
       total: totalCents / 100,
       currency: campaign.currency,
       promotion: promotion
-        ? { quantity: promotion.quantity, totalPrice: promotion.totalPrice, label: promotion.label }
+        ? {
+            quantity: promotion.quantity,
+            totalPrice: promotion.totalPrice,
+            label: promotion.label,
+          }
         : undefined,
       doubleChanceMultiplier,
     };
@@ -360,17 +474,36 @@ export class RafflesService {
     return true;
   }
 
-  private assertConfiguration(dto: CreateRaffleDto, totalTitles: number, quotaDigits: number) {
+  private assertConfiguration(
+    dto: CreateRaffleDto,
+    totalTitles: number,
+    quotaDigits: number,
+  ) {
     if (dto.status === CampaignStatus.Scheduled && !dto.launchAt) {
       throw new BadRequestException('Una campaña programada necesita launchAt');
     }
-    if ([CampaignStatus.Active, CampaignStatus.Open].includes(dto.status as CampaignStatus)) {
+    if (
+      [CampaignStatus.Active, CampaignStatus.Open].includes(
+        dto.status as CampaignStatus,
+      )
+    ) {
       if (!dto.regulationHtml?.trim()) {
-        throw new BadRequestException('La campaña necesita un reglamento antes de publicarse');
+        throw new BadRequestException(
+          'La campaña necesita un reglamento antes de publicarse',
+        );
       }
       if (dto.drawMethod === DrawMethod.Cryptographic) {
         throw new BadRequestException(
           'Cree la campaña criptográfica en borrador, publique el compromiso y luego actívela',
+        );
+      }
+      if (
+        (dto.drawMethod || DrawMethod.FederalLottery) ===
+          DrawMethod.FederalLottery &&
+        !/^[1-9]\d{0,9}$/.test(dto.federalLottery?.contest || '')
+      ) {
+        throw new BadRequestException(
+          'La campaña debe fijar el concurso Federal antes de abrir ventas',
         );
       }
     }
@@ -382,7 +515,9 @@ export class RafflesService {
     const maxPerOrder = dto.maxTitlesPerOrder || 20_000;
     for (const quantity of dto.quantitySuggestions || []) {
       if (quantity > maxPerOrder || quantity > totalTitles) {
-        throw new BadRequestException('Una cantidad sugerida supera el límite de compra');
+        throw new BadRequestException(
+          'Una cantidad sugerida supera el límite de compra',
+        );
       }
     }
     for (const tier of dto.promotionTiers || []) {
@@ -390,7 +525,9 @@ export class RafflesService {
         throw new BadRequestException('Una promoción supera maxTitlesPerOrder');
       }
       if (tier.totalPrice > dto.ticketPrice * tier.quantity) {
-        throw new BadRequestException('Una promoción no puede costar más que el precio normal');
+        throw new BadRequestException(
+          'Una promoción no puede costar más que el precio normal',
+        );
       }
     }
     const drawMethod = dto.drawMethod || DrawMethod.FederalLottery;
@@ -399,7 +536,8 @@ export class RafflesService {
       drawMethod === DrawMethod.FederalLottery &&
       (federal?.combination || 'concatenate') === 'concatenate'
     ) {
-      const digits = (federal?.firstPrizeDigits || 3) + (federal?.secondPrizeDigits ?? 3);
+      const digits =
+        (federal?.firstPrizeDigits || 3) + (federal?.secondPrizeDigits ?? 3);
       if (digits > quotaDigits || 10 ** digits > totalTitles) {
         throw new BadRequestException(
           'totalTitles/quotaDigits no cubre todos los resultados de la regla federal concatenada',
@@ -407,33 +545,94 @@ export class RafflesService {
       }
     }
     for (const timed of [dto.notice, dto.doubleChance]) {
-      if (timed?.startsAt && timed.endsAt && new Date(timed.endsAt) <= new Date(timed.startsAt)) {
-        throw new BadRequestException('El fin de un contenido temporal debe ser posterior al inicio');
+      if (
+        timed?.startsAt &&
+        timed.endsAt &&
+        new Date(timed.endsAt) <= new Date(timed.startsAt)
+      ) {
+        throw new BadRequestException(
+          'El fin de un contenido temporal debe ser posterior al inicio',
+        );
       }
     }
     if (dto.instantGame?.enabled && !dto.instantGame.tiers.length) {
-      throw new BadRequestException('El juego instantáneo necesita al menos un tramo de intentos');
+      throw new BadRequestException(
+        'El juego instantáneo necesita al menos un tramo de intentos',
+      );
     }
   }
 
   private assertActivationReady(campaign: Raffle) {
     if (!campaign.regulationHtml?.trim()) {
-      throw new ConflictException('La campaña necesita un reglamento antes de publicarse');
+      throw new ConflictException(
+        'La campaña necesita un reglamento antes de publicarse',
+      );
     }
-    if (campaign.drawMethod === DrawMethod.Cryptographic && !campaign.drawCommitment) {
-      throw new ConflictException('La campaña necesita publicar el compromiso criptográfico');
+    if (
+      campaign.drawMethod === DrawMethod.Cryptographic &&
+      !campaign.drawCommitment
+    ) {
+      throw new ConflictException(
+        'La campaña necesita publicar el compromiso criptográfico',
+      );
+    }
+    if (
+      campaign.drawMethod === DrawMethod.FederalLottery &&
+      !/^[1-9]\d{0,9}$/.test(campaign.federalLottery?.contest || '')
+    ) {
+      throw new ConflictException(
+        'La campaña debe fijar el concurso Federal antes de abrir ventas',
+      );
     }
     this.ensureCurrentRegulationVersion(campaign);
+  }
+
+  private assertDrawConfigurationUpdate(
+    campaign: Raffle,
+    dto: UpdateRaffleDto,
+  ): void {
+    const salesOpened =
+      ![CampaignStatus.Draft, CampaignStatus.Scheduled].includes(
+        campaign.status,
+      ) ||
+      campaign.allocationCursor > 0 ||
+      campaign.soldCount > 0 ||
+      campaign.reservedCount > 0;
+    if (!salesOpened) return;
+
+    if (dto.drawMethod && dto.drawMethod !== campaign.drawMethod) {
+      throw new ConflictException(
+        'No se puede cambiar el método de sorteo después de abrir ventas',
+      );
+    }
+    if (!dto.federalLottery) return;
+    const current = campaign.federalLottery;
+    const changed =
+      dto.federalLottery.contest !== current?.contest ||
+      dto.federalLottery.firstPrizeDigits !== current?.firstPrizeDigits ||
+      dto.federalLottery.secondPrizeDigits !== current?.secondPrizeDigits ||
+      dto.federalLottery.combination !== current?.combination;
+    if (changed) {
+      throw new ConflictException(
+        'El concurso y la regla Federal son inmutables después de abrir ventas',
+      );
+    }
   }
 
   private assertDocumentConfiguration(campaign: Raffle) {
     if (
       [CampaignStatus.Active, CampaignStatus.Open].includes(campaign.status) ||
-      (campaign.status === CampaignStatus.Scheduled && campaign.launchAt && campaign.launchAt <= new Date())
+      (campaign.status === CampaignStatus.Scheduled &&
+        campaign.launchAt &&
+        campaign.launchAt <= new Date())
     ) {
       this.assertActivationReady(campaign);
     }
-    if (campaign.launchAt && campaign.closesAt && campaign.closesAt <= campaign.launchAt) {
+    if (
+      campaign.launchAt &&
+      campaign.closesAt &&
+      campaign.closesAt <= campaign.launchAt
+    ) {
       throw new BadRequestException('closesAt debe ser posterior a launchAt');
     }
     if (10 ** campaign.quotaDigits < campaign.totalTitles) {
@@ -446,8 +645,13 @@ export class RafflesService {
       const digits =
         (campaign.federalLottery.firstPrizeDigits || 3) +
         (campaign.federalLottery.secondPrizeDigits ?? 3);
-      if (digits > campaign.quotaDigits || 10 ** digits > campaign.totalTitles) {
-        throw new BadRequestException('La regla federal concatenada excede el espacio de títulos');
+      if (
+        digits > campaign.quotaDigits ||
+        10 ** digits > campaign.totalTitles
+      ) {
+        throw new BadRequestException(
+          'La regla federal concatenada excede el espacio de títulos',
+        );
       }
     }
     for (const tier of campaign.promotionTiers || []) {
@@ -455,13 +659,17 @@ export class RafflesService {
         throw new BadRequestException('Una promoción supera maxTitlesPerOrder');
       }
       if (tier.totalPrice > campaign.ticketPrice * tier.quantity) {
-        throw new BadRequestException('Una promoción no puede costar más que el precio normal');
+        throw new BadRequestException(
+          'Una promoción no puede costar más que el precio normal',
+        );
       }
     }
   }
 
   private toPublicView(campaign: RaffleDocument, includeDetails: boolean) {
-    const raw = (campaign as any).toObject ? (campaign as any).toObject() : { ...(campaign as any) };
+    const raw = (campaign as any).toObject
+      ? (campaign as any).toObject()
+      : { ...(campaign as any) };
     delete raw.participants;
     delete raw.allocationMultiplier;
     delete raw.allocationOffset;
@@ -484,7 +692,10 @@ export class RafflesService {
     );
     delete raw.regulationHistory;
 
-    const denominator = Math.max(1, raw.totalTitles || raw.maxParticipants || 1);
+    const denominator = Math.max(
+      1,
+      raw.totalTitles || raw.maxParticipants || 1,
+    );
     const calculatedProgress = Math.min(
       100,
       Number((((raw.soldCount || 0) / denominator) * 100).toFixed(2)),
@@ -504,9 +715,18 @@ export class RafflesService {
       isCover: item.isCover,
     }));
     const cover =
-      [...(raw.media || [])].sort((a, b) => a.sortOrder - b.sortOrder).find((item) => item.isCover) ||
+      [...(raw.media || [])]
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .find((item) => item.isCover) ||
       raw.media?.[0] ||
-      (raw.imageUrl ? { url: raw.imageUrl, type: MediaType.Image, isCover: true, sortOrder: 0 } : null);
+      (raw.imageUrl
+        ? {
+            url: raw.imageUrl,
+            type: MediaType.Image,
+            isCover: true,
+            sortOrder: 0,
+          }
+        : null);
 
     const view: any = {
       ...raw,
@@ -514,9 +734,16 @@ export class RafflesService {
       cover,
       progress,
       availableCount,
-      isPurchasable: [CampaignStatus.Active, CampaignStatus.Open].includes(raw.status),
-      currentNotice: this.isTimedContentActive(raw.notice, new Date()) ? raw.notice : null,
-      doubleChanceActive: this.isTimedContentActive(raw.doubleChance, new Date()),
+      isPurchasable: [CampaignStatus.Active, CampaignStatus.Open].includes(
+        raw.status,
+      ),
+      currentNotice: this.isTimedContentActive(raw.notice, new Date())
+        ? raw.notice
+        : null,
+      doubleChanceActive: this.isTimedContentActive(
+        raw.doubleChance,
+        new Date(),
+      ),
     };
     if (!includeDetails) {
       delete view.regulationHtml;
@@ -529,11 +756,15 @@ export class RafflesService {
   }
 
   private mediaIds(media: Array<{ mediaId?: unknown }> | undefined): string[] {
-    return [...new Set(
-      (media || [])
-        .map((item) => item.mediaId?.toString())
-        .filter((value): value is string => Boolean(value && Types.ObjectId.isValid(value))),
-    )];
+    return [
+      ...new Set(
+        (media || [])
+          .map((item) => item.mediaId?.toString())
+          .filter((value): value is string =>
+            Boolean(value && Types.ObjectId.isValid(value)),
+          ),
+      ),
+    ];
   }
 
   private prepareRegulationUpdate(
@@ -546,7 +777,8 @@ export class RafflesService {
       dto.regulationHtml !== undefined &&
       dto.regulationHtml !== campaign.regulationHtml;
     const versionChanged =
-      dto.termsVersion !== undefined && dto.termsVersion !== campaign.termsVersion;
+      dto.termsVersion !== undefined &&
+      dto.termsVersion !== campaign.termsVersion;
     if (!htmlChanged && !versionChanged) return;
     if (!nextHtml?.trim()) {
       if (campaign.allocationCursor > 0 || campaign.soldCount > 0) {
@@ -620,12 +852,36 @@ export class RafflesService {
 
   private allowedTransitions(current: CampaignStatus): CampaignStatus[] {
     const map: Record<CampaignStatus, CampaignStatus[]> = {
-      [CampaignStatus.Draft]: [CampaignStatus.Scheduled, CampaignStatus.Active, CampaignStatus.Cancelled],
-      [CampaignStatus.Scheduled]: [CampaignStatus.Active, CampaignStatus.Draft, CampaignStatus.Cancelled],
-      [CampaignStatus.Active]: [CampaignStatus.SoldOut, CampaignStatus.AwaitingDraw, CampaignStatus.Cancelled],
-      [CampaignStatus.Open]: [CampaignStatus.SoldOut, CampaignStatus.AwaitingDraw, CampaignStatus.Cancelled],
-      [CampaignStatus.SoldOut]: [CampaignStatus.AwaitingDraw, CampaignStatus.Active, CampaignStatus.Cancelled],
-      [CampaignStatus.AwaitingDraw]: [CampaignStatus.Drawn, CampaignStatus.Active, CampaignStatus.Cancelled],
+      [CampaignStatus.Draft]: [
+        CampaignStatus.Scheduled,
+        CampaignStatus.Active,
+        CampaignStatus.Cancelled,
+      ],
+      [CampaignStatus.Scheduled]: [
+        CampaignStatus.Active,
+        CampaignStatus.Draft,
+        CampaignStatus.Cancelled,
+      ],
+      [CampaignStatus.Active]: [
+        CampaignStatus.SoldOut,
+        CampaignStatus.AwaitingDraw,
+        CampaignStatus.Cancelled,
+      ],
+      [CampaignStatus.Open]: [
+        CampaignStatus.SoldOut,
+        CampaignStatus.AwaitingDraw,
+        CampaignStatus.Cancelled,
+      ],
+      [CampaignStatus.SoldOut]: [
+        CampaignStatus.AwaitingDraw,
+        CampaignStatus.Active,
+        CampaignStatus.Cancelled,
+      ],
+      [CampaignStatus.AwaitingDraw]: [
+        CampaignStatus.Drawn,
+        CampaignStatus.Active,
+        CampaignStatus.Cancelled,
+      ],
       [CampaignStatus.Drawn]: [CampaignStatus.Closed],
       [CampaignStatus.Closed]: [],
       [CampaignStatus.Cancelled]: [],

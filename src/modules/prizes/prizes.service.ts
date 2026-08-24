@@ -336,7 +336,7 @@ export class PrizesService {
     orderToken?: string,
     userId?: string,
   ) {
-    const order: any = await this.orders.findByPublicId(
+    const order = await this.orders.findOwnedForCheckout(
       orderPublicId,
       orderToken,
       userId,
@@ -366,7 +366,7 @@ export class PrizesService {
     orderToken?: string,
     userId?: string,
   ) {
-    const order: any = await this.orders.findByPublicId(
+    const order = await this.orders.findOwnedForCheckout(
       orderPublicId,
       orderToken,
       userId,
@@ -508,9 +508,10 @@ export class PrizesService {
     orderPublicId: string,
     orderToken: string,
   ) {
-    const order: any = await this.orders.findByPublicId(
+    const order = await this.orders.findOwnedForCheckout(
       orderPublicId,
       orderToken,
+      undefined,
     );
     return this.claimOwnedAward(publicId, order._id.toString());
   }

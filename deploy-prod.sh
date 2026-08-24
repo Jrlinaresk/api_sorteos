@@ -6,9 +6,10 @@ umask 077
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 env_file="${script_dir}/.env.server"
 with_nginx=false
+check_only=false
 
 usage() {
-  printf 'Uso: %s [--env-file RUTA] [--with-nginx]\n' "${0##*/}"
+  printf 'Uso: %s [--env-file RUTA] [--with-nginx] [--check]\n' "${0##*/}"
 }
 
 while (($#)); do
@@ -26,6 +27,10 @@ while (($#)); do
       with_nginx=true
       shift
       ;;
+    --check)
+      check_only=true
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -41,6 +46,25 @@ done
 fail() {
   printf 'Error: %s\n' "$1" >&2
   exit 1
+}
+
+file_mode() {
+  if stat -c '%a' "$1" >/dev/null 2>&1; then
+    stat -c '%a' "$1"
+  else
+    stat -f '%Lp' "$1"
+  fi
+}
+
+require_private_file() {
+  local private_path="$1"
+  local description="$2"
+  local mode_value
+  local mode_number
+  [[ -f "${private_path}" && ! -L "${private_path}" ]] || fail "No se encontró ${description} o es un enlace simbólico"
+  mode_value="$(file_mode "${private_path}")"
+  mode_number=$((8#${mode_value}))
+  (( (mode_number & 077) == 0 )) || fail "${description} no puede ser legible por grupo/otros (modo ${mode_value})"
 }
 
 env_value() {
@@ -80,8 +104,17 @@ resolve_secret_path() {
 }
 
 [[ -f "${env_file}" ]] || fail "No existe ${env_file}; ejecute ./setup-env.sh y complételo"
+require_private_file "${env_file}" "el archivo de entorno"
 command -v docker >/dev/null 2>&1 || fail 'Docker no está instalado'
-docker compose version >/dev/null 2>&1 || fail 'Se requiere Docker Compose v2'
+compose_version="$(docker compose version --short 2>/dev/null)" || fail 'Se requiere Docker Compose v2.20 o superior'
+compose_version="${compose_version#v}"
+compose_major="${compose_version%%.*}"
+compose_remainder="${compose_version#*.}"
+compose_minor="${compose_remainder%%.*}"
+[[ "${compose_major}" =~ ^[0-9]+$ && "${compose_minor}" =~ ^[0-9]+$ ]] \
+  || fail 'No se pudo determinar la versión de Docker Compose'
+(( compose_major > 2 || (compose_major == 2 && compose_minor >= 20) )) \
+  || fail 'Se requiere Docker Compose v2.20 o superior'
 
 for variable_name in \
   MONGO_ROOT_USERNAME MONGO_ROOT_PASSWORD MONGO_APP_USERNAME MONGO_APP_PASSWORD \
@@ -94,7 +127,7 @@ done
 for secret_name in \
   MONGO_ROOT_PASSWORD MONGO_APP_PASSWORD MONGO_REPLICA_KEY \
   JWT_SECRET EMAIL_CODE_SECRET CHECKOUT_ACCESS_SECRET_KEY \
-  PAYMENTS_ADMIN_API_KEY PAYMENTS_PUBLIC_SECRET_KEY \
+  PAYMENTS_PUBLIC_SECRET_KEY \
   REFERRAL_IP_HASH_SECRET; do
   require_secret "${secret_name}"
 done
@@ -134,12 +167,12 @@ cert_path="$(env_value EFI_PIX_CERT_PATH)"
 key_path="$(env_value EFI_PIX_KEY_PATH)"
 if [[ -n "${p12_path}" ]]; then
   host_p12="$(resolve_secret_path "${p12_path}" "${certs_dir}")"
-  [[ -f "${host_p12}" ]] || fail "No se encontró el certificado EFI configurado en ${host_p12}"
+  require_private_file "${host_p12}" "el certificado EFI ${host_p12}"
 elif [[ -n "${cert_path}" && -n "${key_path}" ]]; then
   host_cert="$(resolve_secret_path "${cert_path}" "${certs_dir}")"
   host_key="$(resolve_secret_path "${key_path}" "${certs_dir}")"
-  [[ -f "${host_cert}" ]] || fail "No se encontró ${host_cert}"
-  [[ -f "${host_key}" ]] || fail "No se encontró ${host_key}"
+  require_private_file "${host_cert}" "el certificado EFI ${host_cert}"
+  require_private_file "${host_key}" "la clave privada EFI ${host_key}"
 else
   fail 'Configure EFI_PIX_CERTIFICATE_PATH o EFI_PIX_CERT_PATH + EFI_PIX_KEY_PATH'
 fi
@@ -153,12 +186,17 @@ fi
 printf '%s\n' 'Validando la configuración de producción...'
 "${compose[@]}" config --quiet
 
+if [[ "${check_only}" == true ]]; then
+  printf '%s\n' 'Preflight de producción correcto; no se modificó ningún servicio.'
+  exit 0
+fi
+
 printf '%s\n' 'Actualizando imágenes base y construyendo la API...'
 "${compose[@]}" pull mongodb mongo-keyfile-init mongo-init-replica efi-cert-init
 "${compose[@]}" build --pull api-sorteos
 
 printf '%s\n' 'Aplicando el despliegue sin eliminar volúmenes ni detener previamente el servicio...'
-"${compose[@]}" up -d --build --remove-orphans --wait --wait-timeout 240
+"${compose[@]}" up -d --remove-orphans --wait --wait-timeout 360
 
 "${compose[@]}" ps
 api_port="$(env_value API_PORT)"

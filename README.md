@@ -68,6 +68,7 @@ son:
 | Navegador | `CORS_ORIGINS`, `TRUST_PROXY`, `SWAGGER_ENABLED` |
 | Correo | `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, y opcionalmente `SMTP_USER` + `SMTP_PASS` |
 | Pagos | `PAYMENTS_PROVIDER`, `PAYMENTS_PUBLIC_SECRET_KEY`, `EFI_PIX_*`, `EFI_WEBHOOK_*` |
+| Sorteo Federal | `CAIXA_FEDERAL_API_BASE_URL` y límites `CAIXA_FEDERAL_*` |
 | Medios | `MEDIA_LOCAL_ROOT`, límites de imagen/video y directorio temporal |
 | Push | las tres variables `WEB_PUSH_VAPID_*` y sus límites opcionales |
 
@@ -75,6 +76,15 @@ En producción, los secretos de aplicación deben tener al menos 32 caracteres.
 Las tres variables VAPID (`SUBJECT`, `PUBLIC_KEY`, `PRIVATE_KEY`) son opcionales,
 pero si se configura una deben configurarse las tres. Sin ellas permanece
 operativo el inbox interno, sin envío Web Push.
+
+Las campañas que usan Lotería Federal deben fijar el número de concurso antes
+de abrir ventas. Al verificar, el administrador no introduce números ganadores
+ni URLs: la API consulta dos veces el endpoint oficial de CAIXA, valida que las
+dos respuestas normalizadas coincidan y conserva los cuerpos, sus hashes
+SHA-256 y metadatos acotados como evidencia de auditoría.
+La plantilla usa `servicebus3.caixa.gov.br`; por compatibilidad se admite
+también el host oficial `servicebus2.caixa.gov.br`, sin puertos, redirecciones
+ni rutas configurables fuera del endpoint Federal.
 
 Para generar el entorno de producción:
 

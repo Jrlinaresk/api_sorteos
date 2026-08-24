@@ -50,8 +50,11 @@ export class CheckoutService
     this.unregisterHooks?.();
   }
 
-  async create(dto: CreateCheckoutDto) {
-    const reserved = (await this.orders.createReservation(dto)) as Record<
+  async create(dto: CreateCheckoutDto, authenticatedUserId?: string) {
+    const reserved = (await this.orders.createReservation(
+      dto,
+      authenticatedUserId,
+    )) as Record<
       string,
       any
     >;
@@ -61,7 +64,7 @@ export class CheckoutService
     const campaignId = this.objectIdOf(
       reserved.campaign?._id ?? reserved.campaign,
     );
-    const userId = reserved.user
+    const paymentUserId = reserved.user
       ? this.objectIdOf(reserved.user?._id ?? reserved.user)
       : undefined;
 
@@ -84,7 +87,7 @@ export class CheckoutService
     const paymentDto: CreatePaymentDto = {
       orderId,
       campaignId,
-      userId,
+      userId: paymentUserId,
       amount: Number(reserved.total),
       currency: PaymentCurrency.BRL,
       idempotencyKey: `checkout:${orderId}`,
@@ -137,9 +140,17 @@ export class CheckoutService
     };
   }
 
-  async find(publicId: string, orderAccessToken: string) {
+  async find(
+    publicId: string,
+    orderAccessToken: string,
+    userId?: string,
+  ) {
     return {
-      order: await this.orders.findByPublicId(publicId, orderAccessToken),
+      order: await this.orders.findByPublicId(
+        publicId,
+        orderAccessToken,
+        userId,
+      ),
     };
   }
 
@@ -147,14 +158,21 @@ export class CheckoutService
     publicId: string,
     orderAccessToken: string,
     dto: CancelOrderDto,
+    userId?: string,
   ) {
     const order = await this.orders.findOwnedForCheckout(
       publicId,
       orderAccessToken,
+      userId,
     );
     if (!order.payment) {
       return {
-        order: await this.orders.cancel(publicId, dto.reason, orderAccessToken),
+        order: await this.orders.cancel(
+          publicId,
+          dto.reason,
+          orderAccessToken,
+          userId,
+        ),
       };
     }
 
@@ -190,7 +208,11 @@ export class CheckoutService
       dto.reason || 'Checkout cancelado por el comprador',
     );
     return {
-      order: await this.orders.findByPublicId(publicId, orderAccessToken),
+      order: await this.orders.findByPublicId(
+        publicId,
+        orderAccessToken,
+        userId,
+      ),
     };
   }
 

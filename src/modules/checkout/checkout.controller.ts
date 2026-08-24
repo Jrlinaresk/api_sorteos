@@ -13,8 +13,13 @@ import { CancelOrderDto } from '../orders/dto/cancel-order.dto';
 import { CheckoutService } from './checkout.service';
 import { CreateCheckoutDto } from './dto/create-checkout.dto';
 import { Throttle } from '@nestjs/throttler';
+import { UseGuards } from '@nestjs/common';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { PublicUserDto } from '../users/dto/public-user.dto';
 
 @ApiTags('Public checkout')
+@UseGuards(OptionalJwtAuthGuard)
 @Controller('checkout')
 export class CheckoutController {
   constructor(private readonly checkout: CheckoutService) {}
@@ -31,8 +36,11 @@ export class CheckoutController {
       forbidNonWhitelisted: true,
     }),
   )
-  create(@Body() dto: CreateCheckoutDto) {
-    return this.checkout.create(dto);
+  create(
+    @Body() dto: CreateCheckoutDto,
+    @CurrentUser() user?: PublicUserDto,
+  ) {
+    return this.checkout.create(dto, user?.id);
   }
 
   @Get(':publicId')
@@ -41,8 +49,9 @@ export class CheckoutController {
   find(
     @Param('publicId') publicId: string,
     @Headers('x-order-token') orderAccessToken: string,
+    @CurrentUser() user?: PublicUserDto,
   ) {
-    return this.checkout.find(publicId, orderAccessToken);
+    return this.checkout.find(publicId, orderAccessToken, user?.id);
   }
 
   @Post(':publicId/cancel')
@@ -52,7 +61,8 @@ export class CheckoutController {
     @Param('publicId') publicId: string,
     @Headers('x-order-token') orderAccessToken: string,
     @Body() dto: CancelOrderDto,
+    @CurrentUser() user?: PublicUserDto,
   ) {
-    return this.checkout.cancel(publicId, orderAccessToken, dto);
+    return this.checkout.cancel(publicId, orderAccessToken, dto, user?.id);
   }
 }

@@ -25,6 +25,11 @@ proxy_send_timeout 120s;
 client_max_body_size 260m;
 ```
 
+Si se habilita mTLS para el webhook EFI, CloudPanel debe validar el certificado
+cliente y sobrescribir la cabecera confiable con el resultado de Nginx (por
+ejemplo, `proxy_set_header x-ssl-client-verify $ssl_client_verify;`). Nunca se
+debe reenviar una cabecera de verificación enviada por el cliente.
+
 Si despliega con `./deploy-prod.sh --with-nginx`, use en cambio
 `http://127.0.0.1:8081` como upstream.
 

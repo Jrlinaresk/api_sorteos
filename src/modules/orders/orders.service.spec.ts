@@ -535,6 +535,7 @@ describe('OrdersService titles and CSV exports', () => {
     campaignModel.findById.mockReturnValue({
       lean: jest.fn().mockResolvedValue({
         _id: new Types.ObjectId(campaignId),
+        status: CampaignStatus.Active,
         modules: { showParticipantsDownload: true },
       }),
     });

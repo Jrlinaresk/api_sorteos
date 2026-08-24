@@ -28,7 +28,16 @@ while (($#)); do
 done
 
 command -v docker >/dev/null 2>&1 || { printf 'Docker no está instalado.\n' >&2; exit 1; }
-docker compose version >/dev/null 2>&1 || { printf 'Se requiere Docker Compose v2.\n' >&2; exit 1; }
+compose_version="$(docker compose version --short 2>/dev/null)" || { printf 'Se requiere Docker Compose v2.20 o superior.\n' >&2; exit 1; }
+compose_version="${compose_version#v}"
+compose_major="${compose_version%%.*}"
+compose_remainder="${compose_version#*.}"
+compose_minor="${compose_remainder%%.*}"
+if [[ ! "${compose_major}" =~ ^[0-9]+$ || ! "${compose_minor}" =~ ^[0-9]+$ ]] \
+  || (( compose_major < 2 || (compose_major == 2 && compose_minor < 20) )); then
+  printf 'Se requiere Docker Compose v2.20 o superior.\n' >&2
+  exit 1
+fi
 
 if [[ ! -f "${env_file}" ]]; then
   "${script_dir}/setup-env.sh" --development --output "${env_file}"

@@ -22,18 +22,19 @@ export class CampaignsController {
   }
 
   @Get(':slug/regulations/:version')
-  @ApiOperation({ summary: 'Consulta una versión histórica e inmutable del reglamento' })
-  regulation(
-    @Param('slug') slug: string,
-    @Param('version') version: string,
-  ) {
+  @ApiOperation({
+    summary: 'Consulta una versión histórica e inmutable del reglamento',
+  })
+  regulation(@Param('slug') slug: string, @Param('version') version: string) {
     return this.campaigns.findPublicRegulation(slug, version);
   }
 
   @Post(':slug/quote')
-  @ApiOperation({ summary: 'Calcula en servidor el precio y las cuotas de una selección' })
+  @ApiOperation({
+    summary: 'Calcula en servidor el precio y las cuotas de una selección',
+  })
   async quote(@Param('slug') slug: string, @Body() dto: QuoteCampaignDto) {
-    const campaign = await this.campaigns.findDocumentBySlug(slug);
+    const campaign = await this.campaigns.findPurchasableBySlug(slug);
     return this.campaigns.calculatePrice(campaign, dto.quantity);
   }
 }

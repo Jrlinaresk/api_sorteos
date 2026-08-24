@@ -6,11 +6,13 @@ import * as request from 'supertest';
 import { App } from 'supertest/types';
 import { User, UserDocument } from '../src/modules/users/schemas/user.schema';
 import { UserRole } from '../src/modules/users/enums/user-role.enum';
+import { EmailService } from '../src/modules/email/email.service';
 
 describe('Sorteos API transaction journey (e2e)', () => {
   let app: INestApplication<App>;
   let connection: Connection;
   let users: Model<UserDocument>;
+  const sentCodes: Array<{ recipient: string; code: string }> = [];
 
   beforeAll(async () => {
     const uri = process.env.MONGODB_INTEGRATION_URI;
@@ -35,7 +37,14 @@ describe('Sorteos API transaction journey (e2e)', () => {
     const { AppModule } = await import('../src/app.module');
     const testingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(EmailService)
+      .useValue({
+        sendVerificationEmail: async (recipient: string, code: string) => {
+          sentCodes.push({ recipient, code });
+        },
+      })
+      .compile();
     app = testingModule.createNestApplication();
     app.setGlobalPrefix('api/v1');
     await app.init();
@@ -108,6 +117,7 @@ describe('Sorteos API transaction journey (e2e)', () => {
 
     const checkout = await request(http)
       .post('/api/v1/checkout')
+      .set('Authorization', authorization)
       .send({
         campaignSlug: 'sorteo-transaccional-e2e',
         quantity: 10,
@@ -150,6 +160,31 @@ describe('Sorteos API transaction journey (e2e)', () => {
         );
       });
 
+    await request(http)
+      .get('/api/v1/me/orders')
+      .set('Authorization', authorization)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body.data).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ publicId: orderPublicId, status: 'paid' }),
+          ]),
+        );
+      });
+
+    await request(http)
+      .get(`/api/v1/me/titles?campaignId=${campaignId}`)
+      .set('Authorization', authorization)
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toHaveLength(10);
+        expect(body).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ number: winningNumber, status: 'paid' }),
+          ]),
+        );
+      });
+
     const refundableCheckout = await request(http)
       .post('/api/v1/checkout')
       .send({
@@ -177,8 +212,43 @@ describe('Sorteos API transaction journey (e2e)', () => {
       .expect(({ body }) => expect(body.processed).toBe(1));
 
     const refundableOrderPublicId = refundableCheckout.body.order.publicId;
-    const refundableOrderToken = refundableCheckout.body.orderAccessToken;
+    let refundableOrderToken = refundableCheckout.body.orderAccessToken;
     const refundablePaymentId = refundableCheckout.body.payment.id;
+
+    const recovery = await request(http)
+      .post('/api/v1/orders/access/request')
+      .send({
+        phone: '+55 (11) 97777-7777',
+        email: 'REFUND-E2E@EXAMPLE.TEST',
+        campaignId,
+      })
+      .expect(202);
+    const recoveryEmail = sentCodes.find(
+      (message) => message.recipient === 'refund-e2e@example.test',
+    );
+    expect(recoveryEmail?.code).toMatch(/^\d{6}$/);
+
+    const recovered = await request(http)
+      .post('/api/v1/orders/access/confirm')
+      .send({
+        challengeId: recovery.body.challengeId,
+        code: recoveryEmail?.code,
+      })
+      .expect(200);
+    const recoveredOrder = recovered.body.orders.find(
+      (order: { id?: string }) => order.id === refundableOrderPublicId,
+    );
+    expect(recoveredOrder?.accessToken).toEqual(expect.any(String));
+
+    await request(http)
+      .get(`/api/v1/checkout/${refundableOrderPublicId}`)
+      .set('X-Order-Token', refundableOrderToken)
+      .expect(403);
+    refundableOrderToken = recoveredOrder.accessToken;
+    await request(http)
+      .get(`/api/v1/checkout/${refundableOrderPublicId}`)
+      .set('X-Order-Token', refundableOrderToken)
+      .expect(200);
 
     await request(http)
       .post(`/api/v1/admin/campaigns/${campaignId}/draw/verify/manual-external`)

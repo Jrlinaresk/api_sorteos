@@ -9,6 +9,13 @@ import { OrdersService } from './orders.service';
 import { MyOrdersController } from './my-orders.controller';
 import { AdminOrdersController } from './admin-orders.controller';
 import { AuthModule } from '../auth/auth.module';
+import { EmailModule } from '../email/email.module';
+import { OrderAccessController } from './order-access.controller';
+import { OrderAccessService } from './order-access.service';
+import {
+  OrderAccessChallenge,
+  OrderAccessChallengeSchema,
+} from './schemas/order-access-challenge.schema';
 
 @Module({
   imports: [
@@ -16,12 +23,22 @@ import { AuthModule } from '../auth/auth.module';
       { name: Order.name, schema: OrderSchema },
       { name: Quota.name, schema: QuotaSchema },
       { name: Raffle.name, schema: RaffleSchema },
+      {
+        name: OrderAccessChallenge.name,
+        schema: OrderAccessChallengeSchema,
+      },
     ]),
     RafflesModule,
     AuthModule,
+    EmailModule,
   ],
-  controllers: [OrdersController, MyOrdersController, AdminOrdersController],
-  providers: [OrdersService],
+  controllers: [
+    OrdersController,
+    MyOrdersController,
+    AdminOrdersController,
+    OrderAccessController,
+  ],
+  providers: [OrdersService, OrderAccessService],
   exports: [OrdersService, MongooseModule],
 })
 export class OrdersModule {}

@@ -7,6 +7,9 @@ FROM node:${NODE_VERSION} AS dependencies
 ARG PNPM_VERSION
 ENV PNPM_HOME=/pnpm
 ENV PATH=${PNPM_HOME}:${PATH}
+ENV CI=true
+ENV DO_NOT_TRACK=1
+ENV SCARF_ANALYTICS=false
 WORKDIR /app
 
 RUN corepack enable \

@@ -67,6 +67,12 @@ Los datos viven en cuatro volúmenes:
    los asigna al UID no privilegiado de la API y aplica modo `0400`. La API no
    recibe acceso directo al directorio del host.
 
+   Antes de aplicar cambios puede ejecutar un preflight sin modificar servicios:
+
+   ```bash
+   ./deploy-prod.sh --check
+   ```
+
 4. Despliegue:
 
    ```bash
@@ -102,6 +108,12 @@ En ese caso el proxy TLS debe apuntar a `http://127.0.0.1:8081`. No configure
 HSTS en esta capa HTTP; hágalo donde termina TLS. El proxy admite cuerpos de
 hasta 260 MiB, protege especialmente registro/login/refresh/recuperación y
 mantiene timeouts acotados.
+
+Si activa mTLS para el webhook, el proxy que termina TLS debe validar realmente
+el certificado cliente y **sobrescribir** (no reenviar) la cabecera configurada,
+por ejemplo `proxy_set_header x-ssl-client-verify $ssl_client_verify;`. Con HMAC,
+envíe el valor por `x-efi-webhook-token`; evite query params. El access log del
+Nginx incluido omite el query string para no persistir secretos heredados.
 
 Swagger está deshabilitado por defecto en producción. Si se habilita de forma
 temporal, su ruta es `/api/docs`.
