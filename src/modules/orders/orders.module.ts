@@ -16,6 +16,7 @@ import {
   OrderAccessChallenge,
   OrderAccessChallengeSchema,
 } from './schemas/order-access-challenge.schema';
+import { SettingsModule } from '../settings/settings.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import {
     RafflesModule,
     AuthModule,
     EmailModule,
+    SettingsModule,
   ],
   controllers: [
     OrdersController,

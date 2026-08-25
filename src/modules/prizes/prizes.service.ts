@@ -9,6 +9,7 @@ import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { Connection, ClientSession, Model, Types } from 'mongoose';
 import { CreateInstantPrizeDto } from './dto/create-instant-prize.dto';
+import { FulfillPrizeAwardDto } from './dto/fulfill-prize-award.dto';
 import { UpdateInstantPrizeDto } from './dto/update-instant-prize.dto';
 import {
   InstantPrize,
@@ -339,8 +340,10 @@ export class PrizesService {
     const [data, total] = await Promise.all([
       this.awardModel
         .find(filter)
+        .select('+fulfilledBy +fulfillmentReference +fulfillmentNotes')
         .populate('campaign', 'name slug')
         .populate('prize', 'title mechanic')
+        .populate('fulfilledBy', 'nickname name email')
         .sort({ awardedAt: -1, _id: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
@@ -366,8 +369,10 @@ export class PrizesService {
     }
     const award = await this.awardModel
       .findOne({ publicId })
+      .select('+fulfilledBy +fulfillmentReference +fulfillmentNotes')
       .populate('campaign', 'name slug')
       .populate('prize', 'title mechanic')
+      .populate('fulfilledBy', 'nickname name email')
       .lean()
       .exec();
     if (!award) throw new NotFoundException('Adjudicación no encontrada');
@@ -560,9 +565,12 @@ export class PrizesService {
   async listMine(userId: string) {
     if (!Types.ObjectId.isValid(userId))
       throw new BadRequestException('Usuario inválido');
+    const orderIds = await this.orderModel
+      .distinct('_id', { user: new Types.ObjectId(userId) })
+      .exec();
     return this.awardModel
       .find({
-        user: new Types.ObjectId(userId),
+        order: { $in: orderIds },
         status: { $ne: PrizeAwardStatus.Reversed },
       })
       .populate('campaign', 'name slug status')
@@ -596,6 +604,7 @@ export class PrizesService {
       if (attempt.status === PrizeAttemptStatus.Pending) {
         accessToken = randomBytes(24).toString('hex');
         attempt.accessSecret = this.hash(accessToken);
+        attempt.accessSecretExpiresAt = this.attemptAccessExpiresAt();
         await attempt.save();
       }
       result.push(this.attemptView(attempt, accessToken));
@@ -603,7 +612,7 @@ export class PrizesService {
     return result;
   }
 
-  async playAttempt(publicId: string, accessToken: string, userId?: string) {
+  async playAttempt(publicId: string, accessToken?: string, userId?: string) {
     const session = await this.connection.startSession();
     let played: PrizeAttemptDocument | undefined;
     let selected: InstantPrizeDocument | null = null;
@@ -617,11 +626,12 @@ export class PrizesService {
         reveal = undefined;
         const attempt = await this.attemptModel
           .findOne({ publicId })
-          .select('+accessSecret +entropyReveal +configurationSnapshot')
+          .select(
+            '+accessSecret +accessSecretExpiresAt +entropyReveal +configurationSnapshot',
+          )
           .session(session)
           .exec();
         if (!attempt) throw new NotFoundException('Intento no encontrado');
-        this.assertAttemptOwner(attempt, accessToken, userId);
         if (attempt.status !== PrizeAttemptStatus.Pending) {
           throw new ConflictException('Este intento ya fue utilizado');
         }
@@ -631,6 +641,7 @@ export class PrizesService {
           .session(session)
           .exec();
         if (!order) throw new NotFoundException('Pedido no encontrado');
+        this.assertAttemptOwner(attempt, accessToken, userId, order);
         if (
           order.status !== OrderStatus.Paid ||
           order.campaign.toString() !== attempt.campaign.toString()
@@ -786,7 +797,12 @@ export class PrizesService {
     return this.claimAwardTransactional(publicId, { userId });
   }
 
-  async fulfill(publicId: string) {
+  async fulfill(publicId: string, dto: FulfillPrizeAwardDto, actorId: string) {
+    if (!Types.ObjectId.isValid(actorId)) {
+      throw new BadRequestException('Actor de entrega inválido');
+    }
+    const reference = dto.reference.trim();
+    const notes = dto.notes?.trim();
     const session = await this.connection.startSession();
     let fulfilled: PrizeAwardDocument | undefined;
     try {
@@ -804,6 +820,9 @@ export class PrizesService {
         await this.lockPaidOrderForPrizeLifecycle(award.order, session);
         award.status = PrizeAwardStatus.Fulfilled;
         award.fulfilledAt = new Date();
+        award.fulfilledBy = new Types.ObjectId(actorId);
+        award.fulfillmentReference = reference;
+        if (notes) award.fulfillmentNotes = notes;
         fulfilled = await award.save({ session });
       });
     } finally {
@@ -880,11 +899,19 @@ export class PrizesService {
         if ('orderId' in owner && award.order.toString() !== owner.orderId) {
           throw new ForbiddenException('El premio no pertenece a este pedido');
         }
-        if (
-          'userId' in owner &&
-          (!award.user || award.user.toString() !== owner.userId)
-        ) {
-          throw new ForbiddenException('El premio no pertenece a este usuario');
+        if ('userId' in owner) {
+          const ownedOrder = await this.orderModel
+            .findOne({
+              _id: award.order,
+              user: new Types.ObjectId(owner.userId),
+            })
+            .session(session)
+            .exec();
+          if (!ownedOrder) {
+            throw new ForbiddenException(
+              'El premio no pertenece a este usuario',
+            );
+          }
         }
         await this.lockPaidOrderForPrizeLifecycle(award.order, session);
         claimed = await this.markClaimed(award, session);
@@ -1197,6 +1224,7 @@ export class PrizesService {
         ordinal,
         status: PrizeAttemptStatus.Pending,
         accessSecret: this.hash(randomBytes(24).toString('hex')),
+        accessSecretExpiresAt: this.attemptAccessExpiresAt(),
         configurationHash,
         configurationSnapshot,
         entropyCommitment: this.hash(
@@ -1244,10 +1272,26 @@ export class PrizesService {
 
   private assertAttemptOwner(
     attempt: PrizeAttemptDocument,
-    token: string,
+    token?: string,
     userId?: string,
+    order?: OrderDocument,
   ) {
-    if (userId && attempt.user?.toString() === userId) return;
+    const accountOwner = order?.user?.toString() || attempt.user?.toString();
+    if (accountOwner) {
+      if (
+        userId === accountOwner &&
+        (!order || order._id.toString() === attempt.order.toString())
+      ) {
+        return;
+      }
+      throw new ForbiddenException(
+        'Este intento pertenece a una cuenta; inicie sesión para jugarlo',
+      );
+    }
+    const expiresAt = new Date(attempt.accessSecretExpiresAt || 0).getTime();
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      throw new ForbiddenException('El token de intento expiró');
+    }
     if (!token || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
       throw new ForbiddenException('Token de intento inválido');
     }
@@ -1269,13 +1313,16 @@ export class PrizesService {
     award?: PrizeAwardDocument | null,
   ) {
     const raw: Record<string, any> = attempt.toObject();
+    const accessTokenExpiresAt = raw.accessSecretExpiresAt;
     delete raw.accessSecret;
+    delete raw.accessSecretExpiresAt;
     delete raw.entropyReveal;
     const configurationSnapshot = raw.configurationSnapshot;
     delete raw.configurationSnapshot;
     return {
       ...raw,
       accessToken,
+      accessTokenExpiresAt: accessToken ? accessTokenExpiresAt : undefined,
       prize: prize || raw.prize || null,
       award: award || raw.award || null,
       won: Boolean(award || raw.award),
@@ -1288,6 +1335,14 @@ export class PrizesService {
           ? configurationSnapshot
           : undefined,
     };
+  }
+
+  private attemptAccessExpiresAt(): Date {
+    const configured = Number(process.env.PRIZE_ACCESS_TOKEN_HOURS || 12);
+    const hours = Number.isInteger(configured)
+      ? Math.min(72, Math.max(1, configured))
+      : 12;
+    return new Date(Date.now() + hours * 60 * 60_000);
   }
 
   private hash(value: string) {

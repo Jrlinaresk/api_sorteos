@@ -140,7 +140,10 @@ export class AuthService {
     return this.createSession(user);
   }
 
-  async login(dto: LoginDto): Promise<AuthResponseDto> {
+  async login(
+    dto: LoginDto,
+    requiredRole?: UserRole,
+  ): Promise<AuthResponseDto> {
     const user = await this.usersService.findByPhoneForAuthentication(
       dto.phone,
     );
@@ -163,7 +166,11 @@ export class AuthService {
       await this.usersService.recordFailedLogin(String(user._id));
       throw this.invalidCredentials();
     }
-    if (user.isActive === false || user.registrationPending === true) {
+    if (
+      user.isActive === false ||
+      user.registrationPending === true ||
+      !this.hasRequiredRole(user, requiredRole)
+    ) {
       throw this.invalidCredentials();
     }
 
@@ -196,6 +203,7 @@ export class AuthService {
 
   async confirmPasswordReset(
     dto: ConfirmPasswordResetDto,
+    requiredRole?: UserRole,
   ): Promise<AuthResponseDto> {
     const email = normalizeEmail(dto.email);
     if (!email) throw this.invalidResetCode();
@@ -210,7 +218,8 @@ export class AuthService {
     if (
       user.isActive === false ||
       user.registrationPending === true ||
-      normalizeEmail(user.email) !== email
+      normalizeEmail(user.email) !== email ||
+      !this.hasRequiredRole(user, requiredRole)
     ) {
       throw this.invalidResetCode();
     }
@@ -237,14 +246,18 @@ export class AuthService {
     return this.createSession(updated);
   }
 
-  async refresh(refreshToken: string): Promise<AuthResponseDto> {
+  async refresh(
+    refreshToken: string,
+    requiredRole?: UserRole,
+  ): Promise<AuthResponseDto> {
     if (!this.refreshTokens) throw this.invalidCredentials();
     const rotated = await this.refreshTokens.rotate(refreshToken);
     const user = await this.usersService.findOne(rotated.userId);
     if (
       user.isActive === false ||
       user.registrationPending === true ||
-      (user.authVersion ?? 0) !== rotated.authVersion
+      (user.authVersion ?? 0) !== rotated.authVersion ||
+      !this.hasRequiredRole(user, requiredRole)
     ) {
       await this.refreshTokens.revokeAllForUser(
         rotated.userId,
@@ -263,8 +276,12 @@ export class AuthService {
     userId: string,
     currentPassword: string,
     newPassword: string,
+    requiredRole?: UserRole,
   ): Promise<AuthResponseDto> {
     const publicUser = await this.usersService.findOne(userId);
+    if (!this.hasRequiredRole(publicUser, requiredRole)) {
+      throw this.invalidCredentials();
+    }
     const user = await this.usersService.findByPhoneForAuthentication(
       publicUser.phone,
     );
@@ -306,6 +323,13 @@ export class AuthService {
       user.authVersion = migrated.authVersion;
     }
     return legacyValid;
+  }
+
+  private hasRequiredRole(
+    user: Pick<UserDocument, 'role'> | { role?: UserRole },
+    requiredRole?: UserRole,
+  ): boolean {
+    return !requiredRole || (user.role ?? UserRole.CUSTOMER) === requiredRole;
   }
 
   private constantTimeTextComparison(

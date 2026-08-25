@@ -9,6 +9,7 @@ import { Quota, QuotaSchema } from '../orders/schemas/quota.schema';
 import { AdminMainPrizeAwardsController } from './admin-main-prize-awards.controller';
 import { MainPrizeAwardsController } from './main-prize-awards.controller';
 import { MainPrizeAwardsService } from './main-prize-awards.service';
+import { MyMainPrizeAwardsController } from './my-main-prize-awards.controller';
 import {
   MainPrizeAward,
   MainPrizeAwardSchema,
@@ -26,7 +27,11 @@ import {
     NotificationsModule,
     EmailModule,
   ],
-  controllers: [MainPrizeAwardsController, AdminMainPrizeAwardsController],
+  controllers: [
+    MainPrizeAwardsController,
+    MyMainPrizeAwardsController,
+    AdminMainPrizeAwardsController,
+  ],
   providers: [MainPrizeAwardsService],
   exports: [MainPrizeAwardsService, MongooseModule],
 })

@@ -3,6 +3,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Post,
@@ -12,6 +13,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Throttle } from '@nestjs/throttler';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { Request, Response } from 'express';
 import { AuthService } from '../auth/auth.service';
@@ -22,11 +24,13 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { PublicUserDto } from '../users/dto/public-user.dto';
 import { UserRole } from '../users/enums/user-role.enum';
+import { AdminSessionOriginGuard } from './admin-session-origin.guard';
 
 const ADMIN_REFRESH_COOKIE = 'sorteos_admin_refresh';
 const ADMIN_SESSION_PATH = '/api/v1/admin/session';
 
 @ApiTags('Admin session')
+@UseGuards(AdminSessionOriginGuard)
 @Controller('admin/session')
 export class AdminSessionController {
   constructor(
@@ -36,6 +40,10 @@ export class AdminSessionController {
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'private, no-store, max-age=0')
+  @Throttle({
+    default: { limit: 10, ttl: 60_000, blockDuration: 5 * 60_000 },
+  })
   @ApiOperation({ summary: 'Inicia una sesión restringida al panel operativo' })
   async login(
     @Body() dto: LoginDto,
@@ -53,6 +61,8 @@ export class AdminSessionController {
 
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
+  @Header('Cache-Control', 'private, no-store, max-age=0')
+  @Throttle({ default: { limit: 30, ttl: 60_000, blockDuration: 60_000 } })
   @ApiOperation({ summary: 'Rota la sesión administrativa HttpOnly' })
   async refresh(
     @Req() request: Request,
@@ -74,6 +84,7 @@ export class AdminSessionController {
 
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
+  @Header('Cache-Control', 'private, no-store, max-age=0')
   @ApiOperation({ summary: 'Revoca y elimina la sesión administrativa' })
   async logout(
     @Req() request: Request,
@@ -81,12 +92,13 @@ export class AdminSessionController {
   ): Promise<void> {
     const refreshToken = this.readRefreshCookie(request);
     if (refreshToken) {
-      await this.auth.logout(refreshToken).catch(() => undefined);
+      await this.auth.logout(refreshToken);
     }
     this.clearRefreshCookie(response);
   }
 
   @Get()
+  @Header('Cache-Control', 'private, no-store, max-age=0')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.OPERATOR, UserRole.ADMIN)
   @ApiBearerAuth()

@@ -53,6 +53,9 @@ export class Order {
   })
   accessSecret: string;
 
+  @Prop()
+  accessSecretExpiresAt: Date;
+
   @Prop({ type: Types.ObjectId, ref: 'Raffle', required: true, index: true })
   campaign: Types.ObjectId;
 

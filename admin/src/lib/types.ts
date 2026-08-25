@@ -377,6 +377,17 @@ export interface PrizeAward {
   awardedAt: string;
   claimedAt?: string;
   fulfilledAt?: string;
+  fulfilledBy?:
+    | string
+    | {
+        _id?: string;
+        id?: string;
+        nickname?: string;
+        name?: string;
+        email?: string;
+      };
+  fulfillmentReference?: string;
+  fulfillmentNotes?: string;
 }
 
 export type MainAwardStatus = 'pending' | 'claimed' | 'fulfilled';

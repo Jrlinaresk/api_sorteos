@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
@@ -14,7 +15,12 @@ import { Readable } from 'stream';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { ListOrdersDto } from './dto/list-orders.dto';
 import { ListMyTitlesDto } from './dto/list-my-titles.dto';
-import { Order, OrderDocument, OrderStatus } from './schemas/order.schema';
+import {
+  AttributionSnapshot,
+  Order,
+  OrderDocument,
+  OrderStatus,
+} from './schemas/order.schema';
 import { Quota, QuotaDocument, QuotaStatus } from './schemas/quota.schema';
 import {
   CampaignStatus,
@@ -28,6 +34,7 @@ import {
   normalizeOrderEmail,
   normalizeOrderPhone,
 } from './order-normalization';
+import { SettingsService } from '../settings/settings.service';
 
 interface ReservationResult {
   order: OrderDocument;
@@ -54,11 +61,15 @@ export class OrdersService {
     private readonly campaignModel: Model<RaffleDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly campaigns: RafflesService,
+    @Optional() private readonly settings?: SettingsService,
   ) {}
 
   async createReservation(dto: CreateOrderDto, userId?: string) {
     this.assertValidCpf(dto.buyer.cpf);
     const normalized = this.normalizeCreateDto(dto);
+    const attribution = await this.allowedCheckoutAttribution(
+      normalized.attribution,
+    );
     const ownerId =
       userId && Types.ObjectId.isValid(userId)
         ? new Types.ObjectId(userId)
@@ -77,7 +88,7 @@ export class OrdersService {
       if (previous) {
         this.assertIdempotentReservation(previous, normalized);
         this.assertIdempotentOwner(previous, ownerId);
-        this.assertReplayCredential(previous, accessToken);
+        this.assertReplayCredential(previous, accessToken, Boolean(ownerId));
         return this.toOwnerView(previous, accessToken, true);
       }
     }
@@ -142,8 +153,9 @@ export class OrdersService {
           termsHash,
           termsAcceptedAt: new Date(),
           idempotencyKey: normalized.idempotencyKey,
-          attribution: normalized.attribution || {},
+          attribution,
           accessSecret: this.hashSecret(accessToken),
+          accessSecretExpiresAt: this.orderAccessExpiresAt(),
           statusHistory: [
             {
               status: OrderStatus.Reserved,
@@ -259,7 +271,7 @@ export class OrdersService {
         if (replay) {
           this.assertIdempotentReservation(replay, normalized);
           this.assertIdempotentOwner(replay, ownerId);
-          this.assertReplayCredential(replay, accessToken);
+          this.assertReplayCredential(replay, accessToken, Boolean(ownerId));
           return this.toOwnerView(replay, accessToken, true);
         }
       }
@@ -303,6 +315,17 @@ export class OrdersService {
     if (query.status) filter.status = query.status;
     if (query.campaignId)
       filter.campaign = new Types.ObjectId(query.campaignId);
+    if (query.search?.trim()) {
+      const search = this.escapeRegex(query.search.trim());
+      const pattern = new RegExp(search, 'i');
+      filter.$or = [
+        { publicId: pattern },
+        { 'buyer.name': pattern },
+        { 'buyer.phone': pattern },
+        { 'buyer.email': pattern },
+        { 'buyer.cpf': pattern },
+      ];
+    }
     const [rows, total] = await Promise.all([
       this.orderModel
         .find(filter)
@@ -317,7 +340,13 @@ export class OrdersService {
     ]);
     return {
       data: rows.map((row) => this.toOwnerView(row as any)),
-      meta: { page, limit, total },
+      meta: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        hasNextPage: page * limit < total,
+      },
     };
   }
 
@@ -1158,7 +1187,15 @@ export class OrdersService {
   private assertReplayCredential(
     order: OrderDocument,
     accessToken: string,
+    authenticatedOwner = false,
   ): void {
+    if (!authenticatedOwner && !this.orderAccessIsActive(order)) {
+      throw new ConflictException({
+        message:
+          'El acceso temporal expiró; use la recuperación de pedido o su cuenta',
+        code: 'ORDER_ACCESS_EXPIRED',
+      });
+    }
     const expected = Buffer.from(order.accessSecret || '', 'hex');
     const received = Buffer.from(this.hashSecret(accessToken), 'hex');
     if (
@@ -1191,9 +1228,22 @@ export class OrdersService {
     accessToken?: string,
     userId?: string,
   ) {
-    if (userId && order.user?.toString() === userId) return;
+    const ownerId = order.user?.toString();
+    if (ownerId) {
+      if (userId === ownerId) return;
+      throw new ForbiddenException(
+        'Este pedido está vinculado a una cuenta; inicie sesión para acceder',
+      );
+    }
     if (!accessToken)
       throw new ForbiddenException('Token de acceso al pedido requerido');
+    if (!this.orderAccessIsActive(order)) {
+      throw new ForbiddenException({
+        message:
+          'El acceso temporal expiró; recupere el pedido con el código enviado a su e-mail',
+        code: 'ORDER_ACCESS_EXPIRED',
+      });
+    }
     const expected = Buffer.from(order.accessSecret || '', 'hex');
     const received = Buffer.from(this.hashSecret(accessToken), 'hex');
     if (
@@ -1213,7 +1263,9 @@ export class OrdersService {
       ? (order as any).toObject()
       : { ...(order as any) };
     const internalId = raw._id?.toString?.() || raw._id;
+    raw.orderAccessExpiresAt = raw.accessSecretExpiresAt;
     delete raw.accessSecret;
+    delete raw.accessSecretExpiresAt;
     delete raw.prizeLifecycleVersion;
     delete raw.__v;
     delete raw._id;
@@ -1241,6 +1293,36 @@ export class OrdersService {
         OrderStatus.PendingPayment,
       ].includes(raw.status),
     };
+  }
+
+  private orderAccessExpiresAt(): Date {
+    const configured = Number(process.env.ORDER_ACCESS_TOKEN_HOURS || 24);
+    const hours = Number.isInteger(configured)
+      ? Math.min(168, Math.max(1, configured))
+      : 24;
+    return new Date(Date.now() + hours * 60 * 60_000);
+  }
+
+  private orderAccessIsActive(order: OrderDocument): boolean {
+    const expiresAt = new Date(order.accessSecretExpiresAt).getTime();
+    return Number.isFinite(expiresAt) && expiresAt > Date.now();
+  }
+
+  private async allowedCheckoutAttribution(
+    attribution?: AttributionSnapshot,
+  ): Promise<AttributionSnapshot> {
+    if (!attribution) return {};
+    if (!this.settings) return attribution;
+    let enabled = false;
+    try {
+      enabled = (await this.settings.getPublic()).featureFlags.referrals === true;
+    } catch {
+      // La compra continúa, pero las comisiones fallan cerradas.
+    }
+    if (enabled) return attribution;
+    const { referralCode: _, referralClickId: __, ...withoutReferral } =
+      attribution;
+    return withoutReferral;
   }
 
   presentRecoveredOrder(

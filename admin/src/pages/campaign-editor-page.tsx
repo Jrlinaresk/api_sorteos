@@ -294,18 +294,40 @@ const campaignFormSchema = z
     analyticsEnabled: z.boolean(),
     metaPixelId: z
       .string()
-      .regex(/^\d{0,32}$/, 'El Meta Pixel solo admite dígitos.'),
+      .regex(/^(|\d{5,32})$/, 'El Meta Pixel debe tener entre 5 y 32 dígitos.'),
     googleTagManagerId: z
       .string()
       .regex(/^(|GTM-[A-Z0-9]{4,32})$/, 'Usa un identificador GTM válido.'),
     progressOverride: optionalNumber(0, 'El progreso manual', 100),
   })
   .superRefine((values, context) => {
-    if (values.status === 'scheduled' && !values.launchAt) {
+    if (
+      values.status === 'scheduled' &&
+      (!values.launchAt || new Date(values.launchAt).getTime() <= Date.now())
+    ) {
       context.addIssue({
         code: 'custom',
         path: ['launchAt'],
-        message: 'Una campaña programada necesita fecha de lanzamiento.',
+        message:
+          'Una campaña programada necesita una fecha de lanzamiento futura.',
+      });
+    }
+    if (values.status === 'scheduled' && !values.regulationHtml.trim()) {
+      context.addIssue({
+        code: 'custom',
+        path: ['regulationHtml'],
+        message: 'Añade el reglamento antes de programar la campaña.',
+      });
+    }
+    if (
+      values.status === 'scheduled' &&
+      values.drawMethod === 'cryptographic'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['status'],
+        message:
+          'Crea primero el borrador, publica el compromiso criptográfico y después prográmalo.',
       });
     }
     if (
@@ -729,6 +751,7 @@ export function CampaignEditorPage() {
     control,
     handleSubmit,
     reset,
+    setValue,
     formState: { errors, isDirty },
   } = useForm<CampaignFormValues>({
     resolver: zodResolver(campaignFormSchema),
@@ -788,6 +811,15 @@ export function CampaignEditorPage() {
   });
   const analyticsEnabled = useWatch({ control, name: 'analyticsEnabled' });
   const regulationHtml = useWatch({ control, name: 'regulationHtml' });
+
+  useEffect(() => {
+    if (isNew && drawMethod === 'cryptographic' && status === 'scheduled') {
+      setValue('status', 'draft', {
+        shouldDirty: true,
+        shouldValidate: true,
+      });
+    }
+  }, [drawMethod, isNew, setValue, status]);
 
   if (!isNew && campaignQuery.isLoading) {
     return <LoadingState label="Cargando el contrato de campaña…" />;
@@ -1036,8 +1068,14 @@ export function CampaignEditorPage() {
                   <span>Estado inicial</span>
                   <select {...register('status')}>
                     <option value="draft">Borrador</option>
-                    <option value="scheduled">Programada</option>
+                    <option
+                      value="scheduled"
+                      disabled={drawMethod === 'cryptographic'}
+                    >
+                      Programada
+                    </option>
                   </select>
+                  <ErrorMessage error={errors.status} />
                 </label>
               ) : null}
               <label className="field">
@@ -1118,6 +1156,12 @@ export function CampaignEditorPage() {
               <InlineAlert tone="warning" title="Falta el reglamento">
                 El backend no activará una campaña programada sin reglamento
                 vigente.
+              </InlineAlert>
+            ) : null}
+            {isNew && drawMethod === 'cryptographic' ? (
+              <InlineAlert tone="info" title="Primero publica el compromiso">
+                La campaña se creará como borrador. Después abre Sorteos, fija
+                el compromiso criptográfico y prográmala desde sus transiciones.
               </InlineAlert>
             ) : null}
           </SectionCard>

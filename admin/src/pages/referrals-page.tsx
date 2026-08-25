@@ -31,6 +31,25 @@ type CodeStatus = 'active' | 'paused' | 'disabled';
 type CommissionStatus =
   'pending' | 'approved' | 'paid' | 'rejected' | 'reversed';
 
+const COMMISSION_STATUS_LABELS: Record<CommissionStatus, string> = {
+  pending: 'Pendiente',
+  approved: 'Aprobada',
+  paid: 'Pagada',
+  rejected: 'Rechazada',
+  reversed: 'Revertida',
+};
+
+const COMMISSION_STATUS_TRANSITIONS: Record<
+  CommissionStatus,
+  readonly CommissionStatus[]
+> = {
+  pending: ['approved', 'rejected', 'reversed'],
+  approved: ['paid', 'rejected', 'reversed'],
+  paid: ['reversed'],
+  rejected: [],
+  reversed: [],
+};
+
 interface ReferralPage<T> {
   items: T[];
   page: number;
@@ -779,6 +798,11 @@ function CommissionEditor({
   onSave: (status: CommissionStatus, reason?: string) => void;
   onClose: () => void;
 }) {
+  const availableStatuses = [
+    item.status,
+    ...COMMISSION_STATUS_TRANSITIONS[item.status],
+  ];
+
   return (
     <Modal
       title="Cambiar estado de comisión"
@@ -802,11 +826,11 @@ function CommissionEditor({
             required
             defaultValue={item.status}
           >
-            <option value="pending">Pendiente</option>
-            <option value="approved">Aprobada</option>
-            <option value="paid">Pagada</option>
-            <option value="rejected">Rechazada</option>
-            <option value="reversed">Revertida</option>
+            {availableStatuses.map((status) => (
+              <option key={status} value={status}>
+                {COMMISSION_STATUS_LABELS[status]}
+              </option>
+            ))}
           </select>
         </Field>
         <Field

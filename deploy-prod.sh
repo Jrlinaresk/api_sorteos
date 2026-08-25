@@ -170,15 +170,50 @@ fi
 cors_origins="$(env_value CORS_ORIGINS)"
 [[ "${cors_origins}" != *'*'* ]] || fail 'CORS_ORIGINS no puede usar comodines'
 [[ "${cors_origins}" != *'.invalid'* ]] || fail 'Reemplace el dominio de ejemplo en CORS_ORIGINS'
+IFS=',' read -r -a cors_origin_list <<< "${cors_origins}"
+for cors_origin in "${cors_origin_list[@]}"; do
+  cors_origin="${cors_origin#"${cors_origin%%[![:space:]]*}"}"
+  cors_origin="${cors_origin%"${cors_origin##*[![:space:]]}"}"
+  [[ "${cors_origin}" =~ ^https://[^/?#]+/?$ ]] \
+    || fail 'CORS_ORIGINS solo admite orígenes HTTPS exactos y sin rutas'
+done
+
+admin_panel_enabled="$(env_value ADMIN_PANEL_ENABLED)"
+admin_panel_enabled="${admin_panel_enabled:-true}"
+if [[ "${admin_panel_enabled}" == true ]]; then
+  require_value ADMIN_PANEL_ORIGINS
+  admin_origins="$(env_value ADMIN_PANEL_ORIGINS)"
+  [[ "${admin_origins}" != *'*'* ]] || fail 'ADMIN_PANEL_ORIGINS no puede usar comodines'
+  [[ "${admin_origins}" != *'.invalid'* ]] || fail 'Reemplace el dominio de ejemplo en ADMIN_PANEL_ORIGINS'
+  IFS=',' read -r -a admin_origin_list <<< "${admin_origins}"
+  for admin_origin in "${admin_origin_list[@]}"; do
+    admin_origin="${admin_origin#"${admin_origin%%[![:space:]]*}"}"
+    admin_origin="${admin_origin%"${admin_origin##*[![:space:]]}"}"
+    [[ "${admin_origin}" =~ ^https://[^/?#]+/?$ ]] \
+      || fail 'ADMIN_PANEL_ORIGINS solo admite orígenes HTTPS exactos y sin rutas'
+  done
+fi
 
 smtp_user="$(env_value SMTP_USER)"
 smtp_pass="$(env_value SMTP_PASS)"
 smtp_from="$(env_value SMTP_FROM)"
 [[ -n "${smtp_from}" || -n "${smtp_user}" ]] || fail 'Configure SMTP_FROM o SMTP_USER'
 [[ -n "${smtp_user}" && -n "${smtp_pass}" ]] || [[ -z "${smtp_user}" && -z "${smtp_pass}" ]] || fail 'SMTP_USER y SMTP_PASS deben configurarse juntos'
+smtp_secure="$(env_value SMTP_SECURE)"
+smtp_require_tls="$(env_value SMTP_REQUIRE_TLS)"
+smtp_reject_unauthorized="$(env_value SMTP_TLS_REJECT_UNAUTHORIZED)"
+[[ "${smtp_secure:-false}" == true || "${smtp_require_tls:-true}" == true ]] \
+  || fail 'SMTP_SECURE=true o SMTP_REQUIRE_TLS=true es obligatorio'
+[[ "${smtp_reject_unauthorized:-true}" == true ]] \
+  || fail 'SMTP_TLS_REJECT_UNAUTHORIZED=true es obligatorio'
 
 [[ "$(env_value PAYMENTS_PROVIDER)" == efi ]] || fail 'Producción requiere PAYMENTS_PROVIDER=efi'
 [[ "$(env_value PAYMENTS_ALLOW_MOCK)" != true ]] || fail 'PAYMENTS_ALLOW_MOCK no puede estar activo en producción'
+[[ "$(env_value EFI_PIX_ENV)" == production ]] \
+  || fail 'EFI_PIX_ENV=production es obligatorio'
+efi_base_url="$(env_value EFI_PIX_BASE_URL)"
+[[ -z "${efi_base_url}" || "${efi_base_url}" == 'https://pix.api.efipay.com.br' ]] \
+  || fail 'EFI_PIX_BASE_URL debe estar vacío o ser el endpoint oficial de Efí'
 
 webhook_hmac="$(env_value EFI_WEBHOOK_HMAC)"
 webhook_mtls="$(env_value EFI_WEBHOOK_REQUIRE_MTLS)"

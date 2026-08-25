@@ -14,7 +14,7 @@ export default defineConfig({
   build: {
     outDir: fileURLToPath(new URL('../dist/admin', import.meta.url)),
     emptyOutDir: true,
-    sourcemap: true,
+    sourcemap: false,
     target: 'es2022',
   },
   server: {

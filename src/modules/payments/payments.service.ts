@@ -428,11 +428,29 @@ export class PaymentsService {
       .exec();
     if (
       !payment ||
-      !this.secretMatches(payment.publicSecretHash, accessSecret)
+      !this.secretMatches(payment.publicSecretHash, accessSecret) ||
+      !this.publicAccessIsActive(payment)
     ) {
       throw new UnauthorizedException('Pago o secreto de acceso inválido');
     }
     return this.toPublicView(payment);
+  }
+
+  private publicAccessIsActive(payment: PaymentDocument): boolean {
+    const configured = Number(
+      this.config.get<string>('PAYMENT_ACCESS_TOKEN_HOURS') || 24,
+    );
+    const hours = Number.isInteger(configured)
+      ? Math.min(168, Math.max(1, configured))
+      : 24;
+    const issuedAt = payment.createdAt
+      ? new Date(payment.createdAt).getTime()
+      : new Date(payment.expiresAt).getTime() -
+        DEFAULT_PAYMENT_EXPIRATION_SECONDS * 1000;
+    return (
+      Number.isFinite(issuedAt) &&
+      issuedAt + hours * 60 * 60_000 > Date.now()
+    );
   }
 
   async getStatus(id: string): Promise<PaymentStatus> {

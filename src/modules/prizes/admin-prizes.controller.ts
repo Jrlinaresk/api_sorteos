@@ -10,11 +10,14 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { PublicUserDto } from '../users/dto/public-user.dto';
 import { UserRole } from '../users/enums/user-role.enum';
 import { CreateInstantPrizeDto } from './dto/create-instant-prize.dto';
+import { FulfillPrizeAwardDto } from './dto/fulfill-prize-award.dto';
 import { UpdateInstantPrizeDto } from './dto/update-instant-prize.dto';
 import { PrizesService } from './prizes.service';
 import {
@@ -70,7 +73,12 @@ export class AdminPrizesController {
   }
 
   @Post('awards/:publicId/fulfill')
-  fulfill(@Param('publicId') publicId: string) {
-    return this.prizes.fulfill(publicId);
+  @Roles(UserRole.ADMIN)
+  fulfill(
+    @Param('publicId') publicId: string,
+    @Body() dto: FulfillPrizeAwardDto,
+    @CurrentUser() actor: PublicUserDto,
+  ) {
+    return this.prizes.fulfill(publicId, dto, actor.id);
   }
 }

@@ -8,7 +8,11 @@ const SENSITIVE_KEY_PATTERN =
   /(password|passwordhash|secret|token|authorization|cookie|code|cvv|pin|privatekey|apikey|pixcopy|pixpayload|phone|email|cpf|address|buyer|payer|taxid|documentnumber|fullname|firstname|middlename|lastname|secondlastname)/i;
 
 function isSensitiveKey(key: string): boolean {
-  return key.toLowerCase() === 'name' || SENSITIVE_KEY_PATTERN.test(key);
+  const normalized = key.toLowerCase();
+  return (
+    ['name', 'search', 'q', 'filter'].includes(normalized) ||
+    SENSITIVE_KEY_PATTERN.test(key)
+  );
 }
 
 export function summarizeAuditValue(

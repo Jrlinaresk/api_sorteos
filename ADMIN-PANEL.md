@@ -16,6 +16,10 @@ permite apagar únicamente la interfaz sin desactivar la API.
 ## Desarrollo y producción
 
 ```bash
+# selecciona la versión fijada en .nvmrc
+nvm install
+nvm use
+
 # Nest con watch + Vite con HMR
 pnpm start:dev
 
@@ -31,6 +35,15 @@ pnpm start:prod
   `index.html`; por eso funcionan también al recargar el navegador.
 - El HTML usa `Cache-Control: no-store`; los assets con hash usan cache
   inmutable de un año y todas las rutas del panel llevan `X-Robots-Tag`.
+- El build no publica sourcemaps y comprueba TypeScript antes de generar Vite.
+- Con el panel habilitado, producción aborta el arranque si falta
+  `dist/admin/index.html`, evitando un health check verde sin interfaz.
+- `pnpm start:prod` fija `NODE_ENV=production`; no carga configuración de
+  desarrollo por accidente.
+
+Para crear el primer administrador dentro del despliegue Docker, use el comando
+one-off documentado en [README.md](./README.md#desarrollo-local-del-monolito).
+Las variables `BOOTSTRAP_ADMIN_*` no se guardan en el servicio permanente.
 
 ## Seguridad de sesión y roles
 
@@ -38,21 +51,25 @@ pnpm start:prod
 rechaza cualquier cuenta distinta de `operator` o `admin`. El access token corto
 se mantiene solo en memoria. El refresh token se rota en una cookie `HttpOnly`,
 `SameSite=Strict`, restringida a `/api/v1/admin/session` y marcada `Secure` en
-producción. Al recargar, el panel recupera la sesión mediante esa cookie.
+producción. Al recargar, el panel recupera la sesión mediante esa cookie. Las
+rutas de sesión exigen además `X-Admin-Session: browser`. En producción,
+`ADMIN_PANEL_ORIGINS` es obligatorio y constituye la única lista de confianza;
+no se infiere desde `Host`, porque un proxy puede servir también el portal
+cliente. Esa lista nunca debe contener el origen del portal de clientes.
 
 El frontend oculta las acciones no autorizadas, pero la seguridad definitiva
 sigue en guards y roles de Nest:
 
-| Capacidad | Operator | Admin |
-| --- | :---: | :---: |
-| Consultar dashboard, campañas, pedidos y pagos | Sí | Sí |
-| Crear/editar campañas y operar premios instantáneos | Sí | Sí |
-| Conciliar/reintentar/cancelar pagos | Sí | Sí |
-| Reembolsar o forzar estado financiero | No | Sí |
-| Verificar sorteo Federal/criptográfico | Sí | Sí |
-| Verificación manual y publicación final | No | Sí |
-| Gestionar usuarios, auditoría y configuración publicada | No | Sí |
-| Borrado/purga de medios y premio principal | No | Sí |
+| Capacidad                                               | Operator | Admin |
+| ------------------------------------------------------- | :------: | :---: |
+| Consultar dashboard, campañas, pedidos y pagos          |    Sí    |  Sí   |
+| Crear/editar campañas y operar premios instantáneos     |    Sí    |  Sí   |
+| Conciliar/reintentar/cancelar pagos                     |    Sí    |  Sí   |
+| Reembolsar o forzar estado financiero                   |    No    |  Sí   |
+| Verificar sorteo Federal/criptográfico                  |    Sí    |  Sí   |
+| Verificación manual y publicación final                 |    No    |  Sí   |
+| Gestionar usuarios, auditoría y configuración publicada |    No    |  Sí   |
+| Borrado/purga de medios y premio principal              |    No    |  Sí   |
 
 ## Módulos incluidos
 

@@ -55,11 +55,11 @@ export class CreateNotificationDto {
   @MaxLength(2048)
   imageUrl?: string;
 
-  @ApiPropertyOptional({ description: 'URL absoluta o ruta interna' })
+  @ApiPropertyOptional({ description: 'Ruta interna del portal cliente' })
   @IsOptional()
   @IsString()
-  @Matches(/^(https?:\/\/|\/)/, {
-    message: 'actionUrl debe ser una URL HTTP(S) o una ruta interna',
+  @Matches(/^\/(?!\/)[^\r\n]{0,2047}$/, {
+    message: 'actionUrl debe ser una ruta interna que comience por /',
   })
   @MaxLength(2048)
   actionUrl?: string;

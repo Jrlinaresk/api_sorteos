@@ -1,8 +1,10 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   ServiceUnavailableException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
@@ -15,6 +17,8 @@ import {
 } from 'crypto';
 import { Connection, Model, Types } from 'mongoose';
 import { EmailService } from '../email/email.service';
+import { PublicUserDto } from '../users/dto/public-user.dto';
+import { UserRole } from '../users/enums/user-role.enum';
 import { ConfirmOrderAccessDto } from './dto/confirm-order-access.dto';
 import { RequestOrderAccessDto } from './dto/request-order-access.dto';
 import {
@@ -27,6 +31,7 @@ import {
   OrderAccessChallengeDocument,
 } from './schemas/order-access-challenge.schema';
 import { Order, OrderDocument } from './schemas/order.schema';
+import { Quota, QuotaDocument } from './schemas/quota.schema';
 
 const CHALLENGE_LIFETIME_MS = 15 * 60 * 1000;
 const MAX_CODE_ATTEMPTS = 5;
@@ -48,6 +53,8 @@ export class OrderAccessService {
     private readonly challengeModel: Model<OrderAccessChallengeDocument>,
     @InjectModel(Order.name)
     private readonly orderModel: Model<OrderDocument>,
+    @InjectModel(Quota.name)
+    private readonly quotaModel: Model<QuotaDocument>,
     @InjectConnection() private readonly connection: Connection,
     private readonly email: EmailService,
     private readonly config: ConfigService,
@@ -142,7 +149,24 @@ export class OrderAccessService {
     return this.publicChallengeResponse(challengeId, expiresAt);
   }
 
-  async confirm(dto: ConfirmOrderAccessDto) {
+  async confirm(dto: ConfirmOrderAccessDto, account?: PublicUserDto) {
+    const linkToAccount = dto.linkToAccount === true;
+    if (linkToAccount && !account) {
+      throw new UnauthorizedException(
+        'Bearer requerido para vincular pedidos a una cuenta',
+      );
+    }
+    if (linkToAccount && account?.role !== UserRole.CUSTOMER) {
+      throw new ForbiddenException(
+        'Solo una cuenta de cliente puede recibir pedidos recuperados',
+      );
+    }
+    if (linkToAccount && !Types.ObjectId.isValid(account!.id)) {
+      throw new BadRequestException('Cuenta de cliente inválida');
+    }
+    const accountId = linkToAccount
+      ? new Types.ObjectId(account!.id)
+      : undefined;
     const session = await this.connection.startSession();
     let invalid = false;
     let confirmationError: BadRequestException | undefined;
@@ -237,12 +261,22 @@ export class OrderAccessService {
         for (const order of orderDocuments) {
           const accessToken = randomBytes(32).toString('base64url');
           order.accessSecret = this.hashAccessToken(accessToken);
+          order.accessSecretExpiresAt = this.orderAccessExpiresAt();
+          if (accountId) order.user = accountId;
           await order.save({ session });
           recovered.push(
             this.orders.presentRecoveredOrder(order, accessToken) as Record<
               string,
               unknown
             >,
+          );
+        }
+
+        if (accountId) {
+          await this.quotaModel.updateMany(
+            { order: { $in: orderIds } },
+            { $set: { user: accountId } },
+            { session },
           );
         }
       });
@@ -258,8 +292,19 @@ export class OrderAccessService {
         count: recovered.length,
         hasMore: false,
         truncated: false,
+        ...(linkToAccount ? { linkedToAccount: true } : {}),
       },
     };
+  }
+
+  private orderAccessExpiresAt(): Date {
+    const configured = Number(
+      this.config.get<string>('ORDER_ACCESS_TOKEN_HOURS') || 24,
+    );
+    const hours = Number.isInteger(configured)
+      ? Math.min(168, Math.max(1, configured))
+      : 24;
+    return new Date(Date.now() + hours * 60 * 60_000);
   }
 
   private publicChallengeResponse(

@@ -217,6 +217,7 @@ describe('OrdersService reservations and lifecycle', () => {
       termsVersion: 'v1',
       status: OrderStatus.Reserved,
       accessSecret: (service as any).hashSecret(replayToken),
+      accessSecretExpiresAt: new Date(Date.now() + 60_000),
     });
     orderModel.findOne = jest.fn().mockReturnValue(executable(previous));
 
@@ -239,6 +240,7 @@ describe('OrdersService reservations and lifecycle', () => {
       termsVersion: 'v1',
       status: OrderStatus.Paid,
       accessSecret: 'a'.repeat(64),
+      accessSecretExpiresAt: new Date(Date.now() + 60_000),
     });
     orderModel.findOne = jest.fn().mockReturnValue(executable(previous));
 
@@ -723,5 +725,44 @@ describe('OrdersService titles and CSV exports', () => {
     expect(csv).not.toContain('52998224725');
     expect(csv).not.toContain('secret-order');
     expect(csv).not.toContain('+5511999999999');
+  });
+
+  it('busca dentro de los pedidos propios y devuelve navegación completa', async () => {
+    const userId = new Types.ObjectId();
+    const buyer = {
+      name: 'Maria da Silva',
+      phone: '+5511999999999',
+      email: 'maria@example.com',
+      cpf: '52998224725',
+    };
+    const query = executable([
+      {
+        _id: new Types.ObjectId(),
+        publicId: 'order-public-123',
+        buyer,
+        status: OrderStatus.Paid,
+      },
+    ]);
+    orderModel.find = jest.fn().mockReturnValue(query);
+    orderModel.countDocuments = jest.fn().mockResolvedValue(21);
+
+    const result = await service.listMine(userId.toString(), {
+      page: 2,
+      limit: 10,
+      search: ' Maria.+ ',
+    });
+
+    const filter = orderModel.find.mock.calls[0][0];
+    expect(filter.user).toEqual(userId);
+    expect(filter.$or).toHaveLength(5);
+    expect(filter.$or[1]['buyer.name'].source).toBe('Maria\\.\\+');
+    expect(orderModel.countDocuments).toHaveBeenCalledWith(filter);
+    expect(result.meta).toEqual({
+      page: 2,
+      limit: 10,
+      total: 21,
+      pages: 3,
+      hasNextPage: true,
+    });
   });
 });

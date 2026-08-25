@@ -8,6 +8,7 @@ import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { configureHttpBodyParsers } from './config/http-body-parser.config';
 import { configureAdminPanel } from './config/admin-panel.config';
+import { configurePrivateApiCaching } from './config/private-api-cache.config';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -17,6 +18,9 @@ async function bootstrap() {
   const config = app.get(ConfigService);
   const logger = new Logger('Bootstrap');
   const express = app.getHttpAdapter().getInstance();
+  const production = config.get<string>('NODE_ENV') === 'production';
+  const swaggerEnabled =
+    !production && config.get<string>('SWAGGER_ENABLED') !== 'false';
 
   if (config.get<string>('TRUST_PROXY') === 'true')
     express.set('trust proxy', 1);
@@ -27,7 +31,9 @@ async function bootstrap() {
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: swaggerEnabled
+            ? ["'self'", "'unsafe-inline'"]
+            : ["'self'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", 'data:', 'https:'],
         },
@@ -39,9 +45,10 @@ async function bootstrap() {
   configureHttpBodyParsers(app);
   app.enableCors(corsOptions(config));
   app.useGlobalFilters(new AllExceptionsFilter());
+  configurePrivateApiCaching(express);
   configureAdminPanel(express, config, logger);
 
-  if (config.get<string>('SWAGGER_ENABLED') !== 'false') {
+  if (swaggerEnabled) {
     const swaggerConfig = new DocumentBuilder()
       .setTitle('Sorteos API')
       .setDescription(
@@ -55,9 +62,7 @@ async function bootstrap() {
       )
       .build();
     const document = SwaggerModule.createDocument(app, swaggerConfig);
-    SwaggerModule.setup('api/docs', app, document, {
-      swaggerOptions: { persistAuthorization: true },
-    });
+    SwaggerModule.setup('api/docs', app, document);
   }
 
   const port = Number(config.get<string>('PORT') || 8080);
@@ -79,6 +84,7 @@ function corsOptions(config: ConfigService) {
           'http://localhost:3000',
           'http://localhost:4200',
           'http://localhost:5173',
+          'http://localhost:5174',
         ],
   );
   if (production && allowed.size === 0) {
@@ -93,6 +99,8 @@ function corsOptions(config: ConfigService) {
       'X-Order-Token',
       'X-Payment-Token',
       'X-Prize-Token',
+      'X-Client-Session',
+      'X-Admin-Session',
       'X-Correlation-Id',
       'Idempotency-Key',
     ],

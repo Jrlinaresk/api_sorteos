@@ -96,6 +96,28 @@ describe('AuthService', () => {
     );
   });
 
+  it('no emite una sesión cliente para un rol privilegiado', async () => {
+    const passwordHash = await bcrypt.hash('UnaClave9Segura', 4);
+    const user = {
+      _id: '507f1f77bcf86cd799439011',
+      phone: '+5511999999999',
+      passwordHash,
+      role: UserRole.ADMIN,
+      isActive: true,
+    } as unknown as UserDocument;
+    (usersService.findByPhoneForAuthentication as jest.Mock).mockResolvedValue(
+      user,
+    );
+
+    await expect(
+      service.login(
+        { phone: user.phone, password: 'UnaClave9Segura' },
+        UserRole.CUSTOMER,
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(jwtService.signAsync).not.toHaveBeenCalled();
+  });
+
   it('crea un alta pendiente y responde sin entregar tokens ni datos personales', async () => {
     const pending = {
       _id: '507f1f77bcf86cd799439011',
@@ -498,6 +520,31 @@ describe('AuthService', () => {
       true,
     );
     expect(result.accessToken).toBe('signed.jwt.token');
+  });
+
+  it('no permite que el reset web cliente cambie una cuenta privilegiada', async () => {
+    const user = {
+      _id: '507f1f77bcf86cd799439011',
+      phone: '+5511999999999',
+      email: 'admin@example.com',
+      role: UserRole.ADMIN,
+      isActive: true,
+    } as unknown as UserDocument;
+    (usersService.findByPhone as jest.Mock).mockResolvedValue(user);
+
+    await expect(
+      service.confirmPasswordReset(
+        {
+          phone: user.phone,
+          email: user.email!,
+          code: 'A1B2C3',
+          newPassword: 'OtraClave9Segura',
+        },
+        UserRole.CUSTOMER,
+      ),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(emailVerificationService.verifyCode).not.toHaveBeenCalled();
+    expect(usersService.setPassword).not.toHaveBeenCalled();
   });
 
   it('rechaza un refresh emitido antes de cambiar la versión de seguridad', async () => {

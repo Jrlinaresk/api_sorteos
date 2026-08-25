@@ -16,6 +16,16 @@ export function configureAdminPanel(
   config: ConfigService,
   logger: AdminPanelLogger,
 ): boolean {
+  express.use(
+    ['/api/v1/admin', '/api/v1/payments/admin', '/api/v1/users'],
+    (_request: Request, response: Response, next: NextFunction) => {
+      response.setHeader('Cache-Control', 'private, no-store, max-age=0');
+      response.setHeader('Pragma', 'no-cache');
+      response.setHeader('Expires', '0');
+      next();
+    },
+  );
+
   if (config.get<string>('ADMIN_PANEL_ENABLED') === 'false') {
     logger.log('Panel administrativo deshabilitado por configuración');
     return false;
@@ -24,9 +34,12 @@ export function configureAdminPanel(
   const root = resolve(process.cwd(), 'dist', 'admin');
   const indexFile = join(root, 'index.html');
   if (!existsSync(indexFile)) {
-    logger.warn(
-      'No se encontró dist/admin/index.html; ejecute pnpm build:admin para servir /admin',
-    );
+    const message =
+      'No se encontró dist/admin/index.html; ejecute pnpm build:admin para servir /admin';
+    if (config.get<string>('NODE_ENV') === 'production') {
+      throw new Error(message);
+    }
+    logger.warn(message);
     return false;
   }
 

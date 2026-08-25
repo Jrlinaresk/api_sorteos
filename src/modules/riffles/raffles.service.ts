@@ -886,6 +886,14 @@ export class RafflesService {
           'Una promoción no puede costar más que el precio normal',
         );
       }
+      if (
+        tier.active &&
+        tier.totalPrice < (dto.minimumOrderAmount || 0)
+      ) {
+        throw new BadRequestException(
+          'Una promoción activa no puede quedar por debajo de la compra mínima',
+        );
+      }
     }
     const drawMethod = dto.drawMethod || DrawMethod.FederalLottery;
     const federal = dto.federalLottery;
@@ -1144,6 +1152,14 @@ export class RafflesService {
           'Una promoción no puede costar más que el precio normal',
         );
       }
+      if (
+        tier.active &&
+        tier.totalPrice < (campaign.minimumOrderAmount || 0)
+      ) {
+        throw new BadRequestException(
+          'Una promoción activa no puede quedar por debajo de la compra mínima',
+        );
+      }
     }
   }
 
@@ -1336,6 +1352,15 @@ export class RafflesService {
       maxSelectedTitles(configuredMaxTitlesPerOrder, doubleChanceMultiplier),
       Math.floor(availableCount / doubleChanceMultiplier),
     );
+    const minimumSelectedQuantity =
+      Number(raw.ticketPrice) > 0
+        ? Math.max(
+            1,
+            Math.ceil(
+              Number(raw.minimumOrderAmount || 0) / Number(raw.ticketPrice),
+            ),
+          )
+        : 1;
     raw.maxTitlesPerOrder = effectiveMaxTitlesPerOrder;
     raw.quantitySuggestions = (raw.quantitySuggestions || []).filter(
       (quantity: number) => quantity <= effectiveMaxTitlesPerOrder,
@@ -1359,12 +1384,13 @@ export class RafflesService {
         withinLaunchWindow &&
         withinClosingWindow &&
         availableCount > 0 &&
-        effectiveMaxTitlesPerOrder > 0,
+        effectiveMaxTitlesPerOrder >= minimumSelectedQuantity,
       currentNotice: this.isTimedContentActive(raw.notice, now)
         ? raw.notice
         : null,
       doubleChanceActive: doubleChanceMultiplier > 1,
       purchaseLimits: {
+        minSelectedTitles: minimumSelectedQuantity,
         maxSelectedTitles: effectiveMaxTitlesPerOrder,
         maxAllocatedTitles: orderMaxAllocatedTitles(),
         allocationMultiplier: doubleChanceMultiplier,

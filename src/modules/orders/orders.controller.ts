@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Response } from 'express';
+import { ListPublicParticipantsDto } from './dto/list-public-participants.dto';
+import { ListTopBuyersDto } from './dto/list-top-buyers.dto';
 import { OrdersService } from './orders.service';
 
 @ApiTags('Public participation')
@@ -21,9 +23,9 @@ export class OrdersController {
   })
   topBuyers(
     @Param('campaignId') campaignId: string,
-    @Query('limit') limit?: string,
+    @Query() query: ListTopBuyersDto,
   ) {
-    return this.orders.topBuyers(campaignId, Number(limit || 10));
+    return this.orders.topBuyers(campaignId, query.limit);
   }
 
   @Get('min-max-quota')
@@ -37,13 +39,12 @@ export class OrdersController {
   @Get('participants')
   participants(
     @Param('campaignId') campaignId: string,
-    @Query('page') page?: string,
-    @Query('limit') limit?: string,
+    @Query() query: ListPublicParticipantsDto,
   ) {
     return this.orders.listPublicParticipants(
       campaignId,
-      Number(page || 1),
-      Number(limit || 100),
+      query.page,
+      query.limit,
     );
   }
 

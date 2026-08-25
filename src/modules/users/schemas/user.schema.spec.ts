@@ -7,6 +7,7 @@ describe('UserSchema security', () => {
     expect(UserSchema.path('password').options.select).toBe(false);
     expect(UserSchema.path('failedLoginAttempts').options.select).toBe(false);
     expect(UserSchema.path('lockedUntil').options.select).toBe(false);
+    expect(UserSchema.path('adminInvariantVersion').options.select).toBe(false);
   });
 
   it('define un rol seguro y una cuenta activa por defecto', () => {
@@ -29,6 +30,7 @@ describe('UserSchema security', () => {
         passwordHash: 'hash',
         failedLoginAttempts: 4,
         lockedUntil: new Date(),
+        adminInvariantVersion: 9,
         __v: 1,
       } as never,
       {} as never,
@@ -38,6 +40,7 @@ describe('UserSchema security', () => {
     expect(serialized).not.toHaveProperty('passwordHash');
     expect(serialized).not.toHaveProperty('failedLoginAttempts');
     expect(serialized).not.toHaveProperty('lockedUntil');
+    expect(serialized).not.toHaveProperty('adminInvariantVersion');
     expect(serialized).not.toHaveProperty('__v');
   });
 });

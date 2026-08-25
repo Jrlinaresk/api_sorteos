@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  NotFoundException,
   Optional,
   Param,
   Post,
@@ -18,6 +19,7 @@ import {
   ReferralClickRateLimitGuard,
 } from './referral-click-rate-limit.guard';
 import { ReferralsService } from './referrals.service';
+import { SettingsService } from '../settings/settings.service';
 
 @ApiTags('Referrals')
 @Controller('referrals')
@@ -25,14 +27,16 @@ export class ReferralsPublicController {
   constructor(
     private readonly referralsService: ReferralsService,
     @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly settings?: SettingsService,
   ) {}
 
   @Get('resolve/:code')
   @ApiOperation({ summary: 'Validar un código sin exponer al beneficiario' })
-  resolve(
+  async resolve(
     @Param('code') code: string,
     @Query('campaignId') campaignId?: string,
   ) {
+    await this.assertEnabled();
     return this.referralsService.resolvePublic(code, campaignId);
   }
 
@@ -43,6 +47,7 @@ export class ReferralsPublicController {
     @Body() dto: CaptureReferralClickDto,
     @Req() request: Request,
   ) {
+    await this.assertEnabled();
     const click = await this.referralsService.captureClick(dto, {
       ipHash: hashReferralClientAddress(
         request,
@@ -55,5 +60,12 @@ export class ReferralsPublicController {
       code: click.code,
       recordedAt: click.createdAt,
     };
+  }
+
+  private async assertEnabled(): Promise<void> {
+    if (!this.settings) return;
+    if ((await this.settings.getPublic()).featureFlags.referrals !== true) {
+      throw new NotFoundException('El programa de referidos está desactivado');
+    }
   }
 }

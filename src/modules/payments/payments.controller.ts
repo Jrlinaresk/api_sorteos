@@ -39,7 +39,7 @@ export class PaymentsController {
 
   @Post('admin')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles(UserRole.OPERATOR, UserRole.ADMIN)
+  @Roles(UserRole.ADMIN)
   @ApiBearerAuth()
   @ApiOperation({
     summary:

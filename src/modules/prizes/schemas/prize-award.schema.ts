@@ -86,6 +86,15 @@ export class PrizeAward {
   @Prop()
   fulfilledAt?: Date;
 
+  @Prop({ type: Types.ObjectId, ref: 'User', select: false })
+  fulfilledBy?: Types.ObjectId;
+
+  @Prop({ trim: true, maxlength: 160, select: false })
+  fulfillmentReference?: string;
+
+  @Prop({ trim: true, maxlength: 1_000, select: false })
+  fulfillmentNotes?: string;
+
   @Prop()
   reversedAt?: Date;
 }

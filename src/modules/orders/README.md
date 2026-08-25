@@ -10,9 +10,20 @@ sus pedidos coincidentes sin exponerlos mediante búsquedas públicas:
    mismo mensaje, exista o no una coincidencia.
 2. Si existen pedidos de invitado coincidentes, el código de seis dígitos se
    envía por SMTP sin bloquear la respuesta HTTP.
-3. `POST /api/v1/orders/access/confirm` recibe `challengeId` y `code`. Un código
-   válido consume el challenge, rota todos los tokens en una transacción MongoDB
-   y devuelve cada vista privada junto con su nuevo `accessToken`.
+3. `POST /api/v1/orders/access/confirm` recibe `challengeId`, `code` y el booleano
+   opcional `linkToAccount` (por defecto `false`). Un código válido consume el
+   challenge, rota todos los tokens en una transacción MongoDB y devuelve cada
+   vista privada junto con su nuevo `accessToken`.
+4. Con `linkToAccount: true`, el endpoint exige un Bearer válido con rol
+   `customer` y, dentro de la misma transacción, asigna los pedidos y sus títulos
+   a esa cuenta. Desde entonces el Bearer sustituye al token en pedidos,
+   intentos y premios, aunque estos se hubieran creado originalmente como
+   invitado.
+
+`GET /api/v1/me/orders` acepta `page`, `limit`, `status`, `campaignId` y
+`search`. La búsqueda se limita a los pedidos del usuario y cubre ID público y
+snapshot del comprador. La respuesta incluye `meta.pages` y
+`meta.hasNextPage`.
 
 Los challenges caducan a los 15 minutos y admiten como máximo cinco intentos.
 Además del límite HTTP por IP, `identityHash` aplica en MongoDB un cooldown por

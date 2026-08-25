@@ -43,6 +43,9 @@ export class PrizeAttempt {
   @Prop({ required: true, select: false })
   accessSecret: string;
 
+  @Prop({ select: false })
+  accessSecretExpiresAt?: Date;
+
   @Prop({ type: Types.ObjectId, ref: 'Raffle', required: true, index: true })
   campaign: Types.ObjectId;
 

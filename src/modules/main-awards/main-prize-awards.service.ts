@@ -23,15 +23,20 @@ import {
   DrawResultStatus,
 } from '../draws/schemas/draw-result.schema';
 import { RaffleDocument } from '../riffles/schema/raffle.schema';
-import { ClaimMainPrizeDto } from './dto/claim-main-prize.dto';
+import {
+  ClaimMainPrizeDto,
+  MainPrizeDeliveryDto,
+} from './dto/claim-main-prize.dto';
 import { FulfillMainPrizeDto } from './dto/fulfill-main-prize.dto';
 import { ListMainPrizeAwardsDto } from './dto/list-main-prize-awards.dto';
+import { ListMyMainPrizeAwardsDto } from './dto/list-my-main-prize-awards.dto';
 import {
   MainPrizeAward,
   MainPrizeAwardDocument,
   MainPrizeAwardStatus,
   MainPrizeChoice,
   MainPrizeClaimSource,
+  MainPrizeDeliveryDetails,
 } from './schemas/main-prize-award.schema';
 
 const NOTIFICATION_LEASE_MILLISECONDS = 2 * 60 * 1_000;
@@ -145,7 +150,7 @@ export class MainPrizeAwardsService {
   }
 
   async findOwned(publicId: string, orderToken?: string, userId?: string) {
-    const award = await this.loadByPublicId(publicId);
+    const award = await this.loadByPublicId(publicId, true);
     await this.assertOwner(award, orderToken, userId);
     return this.ownerView(award);
   }
@@ -160,7 +165,10 @@ export class MainPrizeAwardsService {
       orderToken,
       userId,
     );
-    const award = await this.awardModel.findOne({ order: order._id }).exec();
+    const award = await this.awardModel
+      .findOne({ order: order._id })
+      .select('+deliveryDetails')
+      .exec();
     if (!award) throw new NotFoundException('Premio principal no encontrado');
     return this.ownerView(award);
   }
@@ -171,16 +179,21 @@ export class MainPrizeAwardsService {
     orderToken?: string,
     userId?: string,
   ) {
-    const award = await this.loadByPublicId(publicId);
+    const award = await this.loadByPublicId(publicId, true);
     await this.assertOwner(award, orderToken, userId);
     this.assertAvailableChoice(award, dto.choice);
 
     if (award.status !== MainPrizeAwardStatus.Pending) {
-      this.assertIdempotentChoice(award, dto.choice);
+      if (award.choice !== dto.choice) {
+        this.assertIdempotentChoice(award, dto.choice);
+      }
+      const deliveryDetails = this.deliveryForChoice(dto);
+      this.assertIdempotentChoice(award, dto.choice, deliveryDetails);
       return this.ownerView(award);
     }
 
-    const accountOwner = Boolean(userId && award.user?.toString() === userId);
+    const deliveryDetails = this.deliveryForChoice(dto);
+    const accountOwner = Boolean(userId);
     const now = new Date();
     const updated = await this.awardModel
       .findOneAndUpdate(
@@ -189,6 +202,7 @@ export class MainPrizeAwardsService {
           $set: {
             status: MainPrizeAwardStatus.Claimed,
             choice: dto.choice,
+            ...(deliveryDetails ? { deliveryDetails } : {}),
             claimedAt: now,
             claimSource: accountOwner
               ? MainPrizeClaimSource.Account
@@ -200,13 +214,56 @@ export class MainPrizeAwardsService {
         },
         { new: true, runValidators: true },
       )
+      .select('+deliveryDetails')
       .exec();
     if (updated) return this.ownerView(updated);
 
-    const raced = await this.awardModel.findById(award._id).exec();
+    const raced = await this.awardModel
+      .findById(award._id)
+      .select('+deliveryDetails')
+      .exec();
     if (!raced) throw new NotFoundException('Premio principal no encontrado');
-    this.assertIdempotentChoice(raced, dto.choice);
+    this.assertIdempotentChoice(raced, dto.choice, deliveryDetails);
     return this.ownerView(raced);
+  }
+
+  async listMine(userId: string, query: ListMyMainPrizeAwardsDto) {
+    if (!Types.ObjectId.isValid(userId)) {
+      throw new BadRequestException('Usuario inválido');
+    }
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const orderIds = await this.orderModel
+      .distinct('_id', { user: new Types.ObjectId(userId) })
+      .exec();
+    const filter: FilterQuery<MainPrizeAwardDocument> = {
+      order: { $in: orderIds },
+    };
+    if (query.status) filter.status = query.status;
+    if (query.campaignId) {
+      filter.campaign = new Types.ObjectId(query.campaignId);
+    }
+    const [rows, total] = await Promise.all([
+      this.awardModel
+        .find(filter)
+        .select('+deliveryDetails')
+        .populate('campaign', 'name slug prizeTitle cashAlternative currency')
+        .sort({ awardedAt: -1, _id: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .exec(),
+      this.awardModel.countDocuments(filter).exec(),
+    ]);
+    return {
+      data: rows.map((row) => this.ownerView(row)),
+      meta: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        hasNextPage: page * limit < total,
+      },
+    };
   }
 
   async listAdmin(query: ListMainPrizeAwardsDto) {
@@ -237,6 +294,7 @@ export class MainPrizeAwardsService {
   async findAdmin(publicId: string) {
     const award = await this.awardModel
       .findOne({ publicId })
+      .select('+deliveryDetails')
       .populate('campaign', 'name slug prizeTitle cashAlternative currency')
       .populate('fulfilledBy', 'nickname name email')
       .lean()
@@ -251,7 +309,7 @@ export class MainPrizeAwardsService {
     }
     const reference = this.trimOptional(dto.reference);
     const notes = this.trimOptional(dto.notes);
-    const award = await this.loadByPublicId(publicId);
+    const award = await this.loadByPublicId(publicId, true);
 
     if (award.status === MainPrizeAwardStatus.Fulfilled) {
       this.assertIdempotentFulfillment(award, reference, notes);
@@ -260,6 +318,11 @@ export class MainPrizeAwardsService {
     if (award.status !== MainPrizeAwardStatus.Claimed || !award.choice) {
       throw new ConflictException(
         'El ganador debe reclamar y elegir el premio antes de entregarlo',
+      );
+    }
+    if (award.choice === MainPrizeChoice.Physical && !award.deliveryDetails) {
+      throw new ConflictException(
+        'El reclamo físico no contiene datos de entrega verificables',
       );
     }
 
@@ -277,10 +340,14 @@ export class MainPrizeAwardsService {
         },
         { new: true, runValidators: true },
       )
+      .select('+deliveryDetails')
       .exec();
     if (updated) return this.adminView(updated);
 
-    const raced = await this.awardModel.findById(award._id).exec();
+    const raced = await this.awardModel
+      .findById(award._id)
+      .select('+deliveryDetails')
+      .exec();
     if (!raced) throw new NotFoundException('Premio principal no encontrado');
     if (raced.status !== MainPrizeAwardStatus.Fulfilled) {
       throw new ConflictException('El estado del premio cambió');
@@ -451,14 +518,15 @@ export class MainPrizeAwardsService {
 
   private async loadByPublicId(
     publicId: string,
+    includeDelivery = false,
   ): Promise<MainPrizeAwardDocument> {
     const normalized = publicId?.trim();
     if (!normalized || normalized.length > 80) {
       throw new BadRequestException('Identificador de premio inválido');
     }
-    const award = await this.awardModel
-      .findOne({ publicId: normalized })
-      .exec();
+    const query = this.awardModel.findOne({ publicId: normalized });
+    if (includeDelivery) query.select('+deliveryDetails');
+    const award = await query.exec();
     if (!award) throw new NotFoundException('Premio principal no encontrado');
     return award;
   }
@@ -480,12 +548,80 @@ export class MainPrizeAwardsService {
   private assertIdempotentChoice(
     award: MainPrizeAwardDocument,
     choice: MainPrizeChoice,
+    deliveryDetails?: MainPrizeDeliveryDetails,
   ): void {
     if (award.choice !== choice) {
       throw new ConflictException(
         `El premio ya fue reclamado con la opción ${award.choice}`,
       );
     }
+    if (
+      choice === MainPrizeChoice.Physical &&
+      !this.sameDelivery(award.deliveryDetails, deliveryDetails)
+    ) {
+      throw new ConflictException(
+        'El premio físico ya fue reclamado con otros datos de entrega',
+      );
+    }
+  }
+
+  private deliveryForChoice(
+    dto: ClaimMainPrizeDto,
+  ): MainPrizeDeliveryDetails | undefined {
+    if (dto.choice === MainPrizeChoice.Cash) {
+      if (dto.delivery) {
+        throw new BadRequestException(
+          'Los datos de entrega solo corresponden al premio físico',
+        );
+      }
+      return undefined;
+    }
+    if (!dto.delivery) {
+      throw new BadRequestException(
+        'Los datos de entrega son obligatorios para el premio físico',
+      );
+    }
+    return this.normalizeDelivery(dto.delivery);
+  }
+
+  private normalizeDelivery(
+    delivery: MainPrizeDeliveryDto,
+  ): MainPrizeDeliveryDetails {
+    const recipientName = delivery.recipientName.trim().replace(/\s+/g, ' ');
+    const phone = delivery.phone.trim().replace(/\s+/g, ' ');
+    const address = delivery.address.trim().replace(/\s+/g, ' ');
+    const instructions = this.trimOptional(delivery.instructions);
+    if (
+      recipientName.length < 2 ||
+      recipientName.length > 160 ||
+      phone.length > 24 ||
+      !/^(?=(?:\D*\d){8,15}\D*$)\+?[0-9() .-]+$/.test(phone) ||
+      address.length < 10 ||
+      address.length > 500 ||
+      (instructions?.length ?? 0) > 1_000
+    ) {
+      throw new BadRequestException('Datos de entrega inválidos');
+    }
+    return {
+      recipientName,
+      phone,
+      address,
+      ...(instructions ? { instructions } : {}),
+    };
+  }
+
+  private sameDelivery(
+    existing?: MainPrizeDeliveryDetails,
+    received?: MainPrizeDeliveryDetails,
+  ): boolean {
+    if (!existing || !received) return existing === received;
+    return (
+      existing.recipientName === received.recipientName &&
+      existing.phone === received.phone &&
+      existing.address === received.address &&
+      (existing.instructions || undefined) ===
+        (received.instructions || undefined)
+    );
   }
 
   private assertIdempotentFulfillment(
@@ -609,7 +745,37 @@ export class MainPrizeAwardsService {
 
   private ownerView(award: MainPrizeAwardDocument) {
     const raw = award.toObject() as unknown as Record<string, unknown>;
-    const campaignId = award.campaign.toString();
+    const populatedCampaign = raw.campaign as
+      | {
+          _id?: { toString(): string };
+          name?: unknown;
+          slug?: unknown;
+          prizeTitle?: unknown;
+          currency?: unknown;
+        }
+      | undefined;
+    const campaignId =
+      populatedCampaign?._id?.toString() ?? award.campaign.toString();
+    const campaign =
+      populatedCampaign &&
+      (typeof populatedCampaign.name === 'string' ||
+        typeof populatedCampaign.slug === 'string')
+        ? {
+            id: campaignId,
+            ...(typeof populatedCampaign.name === 'string'
+              ? { name: populatedCampaign.name }
+              : {}),
+            ...(typeof populatedCampaign.slug === 'string'
+              ? { slug: populatedCampaign.slug }
+              : {}),
+            ...(typeof populatedCampaign.prizeTitle === 'string'
+              ? { prizeTitle: populatedCampaign.prizeTitle }
+              : {}),
+            ...(typeof populatedCampaign.currency === 'string'
+              ? { currency: populatedCampaign.currency }
+              : {}),
+          }
+        : undefined;
     delete raw._id;
     delete raw.__v;
     delete raw.campaign;
@@ -630,6 +796,7 @@ export class MainPrizeAwardsService {
     return {
       ...raw,
       campaignId,
+      ...(campaign ? { campaign } : {}),
       availableChoices:
         typeof award.cashAlternative === 'number' && award.cashAlternative > 0
           ? [MainPrizeChoice.Physical, MainPrizeChoice.Cash]

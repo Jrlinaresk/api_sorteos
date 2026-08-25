@@ -45,4 +45,33 @@ describe('Users administrative listing', () => {
       ).toEqual([UserRole.ADMIN]);
     }
   });
+
+  it('propaga el actor autenticado en cambios y eliminaciones', async () => {
+    const targetId = '507f1f77bcf86cd799439011';
+    const actor = {
+      id: '507f1f77bcf86cd799439012',
+      role: UserRole.ADMIN,
+    };
+    const updated = { _id: targetId };
+    const users = {
+      update: jest.fn().mockResolvedValue(updated),
+      remove: jest.fn().mockResolvedValue(undefined),
+      toPublicUser: jest.fn().mockReturnValue({ id: targetId }),
+    };
+    const controller = new UsersController(users as never);
+
+    await controller.update(
+      targetId,
+      { role: UserRole.OPERATOR },
+      actor as never,
+    );
+    await controller.remove(targetId, actor as never);
+
+    expect(users.update).toHaveBeenCalledWith(
+      targetId,
+      { role: UserRole.OPERATOR },
+      actor.id,
+    );
+    expect(users.remove).toHaveBeenCalledWith(targetId, actor.id);
+  });
 });

@@ -52,6 +52,7 @@ interface AdminPrize {
   imageUrl?: string;
   mediaId?: string;
   stock: number;
+  awardedCount?: number;
   remainingStock?: number;
   weight?: number;
   sortOrder?: number;
@@ -168,12 +169,23 @@ export function PrizesPage() {
       }),
   });
   const fulfill = useMutation({
-    mutationFn: (publicId: string) =>
-      api.post<PrizeAward>(`/admin/prizes/awards/${publicId}/fulfill`),
-    onSuccess: async () => {
+    mutationFn: (input: {
+      publicId: string;
+      reference: string;
+      notes?: string;
+    }) =>
+      api.post<PrizeAward>(
+        `/admin/prizes/awards/${encodeURIComponent(input.publicId)}/fulfill`,
+        { reference: input.reference, notes: input.notes },
+      ),
+    onSuccess: async (updated) => {
       await queryClient.invalidateQueries({ queryKey: ['admin-prize-awards'] });
       setFulfilling(null);
-      showToast({ tone: 'success', title: 'Premio marcado como entregado' });
+      showToast({
+        tone: 'success',
+        title: 'Premio marcado como entregado',
+        message: `Comprobante: ${updated.fulfillmentReference ?? 'registrado'}`,
+      });
     },
     onError: (error) =>
       showToast({
@@ -382,7 +394,10 @@ export function PrizesPage() {
           />
         ) : null}
         {tab === 'awards' && awards.data?.data.length ? (
-          <AwardsTable items={awards.data.data} onFulfill={setFulfilling} />
+          <AwardsTable
+            items={awards.data.data}
+            onFulfill={can('admin') ? setFulfilling : undefined}
+          />
         ) : null}
         {tab === 'main' && mainAwards.data?.data.length ? (
           <MainAwardsTable
@@ -424,15 +439,18 @@ export function PrizesPage() {
           onConfirm={() => remove.mutate(prizeId(deleting))}
         />
       ) : null}
-      {fulfilling ? (
-        <ConfirmDialog
-          title="Confirmar entrega"
-          description={`Confirma que “${fulfilling.title}” fue entregado a ${fulfilling.winnerSnapshot.name}. Esta acción cambia el estado operativo del premio.`}
-          confirmLabel="Marcar como entregado"
-          danger={false}
+      {fulfilling && can('admin') ? (
+        <PrizeAwardFulfillment
+          item={fulfilling}
           busy={fulfill.isPending}
-          onClose={() => setFulfilling(null)}
-          onConfirm={() => fulfill.mutate(fulfilling.publicId)}
+          onClose={() => !fulfill.isPending && setFulfilling(null)}
+          onSave={(reference, notes) =>
+            fulfill.mutate({
+              publicId: fulfilling.publicId,
+              reference,
+              notes,
+            })
+          }
         />
       ) : null}
       {mainDetail ? (
@@ -498,7 +516,9 @@ function PrizeInventoryTable({
               <td>{campaignLabel(item.campaign)}</td>
               <td>{mechanicLabel(item.mechanic)}</td>
               <td>
-                {item.remainingStock ?? item.stock} / {item.stock}
+                {item.remainingStock ??
+                  Math.max(0, item.stock - (item.awardedCount ?? 0))}{' '}
+                / {item.stock}
               </td>
               <td>
                 {item.cashValue !== undefined
@@ -539,7 +559,7 @@ function AwardsTable({
   onFulfill,
 }: {
   items: PrizeAward[];
-  onFulfill: (item: PrizeAward) => void;
+  onFulfill?: (item: PrizeAward) => void;
 }) {
   return (
     <div className="table-wrap">
@@ -552,6 +572,7 @@ function AwardsTable({
             <th>Campaña</th>
             <th>Estado</th>
             <th>Fecha</th>
+            <th>Entrega</th>
             <th className="table-actions">Acciones</th>
           </tr>
         </thead>
@@ -583,8 +604,32 @@ function AwardsTable({
                 <StatusBadge status={item.status} />
               </td>
               <td>{formatDateTime(item.awardedAt)}</td>
+              <td>
+                {item.fulfillmentReference || item.fulfilledAt ? (
+                  <>
+                    <strong>{item.fulfillmentReference || 'Registrada'}</strong>
+                    {item.fulfilledBy ? (
+                      <small className="table-note">
+                        Por {fulfilledByLabel(item.fulfilledBy)}
+                      </small>
+                    ) : null}
+                    {item.fulfilledAt ? (
+                      <small className="table-note">
+                        {formatDateTime(item.fulfilledAt)}
+                      </small>
+                    ) : null}
+                    {item.fulfillmentNotes ? (
+                      <small className="table-note">
+                        {item.fulfillmentNotes}
+                      </small>
+                    ) : null}
+                  </>
+                ) : (
+                  '—'
+                )}
+              </td>
               <td className="table-actions">
-                {item.status === 'claimed' ? (
+                {item.status === 'claimed' && onFulfill ? (
                   <button
                     className="button button--primary"
                     type="button"
@@ -599,6 +644,85 @@ function AwardsTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+function PrizeAwardFulfillment({
+  item,
+  busy,
+  onClose,
+  onSave,
+}: {
+  item: PrizeAward;
+  busy: boolean;
+  onClose: () => void;
+  onSave: (reference: string, notes?: string) => void;
+}) {
+  return (
+    <Modal
+      title="Registrar entrega del premio instantáneo"
+      description={`${item.winnerSnapshot.name} · ${item.title}`}
+      onClose={onClose}
+    >
+      <div className="inline-alert inline-alert--warning">
+        <strong>Registro de entrega</strong>
+        <p>
+          Confirma primero el comprobante, tracking o acta. La adjudicación debe
+          estar reclamada y la entrega quedará vinculada a tu usuario.
+        </p>
+      </div>
+      <form
+        onSubmit={(event) =>
+          submitForm(event, (form) =>
+            onSave(
+              String(form.get('reference') ?? '').trim(),
+              optionalString(form, 'notes'),
+            ),
+          )
+        }
+      >
+        <Field
+          label="Comprobante o referencia"
+          htmlFor="instant-award-reference"
+          hint="Transferencia, tracking o acta; obligatorio y máximo 160 caracteres."
+          required
+        >
+          <input
+            id="instant-award-reference"
+            name="reference"
+            required
+            pattern=".*\S.*"
+            maxLength={160}
+            autoFocus
+          />
+        </Field>
+        <Field label="Notas verificables" htmlFor="instant-award-notes">
+          <textarea
+            id="instant-award-notes"
+            name="notes"
+            rows={4}
+            maxLength={1000}
+          />
+        </Field>
+        <div className="modal__actions">
+          <button
+            className="button button--secondary"
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+          >
+            Cancelar
+          </button>
+          <button
+            className="button button--danger"
+            type="submit"
+            disabled={busy}
+          >
+            {busy ? 'Registrando…' : 'Confirmar entrega'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -884,6 +1008,11 @@ function PrizeEditor({
   onClose: () => void;
 }) {
   const existing = item === 'new' ? null : item;
+  const [mechanic, setMechanic] = useState<Mechanic>(
+    existing?.mechanic ?? 'winning_title',
+  );
+  const [quotaNumber, setQuotaNumber] = useState(existing?.quotaNumber ?? '');
+
   return (
     <Modal
       title={existing ? 'Editar premio' : 'Nuevo premio'}
@@ -931,7 +1060,12 @@ function PrizeEditor({
               id="prize-mechanic"
               name="mechanic"
               required
-              defaultValue={existing?.mechanic ?? 'winning_title'}
+              value={mechanic}
+              onChange={(event) => {
+                const nextMechanic = event.target.value as Mechanic;
+                setMechanic(nextMechanic);
+                if (nextMechanic !== 'winning_title') setQuotaNumber('');
+              }}
             >
               <option value="winning_title">Título ganador</option>
               <option value="roulette">Ruleta</option>
@@ -947,12 +1081,19 @@ function PrizeEditor({
               defaultValue={existing?.title}
             />
           </Field>
-          <Field label="Número ganador" htmlFor="prize-quota">
+          <Field
+            label="Número ganador"
+            htmlFor="prize-quota"
+            required={mechanic === 'winning_title'}
+          >
             <input
               id="prize-quota"
               name="quotaNumber"
               maxLength={20}
-              defaultValue={existing?.quotaNumber}
+              required={mechanic === 'winning_title'}
+              disabled={mechanic !== 'winning_title'}
+              value={quotaNumber}
+              onChange={(event) => setQuotaNumber(event.target.value)}
             />
           </Field>
           <div className="form-grid__full">
@@ -1057,6 +1198,12 @@ function campaignLabel(value: CampaignSummary | string) {
   return typeof value === 'string'
     ? value
     : value.name || value.id || value._id || '—';
+}
+function fulfilledByLabel(value: NonNullable<PrizeAward['fulfilledBy']>) {
+  if (typeof value === 'string') return value;
+  return (
+    value.nickname || value.name || value.email || value.id || value._id || '—'
+  );
 }
 function mechanicLabel(value: string) {
   return (

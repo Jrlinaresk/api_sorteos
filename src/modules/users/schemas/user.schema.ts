@@ -123,6 +123,14 @@ export class User {
   @Prop({ type: Number, required: true, default: 0, min: 0 })
   authVersion: number;
 
+  /**
+   * Contador interno usado como mutex transaccional para serializar cambios que
+   * podrían dejar el sistema sin administradores activos.
+   */
+  @ApiHideProperty()
+  @Prop({ type: Number, required: true, default: 0, min: 0, select: false })
+  adminInvariantVersion: number;
+
   @ApiProperty({
     description: 'El correo electrónico del cliente.',
     example: 'john@example.com',
@@ -148,7 +156,11 @@ export class User {
 export const UserSchema = SchemaFactory.createForClass(User);
 UserSchema.index({ registrationPending: 1, registrationPendingExpiresAt: 1 });
 
-type SerializedUser = Omit<User, 'authVersion' | 'registrationPending'> & {
+type SerializedUser = Omit<
+  User,
+  'adminInvariantVersion' | 'authVersion' | 'registrationPending'
+> & {
+  adminInvariantVersion?: number;
   authVersion?: number;
   registrationPending?: boolean;
   __v?: number;
@@ -162,6 +174,7 @@ function removePrivateFields(
   delete returned.passwordHash;
   delete returned.failedLoginAttempts;
   delete returned.lockedUntil;
+  delete returned.adminInvariantVersion;
   delete returned.authVersion;
   delete returned.registrationPending;
   delete returned.registrationPendingExpiresAt;

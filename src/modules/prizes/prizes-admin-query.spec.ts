@@ -11,7 +11,14 @@ function query<T>(value: T) {
   const chain: Record<string, jest.Mock> = {
     exec: jest.fn().mockResolvedValue(value),
   };
-  for (const method of ['populate', 'sort', 'skip', 'limit', 'lean']) {
+  for (const method of [
+    'select',
+    'populate',
+    'sort',
+    'skip',
+    'limit',
+    'lean',
+  ]) {
     chain[method] = jest.fn().mockReturnValue(chain);
   }
   return chain;
@@ -71,8 +78,9 @@ describe('PrizesService administrative inventory', () => {
     const rows = [
       { publicId: '14af4058-dbf7-48a0-938d-d5f1c6899d86', title: 'Premio' },
     ];
+    const findQuery = query(rows);
     const awardModel = {
-      find: jest.fn().mockReturnValue(query(rows)),
+      find: jest.fn().mockReturnValue(findQuery),
       countDocuments: jest.fn().mockResolvedValue(1),
     };
     const service = new PrizesService(
@@ -99,6 +107,13 @@ describe('PrizesService administrative inventory', () => {
       campaign: expect.any(Types.ObjectId),
       status: PrizeAwardStatus.Claimed,
     });
+    expect(findQuery.select).toHaveBeenCalledWith(
+      '+fulfilledBy +fulfillmentReference +fulfillmentNotes',
+    );
+    expect(findQuery.populate).toHaveBeenCalledWith(
+      'fulfilledBy',
+      'nickname name email',
+    );
   });
 
   it('rechaza identificadores inválidos y distingue un award inexistente', async () => {

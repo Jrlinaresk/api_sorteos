@@ -4,6 +4,7 @@ import {
   ConflictException,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import * as bcrypt from 'bcryptjs';
@@ -12,7 +13,7 @@ import { User, UserDocument } from './schemas/user.schema';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserMessages } from './enums/user-messages.enum';
-import { ClientSession, Model, Types } from 'mongoose';
+import { ClientSession, Model, Types, UpdateQuery } from 'mongoose';
 import { UserRole } from './enums/user-role.enum';
 import { PublicUserDto } from './dto/public-user.dto';
 import { UpdateMyProfileDto } from './dto/update-my-profile.dto';
@@ -29,6 +30,10 @@ const PASSWORD_HASH_ROUNDS = 12;
 const MAX_FAILED_LOGIN_ATTEMPTS = 5;
 const LOGIN_LOCK_MILLISECONDS = 15 * 60 * 1000;
 const PENDING_REGISTRATION_LIFETIME_MILLISECONDS = 24 * 60 * 60 * 1000;
+const SELF_ADMIN_MUTATION_MESSAGE =
+  'No puedes desactivar, degradar ni eliminar tu propia cuenta administrativa';
+const LAST_ACTIVE_ADMIN_MESSAGE =
+  'Debe permanecer al menos un administrador activo';
 
 type InternalCreateUserDto = CreateUserDto & {
   isActive?: boolean;
@@ -375,6 +380,7 @@ export class UsersService {
     delete raw.passwordHash;
     delete raw.failedLoginAttempts;
     delete raw.lockedUntil;
+    delete raw.adminInvariantVersion;
     delete raw.authVersion;
     delete raw.registrationPending;
     delete raw.registrationPendingExpiresAt;
@@ -390,9 +396,16 @@ export class UsersService {
     return users.map((user) => this.toPublicUser(user));
   }
 
-  async update(id: string, dto: UpdateUserDto): Promise<UserDocument> {
+  async update(
+    id: string,
+    dto: UpdateUserDto,
+    actorId?: string,
+  ): Promise<UserDocument> {
     if (!Types.ObjectId.isValid(id)) {
       throw new BadRequestException(UserMessages.INVALID_ID);
+    }
+    if (actorId === id && this.couldRemoveActiveAdmin(dto)) {
+      throw new ForbiddenException(SELF_ADMIN_MUTATION_MESSAGE);
     }
 
     const changes: Record<string, unknown> = { ...dto };
@@ -445,7 +458,7 @@ export class UsersService {
     try {
       const invalidatesSessions =
         dto.password !== undefined || dto.isActive !== undefined;
-      const updateOperation = invalidatesSessions
+      const updateOperation: UpdateQuery<UserDocument> = invalidatesSessions
         ? {
             $set: changes,
             $inc: { authVersion: 1 },
@@ -454,14 +467,18 @@ export class UsersService {
               : {}),
           }
         : { $set: changes };
-      const updated = await this.userModel
-        .findByIdAndUpdate(id, updateOperation, {
-          new: true,
-          runValidators: true,
-        })
-        .exec();
-      if (!updated) throw new NotFoundException(UserMessages.USER_NOT_FOUND);
-      return updated;
+      if (this.couldRemoveActiveAdmin(dto)) {
+        return await this.runAdminInvariantMutation((session) =>
+          this.updateWithAdminInvariant(
+            id,
+            dto,
+            updateOperation,
+            actorId,
+            session,
+          ),
+        );
+      }
+      return await this.applyUserUpdate(id, updateOperation);
     } catch (error) {
       this.rethrowMongoDuplicate(error);
       throw error;
@@ -475,9 +492,56 @@ export class UsersService {
     return this.update(id, dto);
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, actorId?: string): Promise<void> {
     if (!Types.ObjectId.isValid(id))
       throw new BadRequestException(UserMessages.INVALID_ID);
+    if (actorId === id) {
+      throw new ForbiddenException(SELF_ADMIN_MUTATION_MESSAGE);
+    }
+    await this.runAdminInvariantMutation((session) =>
+      this.removeWithAdminInvariant(id, actorId, session),
+    );
+  }
+
+  private couldRemoveActiveAdmin(dto: UpdateUserDto): boolean {
+    return (
+      dto.isActive === false ||
+      (dto.role !== undefined && dto.role !== UserRole.ADMIN)
+    );
+  }
+
+  private async updateWithAdminInvariant(
+    id: string,
+    dto: UpdateUserDto,
+    updateOperation: UpdateQuery<UserDocument>,
+    actorId: string | undefined,
+    session: ClientSession | undefined,
+  ): Promise<UserDocument> {
+    const target = await this.findUserForAdminInvariant(id, session);
+    if (!target) throw new NotFoundException(UserMessages.USER_NOT_FOUND);
+    if (
+      target.role === UserRole.ADMIN &&
+      target.isActive !== false &&
+      this.couldRemoveActiveAdmin(dto)
+    ) {
+      this.assertAdministrativeActor(actorId, target._id.toString());
+      await this.assertAnotherActiveAdmin(session);
+    }
+    return this.applyUserUpdate(id, updateOperation, session);
+  }
+
+  private async removeWithAdminInvariant(
+    id: string,
+    actorId: string | undefined,
+    session: ClientSession | undefined,
+  ): Promise<void> {
+    const target = await this.findUserForAdminInvariant(id, session);
+    if (!target) throw new NotFoundException(UserMessages.USER_NOT_FOUND);
+    if (target.role === UserRole.ADMIN && target.isActive !== false) {
+      this.assertAdministrativeActor(actorId, target._id.toString());
+      await this.assertAnotherActiveAdmin(session);
+    }
+    const options = { new: true, ...(session ? { session } : {}) };
     const user = await this.userModel
       .findByIdAndUpdate(
         id,
@@ -486,10 +550,114 @@ export class UsersService {
           $inc: { authVersion: 1 },
           $unset: { lockedUntil: 1 },
         },
-        { new: true },
+        options,
       )
       .exec();
     if (!user) throw new NotFoundException(UserMessages.USER_NOT_FOUND);
+  }
+
+  private async findUserForAdminInvariant(
+    id: string,
+    session?: ClientSession,
+  ): Promise<UserDocument | null> {
+    const query = this.userModel.findById(id);
+    if (session) query.session(session);
+    return query.exec();
+  }
+
+  private assertAdministrativeActor(
+    actorId: string | undefined,
+    targetId: string,
+  ): void {
+    if (!actorId || !Types.ObjectId.isValid(actorId)) {
+      throw new ForbiddenException(
+        'Se requiere un actor autenticado para modificar administradores',
+      );
+    }
+    if (actorId === targetId) {
+      throw new ForbiddenException(SELF_ADMIN_MUTATION_MESSAGE);
+    }
+  }
+
+  private async assertAnotherActiveAdmin(
+    session?: ClientSession,
+  ): Promise<void> {
+    if (session) await this.lockActiveAdminSet(session);
+    const query = this.userModel.countDocuments({
+      role: UserRole.ADMIN,
+      isActive: { $ne: false },
+    });
+    if (session) query.session(session);
+    const activeAdmins = await query.exec();
+    if (activeAdmins <= 1) {
+      throw new ConflictException(LAST_ACTIVE_ADMIN_MESSAGE);
+    }
+  }
+
+  /**
+   * Todas las retiradas del conjunto de administradores activos escriben el
+   * mismo documento dentro de su transacción. Eso convierte una posible
+   * escritura sesgada entre dos administradores en un conflicto reintentable.
+   */
+  private async lockActiveAdminSet(session: ClientSession): Promise<void> {
+    const lockOwner = await this.userModel
+      .findOne({ role: UserRole.ADMIN, isActive: { $ne: false } })
+      .sort({ _id: 1 })
+      .select('_id')
+      .session(session)
+      .exec();
+    if (!lockOwner) throw new ConflictException(LAST_ACTIVE_ADMIN_MESSAGE);
+    const locked = await this.userModel
+      .updateOne(
+        {
+          _id: lockOwner._id,
+          role: UserRole.ADMIN,
+          isActive: { $ne: false },
+        },
+        { $inc: { adminInvariantVersion: 1 } },
+        { session },
+      )
+      .exec();
+    if (locked.matchedCount !== 1) {
+      throw new ConflictException(
+        'El conjunto de administradores cambió; vuelve a intentarlo',
+      );
+    }
+  }
+
+  private async runAdminInvariantMutation<T>(
+    mutation: (session?: ClientSession) => Promise<T>,
+  ): Promise<T> {
+    const connection = this.userModel.db;
+    if (!connection || typeof connection.startSession !== 'function') {
+      return mutation();
+    }
+    const session = await connection.startSession();
+    let result!: T;
+    try {
+      await session.withTransaction(async () => {
+        result = await mutation(session);
+      });
+      return result;
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  private async applyUserUpdate(
+    id: string,
+    updateOperation: UpdateQuery<UserDocument>,
+    session?: ClientSession,
+  ): Promise<UserDocument> {
+    const updated = await this.userModel
+      .findByIdAndUpdate(id, updateOperation, {
+        new: true,
+        runValidators: true,
+        ...(session ? { session } : {}),
+      })
+      .exec();
+    if (!updated) throw new NotFoundException(UserMessages.USER_NOT_FOUND);
+    return updated;
   }
 
   private normalizeCreationIdentity(

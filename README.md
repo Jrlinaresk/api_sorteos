@@ -34,6 +34,8 @@ Mongo no publica ningún puerto.
 ## Desarrollo local del monolito
 
 ```bash
+nvm install
+nvm use
 corepack enable
 pnpm install --frozen-lockfile
 pnpm start:dev
@@ -60,6 +62,22 @@ El bootstrap es transaccional e idempotente: después de inicializarse no permit
 crear administradores adicionales por esta vía. La guía funcional completa del
 panel está en [ADMIN-PANEL.md](./ADMIN-PANEL.md).
 
+En el primer despliegue Docker, cree el administrador sin persistir su
+contraseña en Compose. Con el servicio ya levantado:
+
+```bash
+export BOOTSTRAP_ADMIN_NAME='Administrador inicial'
+export BOOTSTRAP_ADMIN_PHONE='+5511999999999'
+read -s BOOTSTRAP_ADMIN_PASSWORD && export BOOTSTRAP_ADMIN_PASSWORD
+docker compose --env-file .env.server -f docker-compose.prod.yml exec \
+  -e BOOTSTRAP_ADMIN_NAME -e BOOTSTRAP_ADMIN_PHONE \
+  -e BOOTSTRAP_ADMIN_PASSWORD api-sorteos node dist/bootstrap-admin.js
+unset BOOTSTRAP_ADMIN_PASSWORD
+```
+
+El comando recibe las variables solo durante esa ejecución. No las añada a
+`docker-compose.prod.yml` ni las conserve después del bootstrap.
+
 Para ejecutar Nest fuera de Compose hay que proporcionar una URI de Mongo válida
 con `replicaSet`, además de las variables de `.env.example`. No se debe conectar
 el proceso local al usuario raíz de Mongo.
@@ -81,21 +99,42 @@ El frontend debe conservar el `registrationId` opaco devuelto por el alta y
 enviarlo en el reenvío y la confirmación; una nueva alta invalida el intento previo.
 Las respuestas públicas de usuario no contienen hashes ni contraseñas.
 
+El SPA de clientes debe usar exclusivamente `/api/v1/client/session`: ofrece
+`register`, `register/resend`, `register/confirm`, `login`, `refresh`, `logout`,
+`me` y los flujos `password/reset/*` y `password/change`. En esta superficie el
+refresh token nunca aparece en JSON: se rota en la cookie host-only
+`sorteos_client_refresh`, `HttpOnly`, `Secure` en producción y limitada a esa
+ruta; el access token corto sí se devuelve para conservarlo solo en memoria.
+Todas las mutaciones deben enviar `X-Client-Session: browser` y el `fetch` del
+SPA debe usar `credentials: 'include'`. Solo el rol `customer` puede obtener o
+renovar esta sesión. `CORS_ORIGINS` debe enumerar exactamente los orígenes del
+SPA y del panel, ya que CORS admite credenciales y no acepta comodines. La
+sesión administrativa tiene una comprobación adicional e independiente:
+`ADMIN_PANEL_ORIGINS` solo enumera orígenes del panel y es obligatorio en
+producción mientras el panel esté habilitado. No incluya allí el portal cliente,
+aunque ambos pasen por el mismo proxy o compartan sitio registrable.
+
+`CLIENT_SESSION_COOKIE_SAME_SITE=lax` es el valor recomendado cuando web y API
+comparten sitio registrable (también si usan subdominios). Use `none` únicamente
+si están en sitios distintos y ambos se sirven por HTTPS; en ese modo la API
+fuerza igualmente `Secure`. `strict` está disponible para despliegues del mismo
+sitio que no necesiten navegaciones cruzadas.
+
 ## Configuración
 
 [`.env.example`](./.env.example) es el contrato documentado. Los grupos críticos
 son:
 
-| Grupo     | Variables principales                                                                  |
-| --------- | -------------------------------------------------------------------------------------- |
-| Mongo     | `MONGO_ROOT_*`, `MONGO_APP_*`, `MONGO_REPLICA_SET`, `MONGO_REPLICA_KEY`, `MONGODB_URI` |
-| Auth      | `JWT_SECRET`, `EMAIL_CODE_SECRET`, `CHECKOUT_ACCESS_SECRET_KEY`                        |
-| Navegador | `CORS_ORIGINS`, `TRUST_PROXY`, `SWAGGER_ENABLED`, `ADMIN_PANEL_ENABLED`                |
-| Correo    | `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, y opcionalmente `SMTP_USER` + `SMTP_PASS`       |
-| Pagos     | `PAYMENTS_PROVIDER`, `PAYMENTS_PUBLIC_SECRET_KEY`, `EFI_PIX_*`, `EFI_WEBHOOK_*`        |
-| Sorteos   | `CAIXA_FEDERAL_*`, flags `DRAW_*` y baliza NIST allowlisted                            |
-| Medios    | `MEDIA_LOCAL_ROOT`, límites de imagen/video y directorio temporal                      |
-| Push      | `NOTIFICATION_PUSH_PROVIDER`, las tres `WEB_PUSH_VAPID_*` y límites opcionales          |
+| Grupo     | Variables principales                                                                                      |
+| --------- | ---------------------------------------------------------------------------------------------------------- |
+| Mongo     | `MONGO_ROOT_*`, `MONGO_APP_*`, `MONGO_REPLICA_SET`, `MONGO_REPLICA_KEY`, `MONGODB_URI`                     |
+| Auth      | `JWT_SECRET`, `EMAIL_CODE_SECRET`, `CHECKOUT_ACCESS_SECRET_KEY`                                            |
+| Navegador | `CORS_ORIGINS`, `ADMIN_PANEL_ORIGINS`, `CLIENT_SESSION_COOKIE_SAME_SITE`, `TRUST_PROXY`, `SWAGGER_ENABLED`, `ADMIN_PANEL_ENABLED` |
+| Correo    | `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, y opcionalmente `SMTP_USER` + `SMTP_PASS`                           |
+| Pagos     | `PAYMENTS_PROVIDER`, `PAYMENTS_PUBLIC_SECRET_KEY`, `EFI_PIX_*`, `EFI_WEBHOOK_*`                            |
+| Sorteos   | `CAIXA_FEDERAL_*`, flags `DRAW_*` y baliza NIST allowlisted                                                |
+| Medios    | `MEDIA_LOCAL_ROOT`, límites de imagen/video y directorio temporal                                          |
+| Push      | `NOTIFICATION_PUSH_PROVIDER`, las tres `WEB_PUSH_VAPID_*` y límites opcionales                             |
 
 En producción, los secretos de aplicación deben tener al menos 32 caracteres.
 `NOTIFICATION_PUSH_PROVIDER` selecciona explícitamente `noop` (predeterminado)

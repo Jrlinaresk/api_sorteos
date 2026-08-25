@@ -27,6 +27,7 @@ import { UserMessages } from './enums/user-messages.enum';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { Roles } from '../auth/decorators/roles.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { UserRole } from './enums/user-role.enum';
 import { PublicUserDto } from './dto/public-user.dto';
 import { ListUsersDto } from './dto/list-users.dto';
@@ -115,9 +116,10 @@ export class UsersController {
   async update(
     @Param('id') id: string,
     @Body() dto: UpdateUserDto,
+    @CurrentUser() actor: PublicUserDto,
   ): Promise<PublicUserDto> {
     return this.usersService.toPublicUser(
-      await this.usersService.update(id, dto),
+      await this.usersService.update(id, dto, actor.id),
     );
   }
 
@@ -133,7 +135,10 @@ export class UsersController {
     status: HttpStatus.NOT_FOUND,
     description: UserMessages.USER_NOT_FOUND,
   })
-  remove(@Param('id') id: string): Promise<void> {
-    return this.usersService.remove(id);
+  remove(
+    @Param('id') id: string,
+    @CurrentUser() actor: PublicUserDto,
+  ): Promise<void> {
+    return this.usersService.remove(id, actor.id);
   }
 }

@@ -127,10 +127,18 @@ export class CheckoutService
     }
 
     return {
-      order: await this.orders.findByPublicId(publicId, orderAccessToken),
+      order: await this.orders.findByPublicId(
+        publicId,
+        authenticatedUserId ? undefined : orderAccessToken,
+        authenticatedUserId,
+      ),
       payment: this.payments.toPublicView(paymentResult.payment),
-      orderAccessToken,
-      paymentAccessSecret: paymentResult.accessSecret,
+      ...(authenticatedUserId
+        ? {}
+        : {
+            orderAccessToken,
+            paymentAccessSecret: paymentResult.accessSecret,
+          }),
       idempotentReplay:
         Boolean(paymentResult.idempotentReplay) ||
         reserved.status !== OrderStatus.Reserved,

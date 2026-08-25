@@ -14,8 +14,21 @@ import { ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/auth-context';
 
 const schema = z.object({
-  phone: z.string().trim().min(6, 'Escribe un teléfono válido'),
-  password: z.string().min(6, 'La contraseña debe tener al menos 6 caracteres'),
+  phone: z
+    .string()
+    .trim()
+    .regex(
+      /^(?=(?:\D*\d){8,15}\D*$)\+?[0-9 ()-]+$/,
+      'Escribe un teléfono válido de 8 a 15 dígitos',
+    ),
+  password: z
+    .string()
+    .min(8, 'La contraseña debe tener al menos 8 caracteres')
+    .max(72, 'La contraseña admite como máximo 72 caracteres')
+    .refine(
+      (value) => new TextEncoder().encode(value).byteLength <= 72,
+      'La contraseña admite como máximo 72 bytes',
+    ),
 });
 
 type LoginValues = z.infer<typeof schema>;

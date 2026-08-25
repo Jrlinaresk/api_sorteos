@@ -80,7 +80,7 @@ describe('MainPrizeAwardsService', () => {
       find: jest.fn(),
       countDocuments: jest.fn(),
     };
-    orderModel = { findOne: jest.fn() };
+    orderModel = { findOne: jest.fn(), distinct: jest.fn() };
     quotaModel = { findOne: jest.fn() };
     orders = { findOwnedForCheckout: jest.fn() };
     notifications = { create: jest.fn().mockResolvedValue({}) };
@@ -272,10 +272,17 @@ describe('MainPrizeAwardsService', () => {
 
   it('autoriza al invitado mediante OrdersService y registra su elección física', async () => {
     const award = awardDocument();
+    const delivery = {
+      recipientName: 'Maria da Silva',
+      phone: '+55 11 99999-9999',
+      address: 'Rua das Flores, 123, São Paulo - SP',
+      instructions: 'Entregar en portería',
+    };
     const claimed = awardDocument({
       ...award,
       status: MainPrizeAwardStatus.Claimed,
       choice: MainPrizeChoice.Physical,
+      deliveryDetails: delivery,
       claimSource: MainPrizeClaimSource.OrderToken,
       claimedAt: new Date(),
     });
@@ -285,7 +292,7 @@ describe('MainPrizeAwardsService', () => {
 
     const result = await service.claimOwned(
       award.publicId,
-      { choice: MainPrizeChoice.Physical },
+      { choice: MainPrizeChoice.Physical, delivery },
       'opaque-order-token',
     );
 
@@ -298,6 +305,7 @@ describe('MainPrizeAwardsService', () => {
       expect.objectContaining({
         status: MainPrizeAwardStatus.Claimed,
         choice: MainPrizeChoice.Physical,
+        deliveryDetails: delivery,
         claimSource: MainPrizeClaimSource.OrderToken,
       }),
     );
@@ -375,6 +383,110 @@ describe('MainPrizeAwardsService', () => {
         'opaque-order-token',
       ),
     ).rejects.toThrow('no ofrece una alternativa válida en efectivo');
+  });
+
+  it('exige entrega para físico, rechaza entrega con efectivo y protege la idempotencia', async () => {
+    const pending = awardDocument();
+    awardModel.findOne.mockReturnValue(queryResult(pending));
+    orders.findOwnedForCheckout.mockResolvedValue({ _id: pending.order });
+
+    await expect(
+      service.claimOwned(
+        pending.publicId,
+        { choice: MainPrizeChoice.Physical },
+        'order-token',
+      ),
+    ).rejects.toThrow('datos de entrega son obligatorios');
+    await expect(
+      service.claimOwned(
+        pending.publicId,
+        {
+          choice: MainPrizeChoice.Cash,
+          delivery: {
+            recipientName: 'Maria da Silva',
+            phone: '+5511999999999',
+            address: 'Rua das Flores, 123',
+          },
+        },
+        'order-token',
+      ),
+    ).rejects.toThrow('solo corresponden al premio físico');
+
+    const claimed = awardDocument({
+      status: MainPrizeAwardStatus.Claimed,
+      choice: MainPrizeChoice.Physical,
+      deliveryDetails: {
+        recipientName: 'Maria da Silva',
+        phone: '+5511999999999',
+        address: 'Rua das Flores, 123',
+      },
+    });
+    awardModel.findOne.mockReturnValue(queryResult(claimed));
+    orders.findOwnedForCheckout.mockResolvedValue({ _id: claimed.order });
+    await expect(
+      service.claimOwned(
+        claimed.publicId,
+        {
+          choice: MainPrizeChoice.Physical,
+          delivery: {
+            recipientName: 'Outra Pessoa',
+            phone: '+5511999999999',
+            address: 'Rua das Flores, 123',
+          },
+        },
+        'order-token',
+      ),
+    ).rejects.toThrow('otros datos de entrega');
+  });
+
+  it('lista por la propiedad actual del pedido, no por el snapshot user del award', async () => {
+    const userId = new Types.ObjectId();
+    const orderId = new Types.ObjectId();
+    const award = awardDocument({ order: orderId, user: undefined });
+    orderModel.distinct.mockReturnValue(queryResult([orderId]));
+    awardModel.find.mockReturnValue(queryResult([award]));
+    awardModel.countDocuments.mockReturnValue(queryResult(21));
+
+    const result = await service.listMine(userId.toString(), {
+      page: 1,
+      limit: 20,
+    });
+
+    expect(orderModel.distinct).toHaveBeenCalledWith('_id', { user: userId });
+    expect(awardModel.find).toHaveBeenCalledWith({ order: { $in: [orderId] } });
+    expect(result.meta).toEqual({
+      page: 1,
+      limit: 20,
+      total: 21,
+      pages: 2,
+      hasNextPage: true,
+    });
+  });
+
+  it('conserva el ID y solo el resumen seguro de una campaña poblada', () => {
+    const campaignId = new Types.ObjectId();
+    const award = awardDocument({
+      campaign: {
+        _id: campaignId,
+        name: 'Titan 160',
+        slug: 'titan-160',
+        prizeTitle: 'Honda Titan 160',
+        currency: 'BRL',
+        regulationHtml: '<p>interno</p>',
+      },
+    });
+
+    const view = (service as any).ownerView(award);
+
+    expect(view.campaignId).toBe(campaignId.toString());
+    expect(view.campaign).toEqual({
+      id: campaignId.toString(),
+      name: 'Titan 160',
+      slug: 'titan-160',
+      prizeTitle: 'Honda Titan 160',
+      currency: 'BRL',
+    });
+    expect(view.campaign).not.toHaveProperty('regulationHtml');
   });
 
   it('solo entrega un premio reclamado y conserva actor, fecha y comprobante', async () => {

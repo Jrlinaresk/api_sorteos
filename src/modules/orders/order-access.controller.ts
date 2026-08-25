@@ -1,6 +1,9 @@
-import { Body, Controller, HttpCode, Post } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, HttpCode, Post, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
+import { PublicUserDto } from '../users/dto/public-user.dto';
 import { ConfirmOrderAccessDto } from './dto/confirm-order-access.dto';
 import { RequestOrderAccessDto } from './dto/request-order-access.dto';
 import { OrderAccessService } from './order-access.service';
@@ -28,6 +31,8 @@ export class OrderAccessController {
 
   @Post('confirm')
   @HttpCode(200)
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiBearerAuth()
   @Throttle({
     default: {
       limit: 10,
@@ -38,7 +43,10 @@ export class OrderAccessController {
   @ApiOperation({
     summary: 'Confirmar el código y rotar los tokens de los pedidos',
   })
-  confirm(@Body() dto: ConfirmOrderAccessDto) {
-    return this.orderAccess.confirm(dto);
+  confirm(
+    @Body() dto: ConfirmOrderAccessDto,
+    @CurrentUser() user?: PublicUserDto,
+  ) {
+    return this.orderAccess.confirm(dto, user);
   }
 }

@@ -136,6 +136,18 @@ describe('AdminSessionController', () => {
     );
   });
 
+  it('conserva la cookie y propaga el error si no pudo revocar la sesión', async () => {
+    auth.logout.mockRejectedValueOnce(new Error('mongo unavailable'));
+
+    await expect(
+      controller.logout(
+        { headers: { cookie: 'sorteos_admin_refresh=current' } } as never,
+        response as never,
+      ),
+    ).rejects.toThrow('mongo unavailable');
+    expect(response.clearCookie).not.toHaveBeenCalled();
+  });
+
   it('marca la cookie como Secure en producción', async () => {
     config.get.mockReturnValue('production');
     auth.login.mockResolvedValue(session(UserRole.ADMIN));

@@ -21,12 +21,14 @@ import {
   ReferralCommission,
   ReferralCommissionSchema,
 } from './schemas/referral-commission.schema';
+import { SettingsModule } from '../settings/settings.module';
 
 @Module({
   imports: [
     AuthModule,
     UsersModule,
     RafflesModule,
+    SettingsModule,
     MongooseModule.forFeature([
       { name: ReferralCode.name, schema: ReferralCodeSchema },
       { name: ReferralClick.name, schema: ReferralClickSchema },

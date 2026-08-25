@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { Types } from 'mongoose';
 import { OrderAccessService } from './order-access.service';
 import { OrdersService } from './orders.service';
+import { UserRole } from '../users/enums/user-role.enum';
 import { OrderStatus } from './schemas/order.schema';
 
 function executable<T>(value: T) {
@@ -48,6 +49,7 @@ describe('OrderAccessService', () => {
 
   let challengeModel: Record<string, jest.Mock>;
   let orderModel: Record<string, jest.Mock>;
+  let quotaModel: Record<string, jest.Mock>;
   let email: Record<string, jest.Mock>;
   let session: Record<string, jest.Mock>;
   let connection: Record<string, jest.Mock>;
@@ -80,6 +82,9 @@ describe('OrderAccessService', () => {
       findOne: jest.fn(),
       countDocuments: jest.fn(),
     };
+    quotaModel = {
+      updateMany: jest.fn().mockResolvedValue({ modifiedCount: 0 }),
+    };
     email = {
       sendVerificationEmail: jest.fn().mockResolvedValue(undefined),
     };
@@ -100,6 +105,7 @@ describe('OrderAccessService', () => {
     service = new OrderAccessService(
       challengeModel as any,
       orderModel as any,
+      quotaModel as any,
       connection as any,
       email as any,
       {
@@ -376,5 +382,69 @@ describe('OrderAccessService', () => {
       service.confirm({ challengeId: challenge.challengeId, code }),
     ).rejects.toThrow('Código inválido o expirado');
     expect(recoveredOrder.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('vincula pedidos y títulos atómicamente a la cuenta CUSTOMER autenticada', async () => {
+    const accountId = new Types.ObjectId();
+    const orderId = new Types.ObjectId();
+    const recoveredOrder = document({
+      _id: orderId,
+      publicId: 'pedido-vinculado',
+      buyer,
+      status: OrderStatus.Paid,
+      accessSecret: createHash('sha256').update('anterior').digest('hex'),
+    });
+    orderModel.find
+      .mockReturnValueOnce(executable([{ _id: orderId }]))
+      .mockReturnValueOnce(executable([recoveredOrder]));
+    const challenge = await service.request({
+      phone: buyer.phone,
+      email: buyer.email,
+    });
+    const code = email.sendVerificationEmail.mock.calls[0][1];
+
+    const result = await service.confirm(
+      { challengeId: challenge.challengeId, code, linkToAccount: true },
+      {
+        id: accountId.toString(),
+        role: UserRole.CUSTOMER,
+      } as any,
+    );
+
+    expect(recoveredOrder.user).toEqual(accountId);
+    expect(recoveredOrder.save).toHaveBeenCalledWith({ session });
+    expect(quotaModel.updateMany).toHaveBeenCalledWith(
+      { order: { $in: [orderId] } },
+      { $set: { user: accountId } },
+      { session },
+    );
+    expect(result.meta).toEqual({
+      count: 1,
+      hasMore: false,
+      truncated: false,
+      linkedToAccount: true,
+    });
+    expect(result.orders[0]).toEqual(
+      expect.objectContaining({ accessToken: expect.any(String) }),
+    );
+  });
+
+  it('exige Bearer CUSTOMER únicamente cuando se solicita la vinculación', async () => {
+    const dto = {
+      challengeId: 'a'.repeat(32),
+      code: '123456',
+      linkToAccount: true,
+    };
+
+    await expect(service.confirm(dto)).rejects.toThrow(
+      'Bearer requerido para vincular pedidos',
+    );
+    await expect(
+      service.confirm(dto, {
+        id: new Types.ObjectId().toString(),
+        role: UserRole.ADMIN,
+      } as any),
+    ).rejects.toThrow('Solo una cuenta de cliente');
+    expect(connection.startSession).not.toHaveBeenCalled();
   });
 });

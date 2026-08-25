@@ -612,6 +612,58 @@ describe('DrawsService verifiable draw workflow', () => {
     expect(session.endSession).toHaveBeenCalledTimes(2);
   });
 
+  it('publica detalle de campaña y evidencia verificable en el resultado público', async () => {
+    const campaignId = new Types.ObjectId();
+    campaignModel.findOne.mockReturnValue(
+      queryResult({
+        _id: campaignId,
+        name: 'Titan 160',
+        slug: 'titan-160',
+        prizeTitle: 'Moto ou dinheiro',
+        media: [],
+      }),
+    );
+    resultModel.findOne.mockReturnValue(
+      queryResult({
+        campaign: campaignId,
+        status: DrawResultStatus.Published,
+        evidenceHash: 'a'.repeat(64),
+        calculationRule: 'regra pública',
+        outcomes: [
+          {
+            position: 1,
+            prizeTitle: 'Titan',
+            winningNumber: '001234',
+            winnerSnapshot: {
+              name: 'Maria da Silva',
+              phone: '+5511999999999',
+            },
+          },
+        ],
+      }),
+    );
+
+    const result = await service.findPublicByCampaign('titan-160');
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        campaign: expect.objectContaining({
+          id: campaignId.toString(),
+          name: 'Titan 160',
+          slug: 'titan-160',
+        }),
+        evidence: {
+          evidenceHash: 'a'.repeat(64),
+          calculationRule: 'regra pública',
+        },
+      }),
+    );
+    expect(result.outcomes[0].winner).toEqual({
+      name: 'Maria d. S.',
+      phone: '+551****99',
+    });
+  });
+
   it('publica un verificado, congela ganadores en campaña y notifica al principal', async () => {
     const campaignId = new Types.ObjectId();
     const userId = new Types.ObjectId();

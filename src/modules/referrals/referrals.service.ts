@@ -334,11 +334,36 @@ export class ReferralsService {
         .exec(),
       this.codeModel
         .find({ beneficiaryUser })
-        .select('code status clicksCount conversionsCount')
+        .select('code status campaignId clicksCount conversionsCount')
         .sort({ createdAt: -1 })
         .lean()
         .exec(),
     ]);
+    const campaignById = new Map<
+      string,
+      { slug?: string; name?: string }
+    >();
+    if (this.campaigns) {
+      await Promise.all(
+        [
+          ...new Set(
+            codes
+              .map((code) => code.campaignId)
+              .filter((id): id is string => Boolean(id)),
+          ),
+        ].map(async (campaignId) => {
+          const campaign = await this.campaigns!
+            .findOne(campaignId)
+            .catch(() => undefined);
+          if (campaign) {
+            campaignById.set(campaignId, {
+              slug: campaign.slug,
+              name: campaign.name,
+            });
+          }
+        }),
+      );
+    }
     return {
       totals: totals.map((total) => ({
         status: total._id.status,
@@ -349,6 +374,13 @@ export class ReferralsService {
       codes: codes.map((code) => ({
         code: code.code,
         status: code.status,
+        campaignId: code.campaignId,
+        campaignSlug: code.campaignId
+          ? campaignById.get(code.campaignId)?.slug
+          : undefined,
+        campaignName: code.campaignId
+          ? campaignById.get(code.campaignId)?.name
+          : undefined,
         clicksCount: code.clicksCount,
         conversionsCount: code.conversionsCount,
       })),

@@ -1,4 +1,11 @@
-import { IsString, Length, Matches } from 'class-validator';
+import { ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsBoolean,
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+} from 'class-validator';
 
 export class ConfirmOrderAccessDto {
   @IsString()
@@ -9,4 +16,13 @@ export class ConfirmOrderAccessDto {
   @IsString()
   @Matches(/^\d{6}$/)
   code: string;
+
+  @ApiPropertyOptional({
+    default: false,
+    description:
+      'Si es true, exige Bearer de CUSTOMER y vincula atómicamente los pedidos recuperados con esa cuenta.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  linkToAccount?: boolean = false;
 }

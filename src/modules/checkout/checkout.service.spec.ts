@@ -129,7 +129,7 @@ describe('CheckoutService', () => {
       idempotencyKey: 'checkout-client-request-account',
     };
 
-    await service.create(dto, userId.toString());
+    const result = await service.create(dto, userId.toString());
 
     expect(orders.createReservation).toHaveBeenCalledWith(
       dto,
@@ -137,6 +137,13 @@ describe('CheckoutService', () => {
     );
     expect(payments.create).toHaveBeenCalledWith(
       expect.objectContaining({ userId: userId.toString() }),
+    );
+    expect(result).not.toHaveProperty('orderAccessToken');
+    expect(result).not.toHaveProperty('paymentAccessSecret');
+    expect(orders.findByPublicId).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      userId.toString(),
     );
   });
 

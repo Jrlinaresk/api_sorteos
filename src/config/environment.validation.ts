@@ -34,6 +34,24 @@ export function validateEnvironment(input: Environment): Environment {
     30,
     3_600,
   );
+  validateInteger(
+    environment.ORDER_ACCESS_TOKEN_HOURS,
+    'ORDER_ACCESS_TOKEN_HOURS',
+    1,
+    168,
+  );
+  validateInteger(
+    environment.PAYMENT_ACCESS_TOKEN_HOURS,
+    'PAYMENT_ACCESS_TOKEN_HOURS',
+    1,
+    168,
+  );
+  validateInteger(
+    environment.PRIZE_ACCESS_TOKEN_HOURS,
+    'PRIZE_ACCESS_TOKEN_HOURS',
+    1,
+    72,
+  );
   validateInteger(environment.RATE_LIMIT_MAX, 'RATE_LIMIT_MAX', 1, 100_000);
   validateInteger(
     environment.AUDIT_RETENTION_DAYS,
@@ -126,6 +144,12 @@ export function validateEnvironment(input: Environment): Environment {
     'EFI_WEBHOOK_REQUIRE_MTLS',
   );
   validateBoolean(environment.ADMIN_PANEL_ENABLED, 'ADMIN_PANEL_ENABLED');
+  validateBoolean(environment.SMTP_SECURE, 'SMTP_SECURE');
+  validateBoolean(environment.SMTP_REQUIRE_TLS, 'SMTP_REQUIRE_TLS');
+  validateBoolean(
+    environment.SMTP_TLS_REJECT_UNAUTHORIZED,
+    'SMTP_TLS_REJECT_UNAUTHORIZED',
+  );
   validateInteger(
     environment.WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER,
     'WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER',
@@ -133,6 +157,8 @@ export function validateEnvironment(input: Environment): Environment {
     50,
   );
   validateNotificationPush(environment);
+  validateClientSessionCookie(environment);
+  validateAdminPanelOrigins(environment);
 
   if (nodeEnvironment !== 'production') return environment;
 
@@ -160,6 +186,58 @@ export function validateEnvironment(input: Environment): Environment {
   }
 
   return environment;
+}
+
+function validateClientSessionCookie(environment: Environment): void {
+  const sameSite =
+    text(environment.CLIENT_SESSION_COOKIE_SAME_SITE).toLowerCase() || 'lax';
+  if (!['lax', 'strict', 'none'].includes(sameSite)) {
+    fail('CLIENT_SESSION_COOKIE_SAME_SITE debe ser lax, strict o none');
+  }
+}
+
+function validateAdminPanelOrigins(environment: Environment): void {
+  const configured = text(environment.ADMIN_PANEL_ORIGINS);
+  const production = text(environment.NODE_ENV) === 'production';
+  const panelEnabled = text(environment.ADMIN_PANEL_ENABLED) !== 'false';
+  if (!configured) {
+    if (production && panelEnabled) {
+      fail(
+        'ADMIN_PANEL_ORIGINS es obligatorio en producción con el panel habilitado',
+      );
+    }
+    return;
+  }
+  const origins = configured
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  if (!origins.length || origins.includes('*')) {
+    fail('ADMIN_PANEL_ORIGINS debe contener orígenes explícitos');
+  }
+  for (const origin of origins) {
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      fail('ADMIN_PANEL_ORIGINS contiene un origen inválido');
+    }
+    if (
+      !['http:', 'https:'].includes(parsed!.protocol) ||
+      (production && parsed!.protocol !== 'https:') ||
+      parsed!.pathname !== '/' ||
+      parsed!.search ||
+      parsed!.hash ||
+      parsed!.username ||
+      parsed!.password
+    ) {
+      fail(
+        production
+          ? 'ADMIN_PANEL_ORIGINS solo admite orígenes HTTPS, sin rutas, en producción'
+          : 'ADMIN_PANEL_ORIGINS solo admite orígenes HTTP(S), sin rutas',
+      );
+    }
+  }
 }
 
 function validateNotificationPush(environment: Environment): void {
@@ -254,10 +332,14 @@ function validateCors(environment: Environment): void {
       fail('CORS_ORIGINS contiene un origen inválido');
     }
     if (
-      !['http:', 'https:'].includes(parsed!.protocol) ||
-      parsed!.pathname !== '/'
+      parsed!.protocol !== 'https:' ||
+      parsed!.pathname !== '/' ||
+      parsed!.search ||
+      parsed!.hash ||
+      parsed!.username ||
+      parsed!.password
     ) {
-      fail('CORS_ORIGINS solo admite orígenes HTTP(S), sin rutas');
+      fail('CORS_ORIGINS solo admite orígenes HTTPS, sin rutas, en producción');
     }
   }
 }
@@ -288,6 +370,16 @@ function validateSmtp(environment: Environment): void {
   ) {
     fail('SMTP_USER y SMTP_PASS deben configurarse juntos');
   }
+  const secure = text(environment.SMTP_SECURE).toLowerCase() === 'true';
+  const requireTls = text(environment.SMTP_REQUIRE_TLS).toLowerCase() === 'true';
+  if (!secure && !requireTls) {
+    fail('SMTP_SECURE=true o SMTP_REQUIRE_TLS=true es obligatorio en producción');
+  }
+  if (
+    text(environment.SMTP_TLS_REJECT_UNAUTHORIZED).toLowerCase() !== 'true'
+  ) {
+    fail('SMTP_TLS_REJECT_UNAUTHORIZED=true es obligatorio en producción');
+  }
 }
 
 function validatePayments(environment: Environment): void {
@@ -310,6 +402,18 @@ function validatePayments(environment: Environment): void {
     'EFI_PIX_KEY',
   ]) {
     required(environment, name);
+  }
+
+  const efiEnvironment =
+    text(environment.EFI_PIX_ENV).toLowerCase() || 'production';
+  if (efiEnvironment !== 'production') {
+    fail('EFI_PIX_ENV=production es obligatorio en producción');
+  }
+  const baseUrl = text(environment.EFI_PIX_BASE_URL);
+  if (baseUrl && baseUrl !== 'https://pix.api.efipay.com.br') {
+    fail(
+      'EFI_PIX_BASE_URL debe estar vacío o ser https://pix.api.efipay.com.br en producción',
+    );
   }
 
   const p12 = text(environment.EFI_PIX_CERTIFICATE_PATH);

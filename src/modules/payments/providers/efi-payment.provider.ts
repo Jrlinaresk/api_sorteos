@@ -339,7 +339,19 @@ export class EfiPaymentProvider implements PaymentProvider {
   }
 
   private baseUrl(): string {
-    const override = this.config.get<string>('EFI_PIX_BASE_URL');
+    const override = this.config.get<string>('EFI_PIX_BASE_URL')?.trim();
+    if (this.config.get<string>('NODE_ENV') === 'production') {
+      if (
+        this.isSandbox() ||
+        (override && override !== EFI_PRODUCTION_BASE_URL)
+      ) {
+        throw new PaymentProviderError(
+          'Producción solo admite el endpoint oficial de Efí Pix',
+          this.name,
+        );
+      }
+      return EFI_PRODUCTION_BASE_URL;
+    }
     if (override) return override;
     return this.isSandbox() ? EFI_SANDBOX_BASE_URL : EFI_PRODUCTION_BASE_URL;
   }

@@ -457,7 +457,18 @@ export class DrawsService {
       .findOne({ campaign: campaign._id, status: DrawResultStatus.Published })
       .lean();
     if (!result) return null;
-    return this.publicView(result as any);
+    return this.publicView({
+      ...(result as any),
+      campaign: {
+        id: campaign._id?.toString(),
+        name: campaign.name,
+        slug: campaign.slug,
+        prizeTitle: campaign.prizeTitle,
+        media: campaign.media,
+        imageUrl: campaign.imageUrl,
+        drawDate: campaign.drawDate,
+      },
+    });
   }
 
   async listPublic(page = 1, limit = 12) {
@@ -999,6 +1010,28 @@ export class DrawsService {
     delete raw.verifiedBy;
     delete raw.publishedBy;
     delete raw.__v;
+    raw.evidence = Object.fromEntries(
+      [
+        'evidenceHash',
+        'calculationRule',
+        'contest',
+        'extraction',
+        'firstPrize',
+        'secondPrize',
+        'sourceUrl',
+        'sourcePublishedAt',
+        'sourceFetchedAt',
+        'sourceConfirmedAt',
+        'sourceBodySha256',
+        'sourceConfirmationBodySha256',
+        'commitment',
+        'revealedSecret',
+        'externalEntropy',
+        'entropyDigest',
+      ]
+        .map((key) => [key, raw[key]])
+        .filter(([, value]) => value !== undefined),
+    );
     raw.outcomes = (raw.outcomes || []).map((outcome: any) => ({
       position: outcome.position,
       prizeTitle: outcome.prizeTitle,

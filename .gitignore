@@ -2,6 +2,7 @@
 /dist
 /admin/coverage
 /node_modules
+/admin/node_modules
 /build
 
 # Logs and debugging reports

@@ -1,7 +1,7 @@
 import { validateEnvironment } from './environment.validation';
 
 describe('validateEnvironment', () => {
-  const productionEnvironment = () => ({
+  const productionEnvironment = (): Record<string, string> => ({
     NODE_ENV: 'production',
     JWT_SECRET: 'j'.repeat(32),
     EMAIL_CODE_SECRET: 'e'.repeat(32),
@@ -12,6 +12,7 @@ describe('validateEnvironment', () => {
     ORDER_ACCESS_REQUEST_COOLDOWN_SECONDS: '60',
     REFERRAL_IP_HASH_SECRET: 'r'.repeat(32),
     CORS_ORIGINS: 'https://rifa.example.com,https://admin.example.com',
+    ADMIN_PANEL_ORIGINS: 'https://admin.example.com',
     MONGODB_URI:
       'mongodb://mongo:27017/api_sorteos?replicaSet=rs0&authSource=admin',
     SMTP_HOST: 'smtp.example.com',
@@ -19,6 +20,8 @@ describe('validateEnvironment', () => {
     SMTP_FROM: 'Sorteos <no-reply@example.com>',
     SMTP_USER: 'smtp-user',
     SMTP_PASS: 'smtp-password',
+    SMTP_REQUIRE_TLS: 'true',
+    SMTP_TLS_REJECT_UNAUTHORIZED: 'true',
     MEDIA_LOCAL_ROOT: '/var/lib/api-sorteos/media',
     PAYMENTS_PROVIDER: 'efi',
     EFI_PIX_CLIENT_ID: 'client-id',
@@ -54,6 +57,81 @@ describe('validateEnvironment', () => {
         WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER: '51',
       }),
     ).toThrow('WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER');
+  });
+
+  it('solo admite políticas SameSite seguras para la sesión web cliente', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        CLIENT_SESSION_COOKIE_SAME_SITE: 'disabled',
+      }),
+    ).toThrow('CLIENT_SESSION_COOKIE_SAME_SITE debe ser lax, strict o none');
+    expect(
+      validateEnvironment({
+        NODE_ENV: 'test',
+        CLIENT_SESSION_COOKIE_SAME_SITE: 'none',
+      }),
+    ).toEqual({
+      NODE_ENV: 'test',
+      CLIENT_SESSION_COOKIE_SAME_SITE: 'none',
+    });
+  });
+
+  it('valida por separado los orígenes que pueden usar la sesión administrativa', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        ADMIN_PANEL_ORIGINS: 'https://admin.example.com/panel',
+      }),
+    ).toThrow('ADMIN_PANEL_ORIGINS solo admite orígenes HTTP(S), sin rutas');
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        ADMIN_PANEL_ORIGINS: '*',
+      }),
+    ).toThrow('ADMIN_PANEL_ORIGINS debe contener orígenes explícitos');
+
+    const missing = productionEnvironment();
+    delete missing.ADMIN_PANEL_ORIGINS;
+    expect(() => validateEnvironment(missing)).toThrow(
+      'ADMIN_PANEL_ORIGINS es obligatorio en producción',
+    );
+
+    missing.ADMIN_PANEL_ENABLED = 'false';
+    expect(validateEnvironment(missing)).toEqual(missing);
+
+    const insecure = productionEnvironment();
+    insecure.ADMIN_PANEL_ORIGINS = 'http://admin.example.com';
+    expect(() => validateEnvironment(insecure)).toThrow(
+      'ADMIN_PANEL_ORIGINS solo admite orígenes HTTPS',
+    );
+  });
+
+  it('exige HTTPS para todos los orígenes CORS de producción', () => {
+    const environment = productionEnvironment();
+    environment.CORS_ORIGINS = 'http://rifa.example.com';
+    expect(() => validateEnvironment(environment)).toThrow(
+      'CORS_ORIGINS solo admite orígenes HTTPS',
+    );
+  });
+
+  it('rechaza transporte SMTP degradado o certificados no verificados', () => {
+    const withoutTls = productionEnvironment();
+    withoutTls.SMTP_REQUIRE_TLS = 'false';
+    withoutTls.SMTP_SECURE = 'false';
+    expect(() => validateEnvironment(withoutTls)).toThrow(
+      'SMTP_SECURE=true o SMTP_REQUIRE_TLS=true',
+    );
+
+    const unverifiable = productionEnvironment();
+    unverifiable.SMTP_TLS_REJECT_UNAUTHORIZED = 'false';
+    expect(() => validateEnvironment(unverifiable)).toThrow(
+      'SMTP_TLS_REJECT_UNAUTHORIZED=true',
+    );
+
+    expect(() =>
+      validateEnvironment({ NODE_ENV: 'test', SMTP_SECURE: 'sometimes' }),
+    ).toThrow('SMTP_SECURE debe ser true o false');
   });
 
   it('acota el límite operativo de títulos asignados, incluidos los bonus', () => {
@@ -157,6 +235,20 @@ describe('validateEnvironment', () => {
     environment.PAYMENTS_PROVIDER = 'mock';
     expect(() => validateEnvironment(environment)).toThrow(
       'PAYMENTS_ALLOW_MOCK=true',
+    );
+  });
+
+  it('no permite sandbox ni un host Efí alternativo en producción', () => {
+    const sandbox = productionEnvironment();
+    sandbox.EFI_PIX_ENV = 'sandbox';
+    expect(() => validateEnvironment(sandbox)).toThrow(
+      'EFI_PIX_ENV=production',
+    );
+
+    const attacker = productionEnvironment();
+    attacker.EFI_PIX_BASE_URL = 'https://payments.attacker.example';
+    expect(() => validateEnvironment(attacker)).toThrow(
+      'EFI_PIX_BASE_URL debe estar vacío',
     );
   });
 

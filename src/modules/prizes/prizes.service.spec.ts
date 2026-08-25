@@ -115,6 +115,8 @@ describe('PrizesService inventory and lifecycle', () => {
     };
     orderModel = {
       findById: jest.fn(),
+      findOne: jest.fn(),
+      distinct: jest.fn(),
       updateOne: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
       exists: jest.fn().mockReturnValue(executable(null)),
     };
@@ -890,6 +892,9 @@ describe('PrizesService inventory and lifecycle', () => {
       status: PrizeAwardStatus.Awarded,
     });
     awardModel.findOne.mockReturnValue(executable(award));
+    orderModel.findOne.mockReturnValue(
+      executable({ _id: orderId, user: userId }),
+    );
     orderModel.findById.mockReturnValue(
       executable({ _id: orderId, status: OrderStatus.Paid }),
     );
@@ -910,9 +915,49 @@ describe('PrizesService inventory and lifecycle', () => {
     );
 
     award.status = PrizeAwardStatus.Awarded;
-    await expect(service.fulfill('award-public-id')).rejects.toThrow(
-      'El premio debe estar reclamado antes de entregarse',
+    await expect(
+      service.fulfill(
+        'award-public-id',
+        { reference: 'ENTREGA-001' },
+        new Types.ObjectId().toString(),
+      ),
+    ).rejects.toThrow('El premio debe estar reclamado antes de entregarse');
+  });
+
+  it('persiste actor, referencia y notas al entregar dentro de la transacción', async () => {
+    const actorId = new Types.ObjectId();
+    const orderId = new Types.ObjectId();
+    const award = document({
+      publicId: 'fulfilled-award',
+      order: orderId,
+      status: PrizeAwardStatus.Claimed,
+    });
+    awardModel.findOne.mockReturnValue(executable(award));
+    orderModel.findById.mockReturnValue(
+      executable({ _id: orderId, status: OrderStatus.Paid }),
     );
+
+    const fulfilled = await service.fulfill(
+      'fulfilled-award',
+      {
+        reference: '  TRACKING-123  ',
+        notes: '  Recibido por el ganador  ',
+      },
+      actorId.toString(),
+    );
+
+    expect(fulfilled).toBe(award);
+    expect(award).toEqual(
+      expect.objectContaining({
+        status: PrizeAwardStatus.Fulfilled,
+        fulfilledAt: expect.any(Date),
+        fulfilledBy: actorId,
+        fulfillmentReference: 'TRACKING-123',
+        fulfillmentNotes: 'Recibido por el ganador',
+      }),
+    );
+    expect(award.save).toHaveBeenCalledWith({ session });
+    expect(session.withTransaction).toHaveBeenCalledTimes(1);
   });
 
   it('serializa la reclamación con el pedido y la rechaza después del reembolso', async () => {
@@ -925,6 +970,9 @@ describe('PrizesService inventory and lifecycle', () => {
       status: PrizeAwardStatus.Awarded,
     });
     awardModel.findOne.mockReturnValue(executable(award));
+    orderModel.findOne.mockReturnValue(
+      executable({ _id: orderId, user: userId }),
+    );
     orderModel.findById.mockReturnValue(
       executable({ _id: orderId, status: OrderStatus.Refunded }),
     );
@@ -967,6 +1015,7 @@ describe('PrizesService inventory and lifecycle', () => {
       status: PrizeAwardStatus.Awarded,
     });
     awardModel.findOne.mockReturnValue(executable(award));
+    orderModel.findOne.mockReturnValue(executable(null));
     await expect(
       service.claimAsUser('award-public-id', new Types.ObjectId().toString()),
     ).rejects.toBeInstanceOf(ForbiddenException);
@@ -986,6 +1035,37 @@ describe('PrizesService inventory and lifecycle', () => {
       'token',
       undefined,
     );
+  });
+
+  it('reconoce premios de invitado vinculados por la propiedad actual del pedido', async () => {
+    const userId = new Types.ObjectId();
+    const orderId = new Types.ObjectId();
+    const award = document({
+      publicId: 'guest-award-linked-later',
+      order: orderId,
+      status: PrizeAwardStatus.Awarded,
+    });
+    awardModel.findOne.mockReturnValue(executable(award));
+    orderModel.findOne.mockReturnValue(
+      executable({ _id: orderId, user: userId }),
+    );
+    orderModel.findById.mockReturnValue(
+      executable({ _id: orderId, user: userId, status: OrderStatus.Paid }),
+    );
+
+    await expect(
+      service.claimAsUser(award.publicId, userId.toString()),
+    ).resolves.toEqual(expect.objectContaining({ status: 'claimed' }));
+
+    const distinctQuery = executable([orderId]);
+    orderModel.distinct.mockReturnValue(distinctQuery);
+    awardModel.find.mockReturnValue(leanable([award]));
+    await service.listMine(userId.toString());
+    expect(orderModel.distinct).toHaveBeenCalledWith('_id', { user: userId });
+    expect(awardModel.find).toHaveBeenCalledWith({
+      order: { $in: [orderId] },
+      status: { $ne: PrizeAwardStatus.Reversed },
+    });
   });
 
   it('revierte adjudicaciones tras reembolso y devuelve unidades al inventario', async () => {

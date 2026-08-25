@@ -51,3 +51,12 @@ Juego, reclamación y entrega escriben un cerrojo de ciclo de vida en el pedido
 pagado dentro de la misma transacción. Esto los serializa con el cambio de
 estado del pedido durante un reembolso. Los intentos pendientes expiran y las
 adjudicaciones se revierten al confirmar el reembolso.
+
+## Acceso del propietario
+
+Los endpoints de intentos y adjudicaciones por pedido aceptan
+`X-Order-Token` para invitados o Bearer para el propietario actual del pedido.
+`POST /prizes/attempts/:publicId/play` aplica la misma regla con
+`X-Prize-Token`. La propiedad se verifica contra el pedido, no contra el
+snapshot opcional del intento/premio; por eso una compra invitada sigue
+apareciendo y puede jugarse después de vincularla a una cuenta.

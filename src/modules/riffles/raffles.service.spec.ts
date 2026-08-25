@@ -483,6 +483,7 @@ describe('RafflesService domain rules', () => {
           expect.objectContaining({ quantity: 1 }),
         ]);
         expect(view.purchaseLimits).toEqual({
+          minSelectedTitles: 1,
           maxSelectedTitles: 1,
           maxAllocatedTitles: 2,
           allocationMultiplier: 2,
@@ -492,6 +493,28 @@ describe('RafflesService domain rules', () => {
           delete process.env.ORDER_MAX_ALLOCATED_TITLES;
         else process.env.ORDER_MAX_ALLOCATED_TITLES = previous;
       }
+    });
+
+    it('cierra la compra pública si el stock no alcanza el mínimo monetario', () => {
+      const view = (service as any).toPublicView(
+        {
+          _id: new Types.ObjectId(),
+          status: CampaignStatus.Active,
+          totalTitles: 100,
+          soldCount: 85,
+          reservedCount: 0,
+          ticketPrice: 0.1,
+          minimumOrderAmount: 2,
+          maxTitlesPerOrder: 100,
+          media: [],
+          regulationHistory: [],
+        },
+        true,
+      );
+
+      expect(view.purchaseLimits.minSelectedTitles).toBe(20);
+      expect(view.purchaseLimits.maxSelectedTitles).toBe(15);
+      expect(view.isPurchasable).toBe(false);
     });
 
     it('no activa una campaña Federal sin concurso fijado', async () => {

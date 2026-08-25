@@ -10,6 +10,7 @@ import {
 import { ApiBearerAuth, ApiHeader, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../auth/guards/optional-jwt-auth.guard';
 import { PublicUserDto } from '../users/dto/public-user.dto';
 import { ClaimPrizeDto } from './dto/claim-prize.dto';
 import { PrizesService } from './prizes.service';
@@ -25,30 +26,55 @@ export class PrizesController {
   }
 
   @Get('prizes/attempts/order/:orderPublicId')
-  @ApiHeader({ name: 'X-Order-Token', required: true })
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiHeader({
+    name: 'X-Order-Token',
+    required: false,
+    description: 'Requerido solo para pedidos invitados no vinculados',
+  })
   listAttempts(
     @Param('orderPublicId') orderPublicId: string,
-    @Headers('x-order-token') orderToken: string,
+    @Headers('x-order-token') orderToken?: string,
+    @CurrentUser() user?: PublicUserDto,
   ) {
-    return this.prizes.listAttemptsForOrder(orderPublicId, orderToken);
+    return this.prizes.listAttemptsForOrder(
+      orderPublicId,
+      orderToken,
+      user?.id,
+    );
   }
 
   @Get('prize-awards/order/:orderPublicId')
-  @ApiHeader({ name: 'X-Order-Token', required: true })
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiHeader({
+    name: 'X-Order-Token',
+    required: false,
+    description: 'Requerido solo para pedidos invitados no vinculados',
+  })
   listAwards(
     @Param('orderPublicId') orderPublicId: string,
-    @Headers('x-order-token') orderToken: string,
+    @Headers('x-order-token') orderToken?: string,
+    @CurrentUser() user?: PublicUserDto,
   ) {
-    return this.prizes.listAwardsForOrder(orderPublicId, orderToken);
+    return this.prizes.listAwardsForOrder(orderPublicId, orderToken, user?.id);
   }
 
   @Post('prizes/attempts/:publicId/play')
-  @ApiHeader({ name: 'X-Prize-Token', required: true })
+  @UseGuards(OptionalJwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiHeader({
+    name: 'X-Prize-Token',
+    required: false,
+    description: 'Requerido solo para intentos de pedidos invitados',
+  })
   play(
     @Param('publicId') publicId: string,
-    @Headers('x-prize-token') accessToken: string,
+    @Headers('x-prize-token') accessToken?: string,
+    @CurrentUser() user?: PublicUserDto,
   ) {
-    return this.prizes.playAttempt(publicId, accessToken);
+    return this.prizes.playAttempt(publicId, accessToken, user?.id);
   }
 
   @Post('prize-awards/:publicId/claim')

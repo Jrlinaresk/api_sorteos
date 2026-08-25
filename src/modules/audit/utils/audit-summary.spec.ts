@@ -15,6 +15,20 @@ describe('summarizeAuditValue', () => {
     });
   });
 
+  it('redacta búsquedas libres que pueden contener CPF, correo o nombre', () => {
+    expect(
+      summarizeAuditValue({
+        query: { search: '123.456.789-00', q: 'ana@example.com' },
+        filter: 'João da Silva',
+        status: 'paid',
+      }),
+    ).toEqual({
+      query: { search: '[REDACTED]', q: '[REDACTED]' },
+      filter: '[REDACTED]',
+      status: 'paid',
+    });
+  });
+
   it('limita cadenas, ciclos y colecciones grandes', () => {
     const circular: Record<string, unknown> = { text: 'x'.repeat(700) };
     circular.self = circular;

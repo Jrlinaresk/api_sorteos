@@ -20,6 +20,13 @@ export enum MainPrizeClaimSource {
   OrderToken = 'order_token',
 }
 
+export interface MainPrizeDeliveryDetails {
+  recipientName: string;
+  phone: string;
+  address: string;
+  instructions?: string;
+}
+
 /**
  * Contrato operacional del premio principal. El resultado publicado conserva
  * la evidencia del sorteo; este documento conserva, por separado, la entrega
@@ -128,6 +135,35 @@ export class MainPrizeAward {
 
   @Prop({ enum: Object.values(MainPrizeClaimSource) })
   claimSource?: MainPrizeClaimSource;
+
+  /** PII logística: solo se selecciona en vistas del propietario y detalle admin. */
+  @Prop({
+    type: {
+      recipientName: {
+        type: String,
+        required: true,
+        trim: true,
+        minlength: 2,
+        maxlength: 160,
+      },
+      phone: {
+        type: String,
+        required: true,
+        trim: true,
+        maxlength: 24,
+      },
+      address: {
+        type: String,
+        required: true,
+        trim: true,
+        minlength: 10,
+        maxlength: 500,
+      },
+      instructions: { type: String, trim: true, maxlength: 1_000 },
+    },
+    select: false,
+  })
+  deliveryDetails?: MainPrizeDeliveryDetails;
 
   @Prop({ type: Types.ObjectId, ref: 'User' })
   claimedByUser?: Types.ObjectId;

@@ -1,4 +1,5 @@
 import {
+  ADMIN_LOGOUT_PENDING_KEY,
   createContext,
   useCallback,
   useContext,
@@ -62,6 +63,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, expire);
   }, [queryClient]);
 
+  useEffect(() => {
+    const synchronizeLogout = (event: StorageEvent) => {
+      if (
+        event.key === ADMIN_LOGOUT_PENDING_KEY &&
+        event.newValue === 'pending'
+      ) {
+        setAccessToken(null);
+        queryClient.clear();
+        setUser(null);
+        setStatus('anonymous');
+      }
+    };
+    window.addEventListener('storage', synchronizeLogout);
+    return () => window.removeEventListener('storage', synchronizeLogout);
+  }, [queryClient]);
+
   const login = useCallback(async (phone: string, password: string) => {
     const session = await loginSession(phone, password);
     setUser(session.user);
@@ -70,10 +87,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await logoutSession();
-    queryClient.clear();
-    setUser(null);
-    setStatus('anonymous');
+    try {
+      await logoutSession();
+    } finally {
+      queryClient.clear();
+      setUser(null);
+      setStatus('anonymous');
+    }
   }, [queryClient]);
 
   const can = useCallback(

@@ -25,6 +25,7 @@ import { validateEnvironment } from './config/environment.validation';
 import { mongoConnectionOptions } from './config/mongo.config';
 import { AdminPanelModule } from './modules/admin-panel/admin-panel.module';
 import { AdminDashboardModule } from './modules/admin-dashboard/admin-dashboard.module';
+import { ClientSessionModule } from './modules/client-session/client-session.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { AdminDashboardModule } from './modules/admin-dashboard/admin-dashboard.
     HealthModule,
     AdminPanelModule,
     AdminDashboardModule,
+    ClientSessionModule,
     AuthModule,
     AuditModule,
     SettingsModule,
