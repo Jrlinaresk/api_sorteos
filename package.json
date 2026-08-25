@@ -22,6 +22,7 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "NODE_ENV=production node dist/main",
     "bootstrap:admin": "node dist/bootstrap-admin",
+    "seed:demo": "node dist/seed-demo",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" \"admin/**/*.{ts,tsx}\" --fix",
     "lint:check": "eslint \"{src,apps,libs,test}/**/*.ts\" \"admin/**/*.{ts,tsx}\"",
     "test": "jest",

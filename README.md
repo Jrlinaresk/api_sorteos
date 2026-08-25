@@ -80,6 +80,24 @@ unset BOOTSTRAP_ADMIN_PASSWORD
 El comando recibe las variables solo durante esa ejecución. No las añada a
 `docker-compose.prod.yml` ni las conserve después del bootstrap.
 
+## Datos locales de demostración
+
+Con el Compose de desarrollo levantado, se puede poblar la base vacía con
+campañas, usuarios, pedidos, pagos, títulos, premios, sorteos, referidos,
+notificaciones, ajustes, auditoría y registros internos coherentes:
+
+```bash
+./deploy-dev.sh
+docker compose --env-file .env.docker.local -f docker-compose.yml exec -T \
+  -e DEMO_SEED_CONFIRM=local-manual-testing \
+  api-sorteos node dist/seed-demo.js
+```
+
+El sembrado es idempotente, no elimina documentos y se niega a ejecutarse en
+producción. También aborta si detecta usuarios, campañas o pedidos ajenos al
+dataset demo. Para las pruebas locales todas las cuentas usan la contraseña
+`DemoManual2026!`; el propio comando imprime los teléfonos y roles disponibles.
+
 Para ejecutar Nest fuera de Compose hay que proporcionar una URI de Mongo válida
 con `replicaSet`, además de las variables de `.env.example`. No se debe conectar
 el proceso local al usuario raíz de Mongo.
@@ -129,18 +147,18 @@ sitio que no necesiten navegaciones cruzadas.
 [`.env.example`](./.env.example) es el contrato documentado. Los grupos críticos
 son:
 
-| Grupo     | Variables principales                                                                                      |
-| --------- | ---------------------------------------------------------------------------------------------------------- |
-| Mongo     | `MONGO_ROOT_*`, `MONGO_APP_*`, `MONGO_REPLICA_SET`, `MONGO_REPLICA_KEY`, `MONGODB_URI`                     |
-| Auth      | `JWT_SECRET`, `EMAIL_CODE_SECRET`, `CHECKOUT_ACCESS_SECRET_KEY`                                            |
-| Navegador | `CORS_ORIGINS`, `ADMIN_PANEL_ORIGINS`, `CLIENT_SESSION_COOKIE_SAME_SITE`, `TRUST_PROXY`, `SWAGGER_ENABLED`, `ADMIN_PANEL_ENABLED` |
-| Correo    | `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, y opcionalmente `SMTP_USER` + `SMTP_PASS`                           |
-| Pagos     | `PAYMENTS_PROVIDER`, `PAYMENTS_PUBLIC_SECRET_KEY`, `EFI_PIX_*`, `EFI_WEBHOOK_*`                            |
-| Sorteos   | `CAIXA_FEDERAL_*`, flags `DRAW_*` y baliza NIST allowlisted                                                |
-| Medios    | `MEDIA_LOCAL_ROOT`, límites de imagen/video y directorio temporal                                          |
-| Push      | `NOTIFICATION_PUSH_PROVIDER`, las tres `WEB_PUSH_VAPID_*` y límites opcionales                             |
-| Accesos   | `ORDER_ACCESS_TOKEN_HOURS`, `PAYMENT_ACCESS_TOKEN_HOURS`, `PRIZE_ACCESS_TOKEN_HOURS`                      |
-| Privacidad | `AUDIT_RETENTION_DAYS`, `REFERRAL_CLICK_RETENTION_DAYS`                                                  |
+| Grupo      | Variables principales                                                                                                             |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Mongo      | `MONGO_ROOT_*`, `MONGO_APP_*`, `MONGO_REPLICA_SET`, `MONGO_REPLICA_KEY`, `MONGODB_URI`                                            |
+| Auth       | `JWT_SECRET`, `EMAIL_CODE_SECRET`, `CHECKOUT_ACCESS_SECRET_KEY`                                                                   |
+| Navegador  | `CORS_ORIGINS`, `ADMIN_PANEL_ORIGINS`, `CLIENT_SESSION_COOKIE_SAME_SITE`, `TRUST_PROXY`, `SWAGGER_ENABLED`, `ADMIN_PANEL_ENABLED` |
+| Correo     | `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, y opcionalmente `SMTP_USER` + `SMTP_PASS`                                                  |
+| Pagos      | `PAYMENTS_PROVIDER`, `PAYMENTS_PUBLIC_SECRET_KEY`, `EFI_PIX_*`, `EFI_WEBHOOK_*`                                                   |
+| Sorteos    | `CAIXA_FEDERAL_*`, flags `DRAW_*` y baliza NIST allowlisted                                                                       |
+| Medios     | `MEDIA_LOCAL_ROOT`, límites de imagen/video y directorio temporal                                                                 |
+| Push       | `NOTIFICATION_PUSH_PROVIDER`, las tres `WEB_PUSH_VAPID_*` y límites opcionales                                                    |
+| Accesos    | `ORDER_ACCESS_TOKEN_HOURS`, `PAYMENT_ACCESS_TOKEN_HOURS`, `PRIZE_ACCESS_TOKEN_HOURS`                                              |
+| Privacidad | `AUDIT_RETENTION_DAYS`, `REFERRAL_CLICK_RETENTION_DAYS`                                                                           |
 
 En producción, los secretos de aplicación deben tener al menos 32 caracteres.
 `NOTIFICATION_PUSH_PROVIDER` selecciona explícitamente `noop` (predeterminado)
