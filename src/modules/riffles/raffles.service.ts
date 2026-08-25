@@ -421,10 +421,21 @@ export class RafflesService {
       this.applyDefinedFields(campaign, dto, SAFE_CONTENT_FIELDS);
       if (!contractLocked) {
         this.applyDefinedFields(campaign, dto, CONTRACT_FIELDS);
+        const updateValues = dto as unknown as Record<string, unknown>;
+        for (const field of ['launchAt', 'drawDate'] as const) {
+          if (updateValues[field] === null) {
+            (campaign as unknown as Record<string, unknown>)[field] = undefined;
+          }
+        }
         if (dto.currency !== undefined)
           campaign.currency = dto.currency.toUpperCase();
-        if (dto.closesAt !== undefined)
-          campaign.closesAt = new Date(dto.closesAt);
+        if (dto.closesAt !== undefined) {
+          if (updateValues.closesAt === null) {
+            campaign.closesAt = undefined;
+          } else {
+            campaign.closesAt = new Date(dto.closesAt);
+          }
+        }
       } else if (dto.closesAt !== undefined) {
         campaign.closesAt = new Date(dto.closesAt);
       }

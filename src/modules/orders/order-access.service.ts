@@ -15,8 +15,9 @@ import {
   randomInt,
   timingSafeEqual,
 } from 'crypto';
-import { Connection, Model, Types } from 'mongoose';
+import { ClientSession, Connection, Model, Types } from 'mongoose';
 import { EmailService } from '../email/email.service';
+import { Raffle, RaffleDocument } from '../riffles/schema/raffle.schema';
 import { PublicUserDto } from '../users/dto/public-user.dto';
 import { UserRole } from '../users/enums/user-role.enum';
 import { ConfirmOrderAccessDto } from './dto/confirm-order-access.dto';
@@ -37,11 +38,17 @@ const CHALLENGE_LIFETIME_MS = 15 * 60 * 1000;
 const MAX_CODE_ATTEMPTS = 5;
 const DEFAULT_MAX_ORDERS = 20;
 const ABSOLUTE_MAX_ORDERS = 50;
+const MAX_VERIFIED_CAMPAIGN_OPTIONS = 50;
 
 export interface RecoveryResponse {
   challengeId: string;
   expiresInSeconds: number;
   message: string;
+}
+
+interface RecoveryCampaignOption {
+  id: string;
+  name: string;
 }
 
 @Injectable()
@@ -53,6 +60,8 @@ export class OrderAccessService {
     private readonly challengeModel: Model<OrderAccessChallengeDocument>,
     @InjectModel(Order.name)
     private readonly orderModel: Model<OrderDocument>,
+    @InjectModel(Raffle.name)
+    private readonly raffleModel: Model<RaffleDocument>,
     @InjectModel(Quota.name)
     private readonly quotaModel: Model<QuotaDocument>,
     @InjectConnection() private readonly connection: Connection,
@@ -82,20 +91,24 @@ export class OrderAccessService {
       filter.campaign = new Types.ObjectId(campaignId);
     }
 
+    const recoveryLimit = this.recoveryLimit(campaignId);
     const matches = await this.orderModel
       .find(filter)
       .select('_id')
       .sort({ createdAt: -1 })
-      .limit(this.maxOrders() + 1)
+      .limit(recoveryLimit + 1)
       .lean()
       .exec();
 
     const challengeId = randomBytes(24).toString('base64url');
     const code = String(randomInt(100_000, 1_000_000));
-    const truncated = matches.length > this.maxOrders();
-    const orderIds = matches
-      .slice(0, this.maxOrders())
-      .map((order) => order._id);
+    const truncated = matches.length > recoveryLimit;
+    const orderIds = matches.slice(0, recoveryLimit).map((order) => order._id);
+    // La consulta de ámbitos se ejecuta también sin coincidencias para que la
+    // ruta pública no revele por su forma de ejecución si la identidad existe.
+    const campaignIds = campaignId
+      ? []
+      : await this.findRecoveryCampaignIds(filter);
     const expiresAt = new Date(now.getTime() + CHALLENGE_LIFETIME_MS);
     let challenge: OrderAccessChallengeDocument;
     try {
@@ -115,6 +128,8 @@ export class OrderAccessService {
               codeHash: this.hashCode(challengeId, code),
               orderIds,
               truncated,
+              campaignId: campaignId ? new Types.ObjectId(campaignId) : null,
+              campaignIds,
               attempts: 0,
               createdAt: now,
               expiresAt,
@@ -180,7 +195,7 @@ export class OrderAccessService {
         const now = new Date();
         const challenge = await this.challengeModel
           .findOne({ challengeId: dto.challengeId })
-          .select('+codeHash +orderIds +truncated')
+          .select('+codeHash +orderIds +truncated +campaignId +campaignIds')
           .session(session)
           .exec();
 
@@ -210,16 +225,27 @@ export class OrderAccessService {
         }
 
         if (challenge.truncated) {
+          const campaignOptions = challenge.campaignId
+            ? []
+            : await this.recoveryCampaignOptions(
+                challenge.campaignIds || [],
+                session,
+              );
           await this.challengeModel.deleteOne(
             { _id: challenge._id },
             { session },
           );
-          confirmationError = this.campaignFilterRequired();
+          confirmationError = challenge.campaignId
+            ? this.campaignScopeTooLarge()
+            : this.campaignFilterRequired(campaignOptions);
           return;
         }
 
         const orderIds = challenge.orderIds || [];
-        if (orderIds.length === 0 || orderIds.length > this.maxOrders()) {
+        const recoveryLimit = challenge.campaignId
+          ? ABSOLUTE_MAX_ORDERS
+          : this.maxOrders();
+        if (orderIds.length === 0 || orderIds.length > recoveryLimit) {
           invalid = true;
           return;
         }
@@ -439,6 +465,47 @@ export class OrderAccessService {
     return Math.min(ABSOLUTE_MAX_ORDERS, Math.max(1, configured));
   }
 
+  private recoveryLimit(campaignId?: string): number {
+    return campaignId ? ABSOLUTE_MAX_ORDERS : this.maxOrders();
+  }
+
+  private async findRecoveryCampaignIds(
+    filter: Record<string, unknown>,
+  ): Promise<Types.ObjectId[]> {
+    const rows = await this.orderModel
+      .aggregate<{ _id?: Types.ObjectId | string }>([
+        { $match: filter },
+        { $group: { _id: '$campaign' } },
+        { $limit: MAX_VERIFIED_CAMPAIGN_OPTIONS },
+      ])
+      .exec();
+    return rows
+      .map((row) => row._id?.toString())
+      .filter((id): id is string => Boolean(id && Types.ObjectId.isValid(id)))
+      .map((id) => new Types.ObjectId(id));
+  }
+
+  private async recoveryCampaignOptions(
+    campaignIds: Types.ObjectId[],
+    session: ClientSession,
+  ): Promise<RecoveryCampaignOption[]> {
+    if (!campaignIds.length) return [];
+    const rows = await this.raffleModel
+      .find({ _id: { $in: campaignIds } })
+      .select('_id name')
+      .lean()
+      .session(session)
+      .exec();
+    const names = new Map(
+      rows.map((campaign) => [campaign._id.toString(), campaign.name]),
+    );
+    return campaignIds.flatMap((campaignId) => {
+      const id = campaignId.toString();
+      const name = names.get(id);
+      return name ? [{ id, name }] : [];
+    });
+  }
+
   private assertNormalizedPhone(phone: string): void {
     if (!/^\+?[1-9]\d{7,14}$/.test(phone)) {
       throw new BadRequestException('Teléfono inválido');
@@ -457,7 +524,9 @@ export class OrderAccessService {
     return new BadRequestException('Código inválido o expirado');
   }
 
-  private campaignFilterRequired(): BadRequestException {
+  private campaignFilterRequired(
+    campaigns: RecoveryCampaignOption[],
+  ): BadRequestException {
     return new BadRequestException({
       statusCode: 400,
       code: 'ORDER_ACCESS_CAMPAIGN_REQUIRED',
@@ -468,6 +537,22 @@ export class OrderAccessService {
         truncated: true,
         requiresCampaignId: true,
         maxOrders: this.maxOrders(),
+        campaigns,
+      },
+    });
+  }
+
+  private campaignScopeTooLarge(): BadRequestException {
+    return new BadRequestException({
+      statusCode: 400,
+      code: 'ORDER_ACCESS_SUPPORT_REQUIRED',
+      message:
+        'Esta campaña tiene demasiados pedidos para una recuperación automática. Contacte con soporte para recuperar el resto de forma segura.',
+      meta: {
+        hasMore: true,
+        truncated: true,
+        requiresCampaignId: false,
+        maxOrders: ABSOLUTE_MAX_ORDERS,
       },
     });
   }

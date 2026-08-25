@@ -14,6 +14,12 @@ describe('OrderAccessChallengeSchema', () => {
     expect(OrderAccessChallengeSchema.path('truncated').options.select).toBe(
       false,
     );
+    expect(OrderAccessChallengeSchema.path('campaignId').options.select).toBe(
+      false,
+    );
+    expect(OrderAccessChallengeSchema.path('campaignIds').options.select).toBe(
+      false,
+    );
     expect(OrderAccessChallengeSchema.path('attempts').options.max).toBe(5);
     expect(OrderAccessChallengeSchema.indexes()).toContainEqual([
       { expiresAt: 1 },

@@ -49,6 +49,7 @@ describe('OrderAccessService', () => {
 
   let challengeModel: Record<string, jest.Mock>;
   let orderModel: Record<string, jest.Mock>;
+  let raffleModel: Record<string, jest.Mock>;
   let quotaModel: Record<string, jest.Mock>;
   let email: Record<string, jest.Mock>;
   let session: Record<string, jest.Mock>;
@@ -81,6 +82,10 @@ describe('OrderAccessService', () => {
       find: jest.fn(),
       findOne: jest.fn(),
       countDocuments: jest.fn(),
+      aggregate: jest.fn().mockReturnValue(executable([])),
+    };
+    raffleModel = {
+      find: jest.fn().mockReturnValue(executable([])),
     };
     quotaModel = {
       updateMany: jest.fn().mockResolvedValue({ modifiedCount: 0 }),
@@ -105,6 +110,7 @@ describe('OrderAccessService', () => {
     service = new OrderAccessService(
       challengeModel as any,
       orderModel as any,
+      raffleModel as any,
       quotaModel as any,
       connection as any,
       email as any,
@@ -288,16 +294,37 @@ describe('OrderAccessService', () => {
     });
   });
 
-  it('no rota un subconjunto silencioso y exige filtrar por campaña si se supera el máximo', async () => {
+  it('solo tras validar el OTP ofrece también campañas históricas para acotar la recuperación', async () => {
+    const historicalCampaignId = new Types.ObjectId();
     const matches = Array.from({ length: 21 }, () => ({
       _id: new Types.ObjectId(),
     }));
     orderModel.find.mockReturnValue(executable(matches));
+    orderModel.aggregate.mockReturnValue(
+      executable([{ _id: historicalCampaignId }]),
+    );
+    raffleModel.find.mockReturnValue(
+      executable([
+        {
+          _id: historicalCampaignId,
+          name: 'Campaña histórica cancelada',
+          status: 'cancelled',
+        },
+      ]),
+    );
     const challenge = await service.request({
       phone: buyer.phone,
       email: buyer.email,
     });
     const code = email.sendVerificationEmail.mock.calls[0][1];
+
+    await expect(
+      service.confirm({
+        challengeId: challenge.challengeId,
+        code: code === '000000' ? '999999' : '000000',
+      }),
+    ).rejects.toThrow('Código inválido o expirado');
+    expect(raffleModel.find).not.toHaveBeenCalled();
 
     let response: unknown;
     try {
@@ -314,6 +341,12 @@ describe('OrderAccessService', () => {
           truncated: true,
           requiresCampaignId: true,
           maxOrders: 20,
+          campaigns: [
+            {
+              id: historicalCampaignId.toString(),
+              name: 'Campaña histórica cancelada',
+            },
+          ],
         },
       }),
     );
@@ -324,6 +357,83 @@ describe('OrderAccessService', () => {
       { _id: activeChallenge?._id },
       { session },
     );
+    expect(raffleModel.find).toHaveBeenCalledWith({
+      _id: { $in: [historicalCampaignId] },
+    });
+  });
+
+  it('recupera más del máximo configurado cuando el ámbito de campaña ya está verificado', async () => {
+    const campaignId = new Types.ObjectId();
+    const orderIds = Array.from({ length: 21 }, () => new Types.ObjectId());
+    const recoveredOrders = orderIds.map((id, index) =>
+      document({
+        _id: id,
+        publicId: `pedido-campana-${index + 1}`,
+        buyer,
+        status: OrderStatus.Paid,
+        accessSecret: createHash('sha256')
+          .update(`token-campana-${index}`)
+          .digest('hex'),
+      }),
+    );
+    orderModel.find
+      .mockReturnValueOnce(executable(orderIds.map((_id) => ({ _id }))))
+      .mockReturnValueOnce(executable(recoveredOrders));
+
+    const challenge = await service.request({
+      phone: buyer.phone,
+      email: buyer.email,
+      campaignId: campaignId.toString(),
+    });
+    const code = email.sendVerificationEmail.mock.calls[0][1];
+
+    await expect(
+      service.confirm({ challengeId: challenge.challengeId, code }),
+    ).resolves.toEqual({
+      orders: expect.arrayContaining([
+        expect.objectContaining({ accessToken: expect.any(String) }),
+      ]),
+      meta: { count: 21, hasMore: false, truncated: false },
+    });
+    expect(activeChallenge?.campaignId).toEqual(campaignId);
+    expect(activeChallenge?.orderIds).toHaveLength(21);
+    expect(orderModel.aggregate).not.toHaveBeenCalled();
+    expect(
+      recoveredOrders.every((order) => order.save.mock.calls.length === 1),
+    ).toBe(true);
+  });
+
+  it('no vuelve a pedir campaña si el ámbito verificado supera el tope absoluto', async () => {
+    const campaignId = new Types.ObjectId();
+    orderModel.find.mockReturnValue(
+      executable(
+        Array.from({ length: 51 }, () => ({ _id: new Types.ObjectId() })),
+      ),
+    );
+    const challenge = await service.request({
+      phone: buyer.phone,
+      email: buyer.email,
+      campaignId: campaignId.toString(),
+    });
+    const code = email.sendVerificationEmail.mock.calls[0][1];
+
+    let response: unknown;
+    try {
+      await service.confirm({ challengeId: challenge.challengeId, code });
+    } catch (error) {
+      response = (error as { getResponse: () => unknown }).getResponse();
+    }
+
+    expect(response).toEqual(
+      expect.objectContaining({
+        code: 'ORDER_ACCESS_SUPPORT_REQUIRED',
+        meta: expect.objectContaining({
+          requiresCampaignId: false,
+          maxOrders: 50,
+        }),
+      }),
+    );
+    expect(raffleModel.find).not.toHaveBeenCalled();
   });
 
   it('cuenta hasta cinco códigos inválidos y después bloquea el challenge', async () => {

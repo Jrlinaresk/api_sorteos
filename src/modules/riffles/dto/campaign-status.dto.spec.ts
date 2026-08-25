@@ -52,4 +52,15 @@ describe('campaign status DTO boundary', () => {
     const errors = await validate(dto, validationOptions);
     expect(errors.find((error) => error.property === 'status')).toBeDefined();
   });
+
+  it('acepta limpiar fechas opcionales y sugerencias en un borrador', async () => {
+    const dto = plainToInstance(UpdateRaffleDto, {
+      launchAt: null,
+      closesAt: null,
+      drawDate: null,
+      quantitySuggestions: [],
+    });
+
+    await expect(validate(dto, validationOptions)).resolves.toEqual([]);
+  });
 });

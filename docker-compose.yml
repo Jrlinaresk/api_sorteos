@@ -348,7 +348,7 @@ services:
       start_period: 45s
 
   nginx:
-    image: nginx:1.27-alpine
+    image: nginx:1.30.4-alpine@sha256:97d490c12ba55b4946b01546d1c3ed324e8d41ab1c9fcb2a616aa470620e5b46
     profiles:
       - proxy
     restart: unless-stopped
@@ -365,6 +365,8 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=1770
+    mem_limit: 256m
+    cpus: 0.50
     depends_on:
       api-sorteos:
         condition: service_healthy

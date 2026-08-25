@@ -1,7 +1,6 @@
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
-  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsDateString,
@@ -369,7 +368,6 @@ export class CreateRaffleDto {
 
   @IsOptional()
   @IsArray()
-  @ArrayMinSize(1)
   @ArrayMaxSize(12)
   @IsInt({ each: true })
   @Min(1, { each: true })

@@ -167,11 +167,12 @@ export function Modal({
   useEffect(() => {
     const previousFocus = document.activeElement as HTMLElement | null;
     const focusHandle = window.requestAnimationFrame(() => {
-      dialogRef.current
-        ?.querySelector<HTMLElement>(
-          '[autofocus], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)',
-        )
-        ?.focus();
+      const dialog = dialogRef.current;
+      const preferred = dialog?.querySelector<HTMLElement>('[autofocus]');
+      const fallback = dialog?.querySelector<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled)',
+      );
+      (preferred ?? fallback)?.focus();
     });
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {

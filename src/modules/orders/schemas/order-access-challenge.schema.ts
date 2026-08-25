@@ -26,6 +26,12 @@ export class OrderAccessChallenge {
   @Prop({ required: true, default: false, select: false })
   truncated: boolean;
 
+  @Prop({ type: Types.ObjectId, default: null, select: false })
+  campaignId?: Types.ObjectId | null;
+
+  @Prop({ type: [Types.ObjectId], default: [], select: false })
+  campaignIds: Types.ObjectId[];
+
   @Prop({ required: true, min: 0, max: 5, default: 0 })
   attempts: number;
 

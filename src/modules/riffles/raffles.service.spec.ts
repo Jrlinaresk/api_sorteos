@@ -758,6 +758,45 @@ describe('RafflesService domain rules', () => {
       ).not.toThrow();
     });
 
+    it('permite limpiar fechas opcionales y sugerencias en un borrador', async () => {
+      const campaign = {
+        _id: new Types.ObjectId(),
+        status: CampaignStatus.Draft,
+        allocationCursor: 0,
+        soldCount: 0,
+        reservedCount: 0,
+        totalTitles: 1_000,
+        quotaDigits: 3,
+        drawMethod: DrawMethod.ManualExternal,
+        currency: 'BRL',
+        launchAt: new Date('2026-08-25T12:00:00.000Z'),
+        closesAt: new Date('2026-08-30T12:00:00.000Z'),
+        drawDate: new Date('2026-09-01T12:00:00.000Z'),
+        quantitySuggestions: [25, 50],
+        media: [],
+        regulationHistory: [],
+        termsVersion: '1',
+        save: jest.fn(),
+      } as any;
+      campaign.save.mockResolvedValue(campaign);
+      raffleModel.findById.mockReturnValue({
+        exec: jest.fn().mockResolvedValue(campaign),
+      });
+
+      await service.update(campaign._id.toString(), {
+        launchAt: null,
+        closesAt: null,
+        drawDate: null,
+        quantitySuggestions: [],
+      } as any);
+
+      expect(campaign.launchAt).toBeUndefined();
+      expect(campaign.closesAt).toBeUndefined();
+      expect(campaign.drawDate).toBeUndefined();
+      expect(campaign.quantitySuggestions).toEqual([]);
+      expect(campaign.save).toHaveBeenCalledTimes(1);
+    });
+
     it('bloquea bypass de status, cierre parcial y cancelación con actividad', async () => {
       const campaign = {
         _id: new Types.ObjectId(),

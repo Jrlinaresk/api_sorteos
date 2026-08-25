@@ -1,20 +1,31 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   CalendarDays,
   CircleDollarSign,
   Gamepad2,
   Image,
+  Images,
   LayoutTemplate,
   LockKeyhole,
   Save,
   Settings2,
   Share2,
+  Star,
   Ticket,
+  Trash2,
+  Video,
 } from 'lucide-react';
-import { useEffect } from 'react';
-import { useForm, useWatch, type FieldError } from 'react-hook-form';
+import { useEffect, useState } from 'react';
+import {
+  useFieldArray,
+  useForm,
+  useWatch,
+  type FieldError,
+} from 'react-hook-form';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { z } from 'zod';
 import {
@@ -27,14 +38,22 @@ import {
   StatusBadge,
 } from '@/components/ui';
 import { api, ApiError } from '@/lib/api';
+import {
+  campaignHasMediaAsset,
+  mediaAssetToCampaignMedia,
+  removeCampaignMediaAt,
+  toCampaignMediaFormValues,
+  toCampaignMediaPayload,
+} from '@/lib/campaign-media';
 import { fromDateTimeLocal, toDateTimeLocal } from '@/lib/format';
 import { useToast } from '@/lib/toast-context';
-import type { Category, PromotionTier } from '@/lib/types';
+import type { Category, MediaAsset, PromotionTier } from '@/lib/types';
 import { entityId } from '@/lib/types';
 import {
   CampaignLifecyclePanel,
   type AdminCampaign,
 } from './campaigns-lifecycle';
+import { CampaignMediaPicker } from './campaign-media-picker';
 
 const finiteNumber = (minimum: number, label: string, integer = false) =>
   z
@@ -178,6 +197,37 @@ function parseGameTiers(
     });
 }
 
+const campaignMediaSchema = z
+  .object({
+    url: z.string().optional(),
+    mediaId: z
+      .string()
+      .regex(/^[a-f\d]{24}$/i, 'El identificador del archivo no es válido.')
+      .optional(),
+    type: z.enum(['image', 'video']),
+    alt: z.string().max(220, 'El texto alternativo admite 220 caracteres.'),
+    sortOrder: z.number().int().min(0),
+    isCover: z.boolean(),
+  })
+  .superRefine((item, context) => {
+    const mediaId = item.mediaId?.trim();
+    const url = item.url?.trim();
+    if (!mediaId && !url) {
+      context.addIssue({
+        code: 'custom',
+        path: ['url'],
+        message: 'El medio necesita un archivo o una URL.',
+      });
+    }
+    if (!mediaId && url && !isHttpsUrl(url)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['url'],
+        message: 'La URL del medio debe usar HTTPS.',
+      });
+    }
+  });
+
 const campaignFormSchema = z
   .object({
     name: z.string().trim().min(1, 'Escribe el nombre público.').max(180),
@@ -198,6 +248,9 @@ const campaignFormSchema = z
     imageUrl: z
       .string()
       .refine(isHttpsUrl, 'La portada debe usar una URL HTTPS.'),
+    media: z
+      .array(campaignMediaSchema)
+      .max(30, 'La galería admite un máximo de 30 archivos.'),
     status: z.enum([
       'draft',
       'scheduled',
@@ -342,6 +395,23 @@ const campaignFormSchema = z
       });
     }
     const suggestions = parseIntegerList(values.quantitySuggestions);
+    const mediaIds = values.media
+      .map((item) => item.mediaId?.trim())
+      .filter((item): item is string => Boolean(item));
+    if (new Set(mediaIds).size !== mediaIds.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['media'],
+        message: 'Un archivo no puede aparecer dos veces en la galería.',
+      });
+    }
+    if (values.media.filter((item) => item.isCover).length > 1) {
+      context.addIssue({
+        code: 'custom',
+        path: ['media'],
+        message: 'Selecciona una sola portada para la galería.',
+      });
+    }
     const maximumSuggestion = Math.min(
       Number(values.totalTitles),
       numberOrUndefined(values.maxTitlesPerOrder) ?? 20_000,
@@ -403,6 +473,7 @@ const defaultValues: CampaignFormValues = {
   regulationHtml: '',
   termsVersion: '1',
   imageUrl: '',
+  media: [],
   status: 'draft',
   size: 'large',
   costLevel: 'low',
@@ -496,6 +567,7 @@ function valuesForCampaign(campaign?: AdminCampaign): CampaignFormValues {
     regulationHtml: campaign.regulationHtml ?? '',
     termsVersion: campaign.termsVersion ?? '1',
     imageUrl: campaign.imageUrl ?? '',
+    media: toCampaignMediaFormValues(campaign.media),
     status: campaign.status,
     size: campaign.size ?? 'large',
     costLevel: campaign.costLevel ?? 'low',
@@ -588,6 +660,10 @@ function isoOrUndefined(value: string): string | undefined {
   return fromDateTimeLocal(value);
 }
 
+function nullableIso(value: string, isNew: boolean): string | null | undefined {
+  return isoOrUndefined(value) ?? (isNew ? undefined : null);
+}
+
 function createPayload(
   values: CampaignFormValues,
   isNew: boolean,
@@ -598,6 +674,7 @@ function createPayload(
     shortDescription: values.shortDescription,
     description: values.description,
     imageUrl: nullableText(values.imageUrl, isNew),
+    media: toCampaignMediaPayload(values.media),
     category: values.category || (isNew ? undefined : null),
     size: values.size,
     costLevel: values.costLevel,
@@ -605,7 +682,9 @@ function createPayload(
     statusText: values.statusText,
     featured: values.featured,
     sortOrder: Number(values.sortOrder),
-    closesAt: isoOrUndefined(values.closesAt),
+    closesAt: contractLocked
+      ? isoOrUndefined(values.closesAt)
+      : nullableIso(values.closesAt, isNew),
     modules: {
       showProgress: values.showProgress,
       showTopBuyers: values.showTopBuyers,
@@ -656,8 +735,8 @@ function createPayload(
     termsVersion: values.termsVersion.trim(),
     totalTitles: Number(values.totalTitles),
     quotaDigits: numberOrUndefined(values.quotaDigits),
-    launchAt: isoOrUndefined(values.launchAt),
-    drawDate: isoOrUndefined(values.drawDate),
+    launchAt: nullableIso(values.launchAt, isNew),
+    drawDate: nullableIso(values.drawDate, isNew),
     currency: values.currency.trim().toUpperCase(),
     itemPrice: Number(values.itemPrice),
     ticketPrice: Number(values.ticketPrice),
@@ -667,7 +746,7 @@ function createPayload(
       numberOrUndefined(values.cashAlternative) ?? (isNew ? undefined : null),
     minimumOrderAmount: numberOrUndefined(values.minimumOrderAmount),
     maxTitlesPerOrder: numberOrUndefined(values.maxTitlesPerOrder),
-    ...(quantitySuggestions.length ? { quantitySuggestions } : {}),
+    quantitySuggestions,
     promotionTiers: parsePromotionTiers(values.promotionTiersText),
     drawMethod: values.drawMethod,
     federalLottery:
@@ -717,6 +796,16 @@ function apiErrorMessage(error: unknown): string {
     : 'Ocurrió un error inesperado.';
 }
 
+function campaignMediaPreviewUrl(media: {
+  url?: string;
+  mediaId?: string;
+}): string | undefined {
+  if (media.url) return media.url;
+  return media.mediaId
+    ? `/api/v1/media/${encodeURIComponent(media.mediaId)}`
+    : undefined;
+}
+
 export function CampaignEditorPage() {
   const { id: routeId } = useParams<{ id: string }>();
   const isNew = !routeId || routeId === 'new';
@@ -724,6 +813,7 @@ export function CampaignEditorPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
 
   const campaignQuery = useQuery({
     queryKey: ['campaign', id],
@@ -757,6 +847,12 @@ export function CampaignEditorPage() {
     resolver: zodResolver(campaignFormSchema),
     defaultValues,
   });
+  const {
+    fields: mediaFields,
+    append: appendMedia,
+    move: moveMedia,
+    replace: replaceMedia,
+  } = useFieldArray({ control, name: 'media' });
 
   useEffect(() => {
     if (isNew) reset(defaultValues);
@@ -811,6 +907,38 @@ export function CampaignEditorPage() {
   });
   const analyticsEnabled = useWatch({ control, name: 'analyticsEnabled' });
   const regulationHtml = useWatch({ control, name: 'regulationHtml' });
+  const campaignMedia = useWatch({ control, name: 'media' }) ?? [];
+  const selectedMediaIds = new Set(
+    campaignMedia
+      .map((item) => item.mediaId)
+      .filter((item): item is string => Boolean(item)),
+  );
+
+  const selectMediaAsset = (asset: MediaAsset) => {
+    if (
+      campaignMedia.length >= 30 ||
+      campaignHasMediaAsset(campaignMedia, asset.id)
+    ) {
+      return;
+    }
+    appendMedia(mediaAssetToCampaignMedia(asset, campaignMedia.length));
+    if (campaignMedia.length === 29) setMediaPickerOpen(false);
+  };
+
+  const markMediaAsCover = (coverIndex: number) => {
+    setValue(
+      'media',
+      campaignMedia.map((item, index) => ({
+        ...item,
+        isCover: index === coverIndex,
+      })),
+      { shouldDirty: true, shouldValidate: true },
+    );
+  };
+
+  const removeMedia = (removeIndex: number) => {
+    replaceMedia(removeCampaignMediaAt(campaignMedia, removeIndex));
+  };
 
   useEffect(() => {
     if (isNew && drawMethod === 'cryptographic' && status === 'scheduled') {
@@ -947,8 +1075,145 @@ export function CampaignEditorPage() {
                   placeholder="https://…"
                   aria-invalid={Boolean(errors.imageUrl)}
                 />
+                <small>
+                  Respaldo heredado: se conserva y solo se usa si la galería no
+                  aporta una portada.
+                </small>
                 <ErrorMessage error={errors.imageUrl} />
               </label>
+            </div>
+            <div className="campaign-media-editor section-divider">
+              <div className="campaign-media-editor__toolbar">
+                <div>
+                  <h3>Galería de campaña</h3>
+                  <p>
+                    Ordena hasta 30 archivos de la Biblioteca y define la
+                    portada que verá el cliente.
+                  </p>
+                </div>
+                <div className="campaign-media-editor__toolbar-actions">
+                  <span>{campaignMedia.length}/30 archivos</span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={campaignMedia.length >= 30}
+                    onClick={() => setMediaPickerOpen(true)}
+                  >
+                    <Images size={17} aria-hidden="true" />
+                    Seleccionar de la Biblioteca
+                  </Button>
+                </div>
+              </div>
+
+              {mediaFields.length ? (
+                <ol className="campaign-media-editor__list">
+                  {mediaFields.map((field, index) => {
+                    const mediaItem = campaignMedia[index] ?? field;
+                    const previewUrl = campaignMediaPreviewUrl(mediaItem);
+                    return (
+                      <li
+                        className="campaign-media-editor__item"
+                        key={field.id}
+                      >
+                        <div className="campaign-media-editor__preview">
+                          {mediaItem.type === 'image' && previewUrl ? (
+                            <img src={previewUrl} alt="" loading="lazy" />
+                          ) : mediaItem.type === 'video' ? (
+                            <Video size={27} aria-hidden="true" />
+                          ) : (
+                            <Image size={27} aria-hidden="true" />
+                          )}
+                        </div>
+                        <div className="campaign-media-editor__content">
+                          <div className="campaign-media-editor__meta">
+                            <strong>
+                              {mediaItem.type === 'image'
+                                ? `Imagen ${index + 1}`
+                                : `Vídeo ${index + 1}`}
+                            </strong>
+                            {mediaItem.isCover ? (
+                              <span className="campaign-media-editor__cover">
+                                <Star size={13} aria-hidden="true" /> Portada
+                              </span>
+                            ) : null}
+                            <small title={mediaItem.mediaId ?? mediaItem.url}>
+                              {mediaItem.mediaId
+                                ? `Biblioteca · ${mediaItem.mediaId}`
+                                : 'URL externa heredada'}
+                            </small>
+                          </div>
+                          <label className="field campaign-media-editor__alt">
+                            <span>Texto alternativo</span>
+                            <input
+                              {...register(`media.${index}.alt`)}
+                              maxLength={220}
+                              placeholder="Describe el premio para accesibilidad"
+                              aria-label={`Texto alternativo del medio ${index + 1}`}
+                            />
+                          </label>
+                          <div className="campaign-media-editor__actions">
+                            <button
+                              className="icon-button"
+                              type="button"
+                              disabled={index === 0}
+                              aria-label={`Subir el medio ${index + 1}`}
+                              title="Subir"
+                              onClick={() => moveMedia(index, index - 1)}
+                            >
+                              <ArrowUp size={17} aria-hidden="true" />
+                            </button>
+                            <button
+                              className="icon-button"
+                              type="button"
+                              disabled={index === mediaFields.length - 1}
+                              aria-label={`Bajar el medio ${index + 1}`}
+                              title="Bajar"
+                              onClick={() => moveMedia(index, index + 1)}
+                            >
+                              <ArrowDown size={17} aria-hidden="true" />
+                            </button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              aria-pressed={mediaItem.isCover}
+                              disabled={mediaItem.isCover}
+                              onClick={() => markMediaAsCover(index)}
+                            >
+                              <Star size={16} aria-hidden="true" />
+                              Marcar portada
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="campaign-media-editor__remove"
+                              onClick={() => removeMedia(index)}
+                            >
+                              <Trash2 size={16} aria-hidden="true" />
+                              Quitar
+                            </Button>
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              ) : (
+                <div className="campaign-media-editor__empty">
+                  <Images size={27} aria-hidden="true" />
+                  <div>
+                    <strong>La galería está vacía</strong>
+                    <p>
+                      La URL de portada heredada seguirá funcionando hasta que
+                      selecciones archivos de la Biblioteca.
+                    </p>
+                  </div>
+                </div>
+              )}
+              {typeof errors.media?.message === 'string' ? (
+                <span className="field-error" role="alert">
+                  {errors.media.message}
+                </span>
+              ) : null}
             </div>
           </SectionCard>
 
@@ -1474,6 +1739,13 @@ export function CampaignEditorPage() {
           ) : null}
         </aside>
       </div>
+      {mediaPickerOpen ? (
+        <CampaignMediaPicker
+          selectedMediaIds={selectedMediaIds}
+          onSelect={selectMediaAsset}
+          onClose={() => setMediaPickerOpen(false)}
+        />
+      ) : null}
     </main>
   );
 }
