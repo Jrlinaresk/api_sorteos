@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { createHash } from 'crypto';
 import {
   PaymentCurrency,
   PaymentProviderName,
@@ -102,5 +103,50 @@ describe('PaymentsService provider creation', () => {
     expect(serialized).not.toContain('hash-secreto');
     expect(view.statusHistory).toEqual([{ status: PaymentStatus.Paid }]);
     expect(view.refunds).toEqual([{ amount: 10 }]);
+  });
+
+  it('caduca el secreto público de pago según su emisión', async () => {
+    const paymentId = new Types.ObjectId();
+    const secret = 'guest-payment-access-secret';
+    const payment = {
+      _id: paymentId,
+      publicSecretHash: createHash('sha256').update(secret).digest('hex'),
+      status: PaymentStatus.Active,
+      provider: PaymentProviderName.Mock,
+      txid: '12345678901234567890123456789012',
+      amount: 10,
+      currency: PaymentCurrency.BRL,
+      expiresAt: new Date(Date.now() + 60_000),
+      createdAt: new Date(Date.now() - 2 * 60 * 60_000),
+      updatedAt: new Date(),
+    };
+    const query = {
+      select: jest.fn().mockReturnThis(),
+      exec: jest.fn().mockResolvedValue(payment),
+    };
+    const paymentModel = {
+      findById: jest.fn().mockReturnValue(query),
+    };
+    const config = {
+      get: jest.fn((name: string) =>
+        name === 'PAYMENT_ACCESS_TOKEN_HOURS' ? '1' : undefined,
+      ),
+    };
+    const service = new PaymentsService(
+      paymentModel as any,
+      {} as any,
+      config as any,
+    );
+
+    await expect(
+      service.findPublic(paymentId.toString(), secret),
+    ).rejects.toThrow('Pago o secreto de acceso inválido');
+
+    payment.createdAt = new Date();
+    await expect(
+      service.findPublic(paymentId.toString(), secret),
+    ).resolves.toEqual(
+      expect.objectContaining({ id: paymentId.toString(), amount: 10 }),
+    );
   });
 });

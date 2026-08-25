@@ -184,10 +184,9 @@ export async function refreshSession(): Promise<AdminSession> {
       }
       setAccessToken(session.accessToken);
       return session;
-    })
-      .finally(() => {
-        refreshInFlight = null;
-      });
+    }).finally(() => {
+      refreshInFlight = null;
+    });
   }
   return refreshInFlight;
 }

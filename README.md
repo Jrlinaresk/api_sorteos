@@ -89,6 +89,8 @@ el proceso local al usuario raíz de Mongo.
 - El pedido público se consulta con `X-Order-Token`.
 - El pago público se consulta con `X-Payment-Token`; el secreto nunca se envía
   en la URL ni en query params.
+- Los tokens de pedido/pago caducan en el servidor (24 horas por defecto) y los
+  de juego instantáneo a las 12 horas. Después se exige sesión o recuperación.
 - Las operaciones idempotentes usan `Idempotency-Key`.
 - `X-Correlation-Id` permite trazar una petición en logs y auditoría.
 
@@ -135,6 +137,8 @@ son:
 | Sorteos   | `CAIXA_FEDERAL_*`, flags `DRAW_*` y baliza NIST allowlisted                                                |
 | Medios    | `MEDIA_LOCAL_ROOT`, límites de imagen/video y directorio temporal                                          |
 | Push      | `NOTIFICATION_PUSH_PROVIDER`, las tres `WEB_PUSH_VAPID_*` y límites opcionales                             |
+| Accesos   | `ORDER_ACCESS_TOKEN_HOURS`, `PAYMENT_ACCESS_TOKEN_HOURS`, `PRIZE_ACCESS_TOKEN_HOURS`                      |
+| Privacidad | `AUDIT_RETENTION_DAYS`, `REFERRAL_CLICK_RETENTION_DAYS`                                                  |
 
 En producción, los secretos de aplicación deben tener al menos 32 caracteres.
 `NOTIFICATION_PUSH_PROVIDER` selecciona explícitamente `noop` (predeterminado)
@@ -184,6 +188,8 @@ inventa credenciales SMTP o EFI: deben completarse con los valores del proveedor
   separados. La aplicación solo recibe permisos `readWrite` sobre su base.
 - El proxy Nginx opcional escucha HTTP en loopback; TLS se termina en el proxy de
   borde (CloudPanel, balanceador o equivalente).
+- El proxy usa Nginx 1.30.4 fijado por digest. Los medios se transmiten sin
+  buffering temporal y mantienen soporte para byte ranges.
 
 No use `docker compose down -v`: elimina de forma irreversible la base, el
 keyfile y los medios.

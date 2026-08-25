@@ -71,6 +71,7 @@ function committedAttempt(
 ) {
   const configurationHash = sha256(JSON.stringify(configurationSnapshot));
   return document({
+    accessSecretExpiresAt: new Date(Date.now() + 60_000),
     ...payload,
     configurationSnapshot,
     configurationHash,
@@ -560,6 +561,7 @@ describe('PrizesService inventory and lifecycle', () => {
         ),
       );
       expect(attempt.accessSecret).toMatch(/^[a-f0-9]{64}$/);
+      expect(attempt.accessSecretExpiresAt).toBeInstanceOf(Date);
       expect(attempt.save).toHaveBeenCalledWith({ session });
     }
   });
@@ -849,6 +851,7 @@ describe('PrizesService inventory and lifecycle', () => {
           status: PrizeAttemptStatus.Pending,
           mechanic: PrizeMechanic.Roulette,
           accessSecret: createHash('sha256').update(token).digest('hex'),
+          accessSecretExpiresAt: new Date(Date.now() + 60_000),
         }),
       ),
     );
@@ -879,6 +882,44 @@ describe('PrizesService inventory and lifecycle', () => {
     );
     expect(() =>
       (service as any).assertAttemptOwner(attempt, 'wrong', userId.toString()),
+    ).not.toThrow();
+  });
+
+  it('rechaza tokens vencidos y no admite bearer alternativo en pedidos vinculados', () => {
+    const token = 'attempt-secret-token-1234567890123';
+    const guestAttempt = document({
+      accessSecret: sha256(token),
+      accessSecretExpiresAt: new Date(Date.now() - 1),
+    });
+    expect(() =>
+      (service as any).assertAttemptOwner(guestAttempt, token),
+    ).toThrow('El token de intento expiró');
+
+    const ownerId = new Types.ObjectId();
+    const linkedAttempt = document({
+      order: new Types.ObjectId(),
+      accessSecret: sha256(token),
+      accessSecretExpiresAt: new Date(Date.now() + 60_000),
+    });
+    const linkedOrder = document({
+      _id: linkedAttempt.order,
+      user: ownerId,
+    });
+    expect(() =>
+      (service as any).assertAttemptOwner(
+        linkedAttempt,
+        token,
+        undefined,
+        linkedOrder,
+      ),
+    ).toThrow('inicie sesión');
+    expect(() =>
+      (service as any).assertAttemptOwner(
+        linkedAttempt,
+        undefined,
+        ownerId.toString(),
+        linkedOrder,
+      ),
     ).not.toThrow();
   });
 
@@ -990,10 +1031,17 @@ describe('PrizesService inventory and lifecycle', () => {
     const orderId = new Types.ObjectId();
     orders.findOwnedForCheckout.mockResolvedValue({ _id: orderId });
     awardModel.find.mockReturnValue(leanable([]));
-    attemptModel.find.mockReturnValue(executable([]));
+    const pendingAttempt = document({
+      publicId: 'pending-attempt',
+      status: PrizeAttemptStatus.Pending,
+    });
+    attemptModel.find.mockReturnValue(executable([pendingAttempt]));
 
     await service.listAwardsForOrder('order-public-id', 'order-token');
-    await service.listAttemptsForOrder('order-public-id', 'order-token');
+    const attempts = await service.listAttemptsForOrder(
+      'order-public-id',
+      'order-token',
+    );
 
     expect(orders.findOwnedForCheckout).toHaveBeenCalledTimes(2);
     expect(orders.findOwnedForCheckout).toHaveBeenCalledWith(
@@ -1005,6 +1053,13 @@ describe('PrizesService inventory and lifecycle', () => {
       expect.objectContaining({ order: orderId }),
     );
     expect(attemptModel.find).toHaveBeenCalledWith({ order: orderId });
+    expect(pendingAttempt.accessSecretExpiresAt).toBeInstanceOf(Date);
+    expect(attempts[0]).toEqual(
+      expect.objectContaining({
+        accessToken: expect.stringMatching(/^[a-f0-9]{48}$/),
+        accessTokenExpiresAt: expect.any(Date),
+      }),
+    );
   });
 
   it('rechaza reclamar premios de otro usuario o de otro pedido', async () => {

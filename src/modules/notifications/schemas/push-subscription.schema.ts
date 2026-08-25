@@ -14,6 +14,7 @@ export enum PushSubscriptionDisableReason {
   Expired = 'expired',
   Invalid = 'invalid',
   CapacityExceeded = 'capacity_exceeded',
+  Replaced = 'replaced',
 }
 
 export type PushSubscriptionDocument = HydratedDocument<PushSubscription>;
@@ -91,4 +92,13 @@ PushSubscriptionSchema.index(
   },
 );
 PushSubscriptionSchema.index({ user: 1, enabled: 1, updatedAt: -1 });
-PushSubscriptionSchema.index({ deviceId: 1, user: 1 });
+PushSubscriptionSchema.index(
+  { user: 1, provider: 1, deviceId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      enabled: true,
+      deviceId: { $type: 'string' },
+    },
+  },
+);

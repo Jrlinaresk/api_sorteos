@@ -448,8 +448,7 @@ export class PaymentsService {
       : new Date(payment.expiresAt).getTime() -
         DEFAULT_PAYMENT_EXPIRATION_SECONDS * 1000;
     return (
-      Number.isFinite(issuedAt) &&
-      issuedAt + hours * 60 * 60_000 > Date.now()
+      Number.isFinite(issuedAt) && issuedAt + hours * 60 * 60_000 > Date.now()
     );
   }
 

@@ -214,6 +214,7 @@ export class ReferralsService {
         utmContent: dto.utmContent,
         ipHash: context.ipHash,
         userAgent: context.userAgent,
+        expiresAt: this.referralClickExpiresAt(),
         metadata: {},
       });
       await this.codeModel
@@ -234,6 +235,14 @@ export class ReferralsService {
       }
       throw error;
     }
+  }
+
+  private referralClickExpiresAt(): Date {
+    const configured = Number(process.env.REFERRAL_CLICK_RETENTION_DAYS || 180);
+    const days = Number.isInteger(configured)
+      ? Math.min(730, Math.max(1, configured))
+      : 180;
+    return new Date(Date.now() + days * 24 * 60 * 60_000);
   }
 
   async listCodes(
@@ -334,15 +343,14 @@ export class ReferralsService {
         .exec(),
       this.codeModel
         .find({ beneficiaryUser })
-        .select('code status campaignId clicksCount conversionsCount')
+        .select(
+          'code status campaignId validFrom validUntil maxConversions clicksCount conversionsCount',
+        )
         .sort({ createdAt: -1 })
         .lean()
         .exec(),
     ]);
-    const campaignById = new Map<
-      string,
-      { slug?: string; name?: string }
-    >();
+    const campaignById = new Map<string, { slug?: string; name?: string }>();
     if (this.campaigns) {
       await Promise.all(
         [
@@ -352,9 +360,9 @@ export class ReferralsService {
               .filter((id): id is string => Boolean(id)),
           ),
         ].map(async (campaignId) => {
-          const campaign = await this.campaigns!
-            .findOne(campaignId)
-            .catch(() => undefined);
+          const campaign = await this.campaigns!.findOne(campaignId).catch(
+            () => undefined,
+          );
           if (campaign) {
             campaignById.set(campaignId, {
               slug: campaign.slug,
@@ -374,6 +382,7 @@ export class ReferralsService {
       codes: codes.map((code) => ({
         code: code.code,
         status: code.status,
+        usable: isReferralCodeUsable(code, new Date(), code.campaignId),
         campaignId: code.campaignId,
         campaignSlug: code.campaignId
           ? campaignById.get(code.campaignId)?.slug

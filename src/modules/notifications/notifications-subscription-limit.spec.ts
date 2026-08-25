@@ -153,4 +153,108 @@ describe('NotificationsService subscription capacity', () => {
       service.registerSubscription(userId.toString(), dto),
     ).rejects.toBeInstanceOf(ConflictException);
   });
+
+  it('renews a rotated endpoint on the same device record and retires duplicates', async () => {
+    const canonicalId = new Types.ObjectId();
+    const duplicateId = new Types.ObjectId();
+    const rotatedDto = {
+      ...dto,
+      address: 'https://fcm.googleapis.com/fcm/send/rotated',
+      deviceId: 'browser-device-a',
+    };
+    const canonical = {
+      _id: canonicalId,
+      user: userId,
+      ...rotatedDto,
+      enabled: true,
+      activeSlot: 1,
+      lastSeenAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const addressOwnerQuery = findOwner({
+      _id: duplicateId,
+      user: userId,
+      address: rotatedDto.address,
+      enabled: true,
+      activeSlot: 0,
+    });
+    const deviceOwnerQuery = {
+      sort: jest.fn().mockReturnValue({
+        select: jest.fn().mockReturnValue({
+          lean: jest.fn().mockReturnValue({
+            exec: jest.fn().mockResolvedValue({
+              _id: canonicalId,
+              user: userId,
+              address: dto.address,
+              enabled: true,
+              activeSlot: 1,
+              deviceId: rotatedDto.deviceId,
+            }),
+          }),
+        }),
+      }),
+    };
+    const subscriptionModel = {
+      findOne: jest
+        .fn()
+        .mockReturnValueOnce(addressOwnerQuery)
+        .mockReturnValueOnce(deviceOwnerQuery),
+      updateOne: jest.fn().mockReturnValue({
+        exec: jest
+          .fn()
+          .mockResolvedValue({ matchedCount: 1, modifiedCount: 1 }),
+      }),
+      updateMany: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue({ modifiedCount: 1 }),
+      }),
+      findOneAndUpdate: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue(canonical),
+      }),
+    };
+    const service = new NotificationsService(
+      {} as never,
+      subscriptionModel as never,
+      preferenceModel() as never,
+      configuredProvider,
+      new ConfigService({ WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER: '3' }),
+    );
+
+    await expect(
+      service.registerSubscription(userId.toString(), rotatedDto),
+    ).resolves.toMatchObject({ id: canonicalId.toString(), enabled: true });
+
+    expect(subscriptionModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: canonicalId, user: userId },
+      expect.objectContaining({
+        $set: expect.objectContaining({
+          address: rotatedDto.address,
+          deviceId: rotatedDto.deviceId,
+          activeSlot: 1,
+        }),
+      }),
+      expect.objectContaining({ upsert: false }),
+    );
+    expect(subscriptionModel.updateOne).toHaveBeenCalledWith(
+      { _id: duplicateId, user: userId },
+      expect.objectContaining({
+        $set: expect.objectContaining({
+          enabled: false,
+          disableReason: 'replaced',
+        }),
+        $unset: { activeSlot: '' },
+      }),
+    );
+    expect(subscriptionModel.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        user: userId,
+        provider: PushProviderKind.WebPush,
+        deviceId: rotatedDto.deviceId,
+        _id: { $ne: canonicalId },
+      }),
+      expect.objectContaining({
+        $set: expect.objectContaining({ disableReason: 'replaced' }),
+      }),
+    );
+  });
 });

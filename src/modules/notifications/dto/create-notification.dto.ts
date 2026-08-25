@@ -58,7 +58,7 @@ export class CreateNotificationDto {
   @ApiPropertyOptional({ description: 'Ruta interna del portal cliente' })
   @IsOptional()
   @IsString()
-  @Matches(/^\/(?!\/)[^\r\n]{0,2047}$/, {
+  @Matches(/^\/(?!\/)[^\r\n\\]{0,2047}$/, {
     message: 'actionUrl debe ser una ruta interna que comience por /',
   })
   @MaxLength(2048)

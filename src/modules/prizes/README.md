@@ -60,3 +60,8 @@ Los endpoints de intentos y adjudicaciones por pedido aceptan
 `X-Prize-Token`. La propiedad se verifica contra el pedido, no contra el
 snapshot opcional del intento/premio; por eso una compra invitada sigue
 apareciendo y puede jugarse después de vincularla a una cuenta.
+
+Cada consulta autorizada de intentos pendientes rota el token de juego. Su
+validez servidor se limita con `PRIZE_ACCESS_TOKEN_HOURS` (12 horas por defecto,
+máximo 72). Cuando el pedido ya pertenece a una cuenta, el token invitado deja
+de ser una credencial alternativa y el juego exige el Bearer del propietario.

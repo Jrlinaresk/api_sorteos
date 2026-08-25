@@ -52,6 +52,12 @@ export function validateEnvironment(input: Environment): Environment {
     1,
     72,
   );
+  validateInteger(
+    environment.REFERRAL_CLICK_RETENTION_DAYS,
+    'REFERRAL_CLICK_RETENTION_DAYS',
+    1,
+    730,
+  );
   validateInteger(environment.RATE_LIMIT_MAX, 'RATE_LIMIT_MAX', 1, 100_000);
   validateInteger(
     environment.AUDIT_RETENTION_DAYS,
@@ -371,13 +377,14 @@ function validateSmtp(environment: Environment): void {
     fail('SMTP_USER y SMTP_PASS deben configurarse juntos');
   }
   const secure = text(environment.SMTP_SECURE).toLowerCase() === 'true';
-  const requireTls = text(environment.SMTP_REQUIRE_TLS).toLowerCase() === 'true';
+  const requireTls =
+    text(environment.SMTP_REQUIRE_TLS).toLowerCase() === 'true';
   if (!secure && !requireTls) {
-    fail('SMTP_SECURE=true o SMTP_REQUIRE_TLS=true es obligatorio en producción');
+    fail(
+      'SMTP_SECURE=true o SMTP_REQUIRE_TLS=true es obligatorio en producción',
+    );
   }
-  if (
-    text(environment.SMTP_TLS_REJECT_UNAUTHORIZED).toLowerCase() !== 'true'
-  ) {
+  if (text(environment.SMTP_TLS_REJECT_UNAUTHORIZED).toLowerCase() !== 'true') {
     fail('SMTP_TLS_REJECT_UNAUTHORIZED=true es obligatorio en producción');
   }
 }

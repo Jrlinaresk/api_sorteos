@@ -299,6 +299,10 @@ export class NotificationsService {
     const originalAddress = dto.address.trim();
     let address = originalAddress;
     let credentials = this.sanitizeCredentials(dto.credentials);
+    const registrationDto: RegisterPushSubscriptionDto = {
+      ...dto,
+      deviceId: dto.deviceId?.trim() || undefined,
+    };
 
     if (dto.expiresAt && new Date(dto.expiresAt).getTime() <= Date.now()) {
       throw new BadRequestException('La suscripción push ya está expirada');
@@ -330,16 +334,10 @@ export class NotificationsService {
       }
     }
 
-    let owner = await this.findSubscriptionOwner(
-      dto.provider,
+    let owner = await this.resolveSubscriptionOwner(user, registrationDto, {
       originalAddress,
-      address,
-    );
-    if (owner && owner.user.toString() !== user.toString()) {
-      throw new ConflictException(
-        'La suscripción push ya pertenece a otro usuario',
-      );
-    }
+      normalizedAddress: address,
+    });
 
     const maxSubscriptions = readWebPushMaxSubscriptionsPerUser(this.config);
     await this.normalizeSubscriptionCapacity(user, maxSubscriptions);
@@ -364,14 +362,20 @@ export class NotificationsService {
           .findOneAndUpdate(
             owner?._id
               ? { _id: owner._id, user }
-              : { provider: dto.provider, address, user },
+              : registrationDto.deviceId
+                ? {
+                    user,
+                    provider: dto.provider,
+                    deviceId: registrationDto.deviceId,
+                  }
+                : { provider: dto.provider, address, user },
             {
               $set: {
                 user,
                 provider: dto.provider,
                 address,
                 credentials,
-                deviceId: dto.deviceId,
+                deviceId: registrationDto.deviceId,
                 locale: dto.locale,
                 timezone: dto.timezone,
                 expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
@@ -393,20 +397,10 @@ export class NotificationsService {
       } catch (error) {
         if (!this.isDuplicateKey(error)) throw error;
 
-        const concurrentOwner = await this.findSubscriptionOwner(
-          dto.provider,
+        owner = await this.resolveSubscriptionOwner(user, registrationDto, {
           originalAddress,
-          address,
-        );
-        if (
-          concurrentOwner &&
-          concurrentOwner.user.toString() !== user.toString()
-        ) {
-          throw new ConflictException(
-            'La suscripción push ya pertenece a otro usuario',
-          );
-        }
-        owner = concurrentOwner;
+          normalizedAddress: address,
+        });
       }
     }
 
@@ -1124,6 +1118,112 @@ export class NotificationsService {
       })
       .select('user address enabled activeSlot')
       .lean()
+      .exec();
+  }
+
+  private findDeviceSubscription(
+    user: Types.ObjectId,
+    provider: PushProviderKind,
+    deviceId: string,
+  ) {
+    return this.subscriptionModel
+      .findOne({ user, provider, deviceId })
+      .sort({ enabled: -1, createdAt: 1, _id: 1 })
+      .select('user address enabled activeSlot deviceId')
+      .lean()
+      .exec();
+  }
+
+  /**
+   * A browser keeps a stable deviceId while the Push Service is free to
+   * rotate its endpoint. Prefer that device record so the renewal preserves
+   * both its public id and active slot. Any same-user duplicate is retired
+   * before the endpoint changes, which also frees the global address index.
+   */
+  private async resolveSubscriptionOwner(
+    user: Types.ObjectId,
+    dto: RegisterPushSubscriptionDto,
+    addresses: { originalAddress: string; normalizedAddress: string },
+  ) {
+    const addressOwner = await this.findSubscriptionOwner(
+      dto.provider,
+      addresses.originalAddress,
+      addresses.normalizedAddress,
+    );
+    if (addressOwner && addressOwner.user.toString() !== user.toString()) {
+      throw new ConflictException(
+        'La suscripción push ya pertenece a otro usuario',
+      );
+    }
+
+    const deviceOwner = dto.deviceId
+      ? await this.findDeviceSubscription(user, dto.provider, dto.deviceId)
+      : null;
+    const owner = deviceOwner ?? addressOwner;
+    if (!owner) return null;
+
+    if (
+      addressOwner?._id &&
+      addressOwner._id.toString() !== owner._id.toString()
+    ) {
+      await this.retireAddressDuplicate(addressOwner._id, user);
+    }
+    if (dto.deviceId) {
+      await this.retireDeviceDuplicates(
+        user,
+        dto.provider,
+        dto.deviceId,
+        owner._id,
+      );
+    }
+    return owner;
+  }
+
+  private async retireAddressDuplicate(
+    duplicateId: Types.ObjectId,
+    user: Types.ObjectId,
+  ): Promise<void> {
+    await this.subscriptionModel
+      .updateOne(
+        { _id: duplicateId, user },
+        {
+          $set: {
+            address: `retired:${duplicateId.toString()}:${randomUUID()}`,
+            credentials: {},
+            enabled: false,
+            disabledAt: new Date(),
+            disableReason: PushSubscriptionDisableReason.Replaced,
+          },
+          $unset: { activeSlot: '' },
+        },
+      )
+      .exec();
+  }
+
+  private async retireDeviceDuplicates(
+    user: Types.ObjectId,
+    provider: PushProviderKind,
+    deviceId: string,
+    canonicalId: Types.ObjectId,
+  ): Promise<void> {
+    await this.subscriptionModel
+      .updateMany(
+        {
+          user,
+          provider,
+          deviceId,
+          enabled: true,
+          _id: { $ne: canonicalId },
+        },
+        {
+          $set: {
+            enabled: false,
+            disabledAt: new Date(),
+            disableReason: PushSubscriptionDisableReason.Replaced,
+          },
+          $unset: { activeSlot: '' },
+        },
+      )
       .exec();
   }
 

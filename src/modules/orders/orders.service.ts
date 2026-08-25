@@ -1304,7 +1304,7 @@ export class OrdersService {
   }
 
   private orderAccessIsActive(order: OrderDocument): boolean {
-    const expiresAt = new Date(order.accessSecretExpiresAt).getTime();
+    const expiresAt = new Date(order.accessSecretExpiresAt || 0).getTime();
     return Number.isFinite(expiresAt) && expiresAt > Date.now();
   }
 
@@ -1315,13 +1315,15 @@ export class OrdersService {
     if (!this.settings) return attribution;
     let enabled = false;
     try {
-      enabled = (await this.settings.getPublic()).featureFlags.referrals === true;
+      enabled =
+        (await this.settings.getPublic()).featureFlags.referrals === true;
     } catch {
       // La compra continúa, pero las comisiones fallan cerradas.
     }
     if (enabled) return attribution;
-    const { referralCode: _, referralClickId: __, ...withoutReferral } =
-      attribution;
+    const withoutReferral = { ...attribution };
+    delete withoutReferral.referralCode;
+    delete withoutReferral.referralClickId;
     return withoutReferral;
   }
 

@@ -66,6 +66,10 @@ export class ReferralClick {
   @Prop({ type: Object, default: {} })
   metadata: Record<string, unknown>;
 
+  /** Retención técnica del dato de navegación; no afecta la comisión contable. */
+  @Prop()
+  expiresAt?: Date;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -78,3 +82,4 @@ ReferralClickSchema.index({ code: 1, visitorId: 1, createdAt: -1 });
 ReferralClickSchema.index({ campaignId: 1, createdAt: -1 });
 ReferralClickSchema.index({ attributedOrderId: 1 });
 ReferralClickSchema.index({ utmCampaign: 1, createdAt: -1 });
+ReferralClickSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

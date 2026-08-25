@@ -450,12 +450,16 @@ export class DrawsService {
 
   async findPublicByCampaign(campaignIdOrSlug: string) {
     const campaign = Types.ObjectId.isValid(campaignIdOrSlug)
-      ? await this.campaignModel.findById(campaignIdOrSlug).lean()
-      : await this.campaignModel.findOne({ slug: campaignIdOrSlug }).lean();
+      ? await this.campaignModel.findById(campaignIdOrSlug).lean().exec()
+      : await this.campaignModel
+          .findOne({ slug: campaignIdOrSlug })
+          .lean()
+          .exec();
     if (!campaign) throw new NotFoundException('Campaña no encontrada');
     const result = await this.resultModel
       .findOne({ campaign: campaign._id, status: DrawResultStatus.Published })
-      .lean();
+      .lean()
+      .exec();
     if (!result) return null;
     return this.publicView({
       ...(result as any),

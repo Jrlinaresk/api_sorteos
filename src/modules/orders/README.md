@@ -44,6 +44,9 @@ Configuración:
   defecto `20`.
 - `ORDER_ACCESS_REQUEST_COOLDOWN_SECONDS`: cooldown persistente entre 30 y 3600
   segundos; valor por defecto `60`.
+- `ORDER_ACCESS_TOKEN_HOURS`: validez del token opaco rotado, entre 1 y 168
+  horas; valor por defecto `24`. Un pedido vinculado a una cuenta deja de
+  aceptar ese bearer alternativo y exige el JWT del propietario.
 
 Nunca se registran códigos, hashes ni datos personales. `codeHash`,
 `identityHash`, `orderIds` y la marca de truncamiento están excluidos de las

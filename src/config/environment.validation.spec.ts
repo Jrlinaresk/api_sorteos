@@ -224,6 +224,39 @@ describe('validateEnvironment', () => {
     );
   });
 
+  it('acota la duración de credenciales públicas temporales', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        PRIZE_ACCESS_TOKEN_HOURS: '73',
+      }),
+    ).toThrow('PRIZE_ACCESS_TOKEN_HOURS');
+    expect(
+      validateEnvironment({
+        NODE_ENV: 'test',
+        PRIZE_ACCESS_TOKEN_HOURS: '12',
+      }),
+    ).toEqual({ NODE_ENV: 'test', PRIZE_ACCESS_TOKEN_HOURS: '12' });
+  });
+
+  it('acota la retención de clicks de referido', () => {
+    expect(() =>
+      validateEnvironment({
+        NODE_ENV: 'test',
+        REFERRAL_CLICK_RETENTION_DAYS: '731',
+      }),
+    ).toThrow('REFERRAL_CLICK_RETENTION_DAYS');
+    expect(
+      validateEnvironment({
+        NODE_ENV: 'test',
+        REFERRAL_CLICK_RETENTION_DAYS: '180',
+      }),
+    ).toEqual({
+      NODE_ENV: 'test',
+      REFERRAL_CLICK_RETENTION_DAYS: '180',
+    });
+  });
+
   it('rechaza MongoDB standalone porque no soporta las transacciones requeridas', () => {
     const environment = productionEnvironment();
     environment.MONGODB_URI = 'mongodb://mongo:27017/api_sorteos';

@@ -77,4 +77,37 @@ describe('NotificationsService ownership', () => {
       }),
     ).rejects.toBeInstanceOf(ConflictException);
   });
+
+  it('unregisters only one device without disabling the global push preference', async () => {
+    const userId = new Types.ObjectId();
+    const subscriptionId = new Types.ObjectId();
+    const subscriptionModel = {
+      updateOne: jest.fn().mockReturnValue({
+        exec: jest
+          .fn()
+          .mockResolvedValue({ matchedCount: 1, modifiedCount: 1 }),
+      }),
+    };
+    const preferenceModel = { findOneAndUpdate: jest.fn() };
+    const service = new NotificationsService(
+      {} as never,
+      subscriptionModel as never,
+      preferenceModel as never,
+    );
+
+    await expect(
+      service.unregisterSubscription(
+        subscriptionId.toString(),
+        userId.toString(),
+      ),
+    ).resolves.toEqual({ disabled: true });
+
+    expect(subscriptionModel.updateOne).toHaveBeenCalledWith(
+      { _id: subscriptionId, user: userId },
+      expect.objectContaining({
+        $set: expect.objectContaining({ enabled: false }),
+      }),
+    );
+    expect(preferenceModel.findOneAndUpdate).not.toHaveBeenCalled();
+  });
 });

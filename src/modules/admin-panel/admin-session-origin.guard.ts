@@ -21,9 +21,7 @@ export class AdminSessionOriginGuard implements CanActivate {
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<Request>();
-    if (
-      request.header(ADMIN_SESSION_HEADER) !== ADMIN_SESSION_HEADER_VALUE
-    ) {
+    if (request.header(ADMIN_SESSION_HEADER) !== ADMIN_SESSION_HEADER_VALUE) {
       throw new ForbiddenException(
         'Cabecera de sesión administrativa inválida',
       );

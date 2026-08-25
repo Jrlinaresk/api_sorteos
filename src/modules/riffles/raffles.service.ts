@@ -886,10 +886,7 @@ export class RafflesService {
           'Una promoción no puede costar más que el precio normal',
         );
       }
-      if (
-        tier.active &&
-        tier.totalPrice < (dto.minimumOrderAmount || 0)
-      ) {
+      if (tier.active && tier.totalPrice < (dto.minimumOrderAmount || 0)) {
         throw new BadRequestException(
           'Una promoción activa no puede quedar por debajo de la compra mínima',
         );
@@ -1152,10 +1149,7 @@ export class RafflesService {
           'Una promoción no puede costar más que el precio normal',
         );
       }
-      if (
-        tier.active &&
-        tier.totalPrice < (campaign.minimumOrderAmount || 0)
-      ) {
+      if (tier.active && tier.totalPrice < (campaign.minimumOrderAmount || 0)) {
         throw new BadRequestException(
           'Una promoción activa no puede quedar por debajo de la compra mínima',
         );

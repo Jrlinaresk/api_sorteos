@@ -7,6 +7,9 @@
 - `GET /referrals/me/**` exige JWT y toma siempre el beneficiario de `CurrentUser`.
 - `/admin/referrals/**` exige rol `operator` o `admin`; cambiar estados de comisiones exige `admin`.
 - Los presenters omiten metadata y datos de tracking sensibles; la vista de usuario también omite comprador, base y total de la orden.
+- Cada click nuevo recibe `expiresAt`; Mongo lo elimina mediante TTL después de
+  `REFERRAL_CLICK_RETENTION_DAYS` (180 por defecto, máximo 730). La comisión
+  conserva su snapshot financiero aunque el dato de navegación caduque.
 
 ## Hook de atribución de órdenes
 

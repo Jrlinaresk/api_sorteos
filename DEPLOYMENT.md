@@ -114,6 +114,12 @@ HSTS en esta capa HTTP; hágalo donde termina TLS. El proxy admite cuerpos de
 hasta 260 MiB, protege especialmente registro/login/refresh/recuperación y
 mantiene timeouts acotados.
 
+La imagen del proxy está fijada a Nginx 1.30.4 por digest. No elimine el digest
+al actualizar: primero consulte los avisos oficiales, seleccione una versión no
+vulnerable, actualice versión y digest juntos y reconstruya con `--pull`. La
+ruta `/api/v1/media/` desactiva el buffering en los dos proxies para transmitir
+vídeos y respuestas `Range` sin llenar el tmpfs.
+
 Al activar este perfil, el health final se consulta por `HTTP_PORT` y atraviesa
 nginx. Las ejecuciones posteriores detectan el contenedor existente y conservan
 el perfil aunque se omita `--with-nginx`; tampoco se usa `--remove-orphans`.
@@ -149,6 +155,11 @@ La aplicación se niega a iniciar si falta alguna garantía esencial:
   certificado existe dentro del contenedor.
 - El webhook tiene `EFI_WEBHOOK_REQUIRE_MTLS=true`. Si además se configura
   `EFI_WEBHOOK_HMAC`, debe tener al menos 24 caracteres y llegar desde el proxy.
+- SMTP exige transporte cifrado y validación de certificados. Los endpoints EFI
+  de producción no aceptan sandbox ni una base URL alternativa.
+- Los accesos opacos de pedido, pago y juego tienen vencimiento servidor
+  configurable; los clicks de referido reciben un TTL físico de 180 días por
+  defecto.
 
 Web Push es opcional y se selecciona explícitamente con
 `NOTIFICATION_PUSH_PROVIDER=noop|webpush`. `noop` nunca envía ni se activa por
@@ -190,6 +201,14 @@ credenciales.
 Los eventos de auditoría administrativa conservan 365 días por defecto. Ajuste
 `AUDIT_RETENTION_DAYS` entre 1 y 3650 según sus obligaciones legales; Mongo
 aplica el vencimiento TTL sin que el proceso tenga que borrar lotes manualmente.
+Los clicks de navegación de referidos conservan 180 días por defecto; ajuste
+`REFERRAL_CLICK_RETENTION_DAYS` entre 1 y 730 conforme a la base legal aplicable.
+
+Mongo contiene CPF, correo, teléfono, dirección y snapshots necesarios para la
+operación, conciliación y entrega. El código evita exponerlos públicamente, pero
+no sustituye el cifrado del soporte: producción debe cifrar volúmenes, disco del
+host, snapshots y staging de restauración. Defina además una política aprobada
+de retención/anonymización para cuentas, pedidos, payloads PSP y ganadores.
 
 Los correos transaccionales de compras invitadas se guardan primero en
 `transactional_email_outbox`. Si SMTP falla, el evento vuelve a `pending` y el
@@ -296,6 +315,22 @@ docker compose --env-file .env.server -f docker-compose.prod.yml \
 
 Retire el staging descifrado al terminar conforme a la política del soporte; en
 SSD o almacenamiento virtual el borrado simple no equivale a borrado seguro.
+
+## Aceptación externa antes de abrir ventas
+
+El repositorio puede probar contratos y contenedores, pero el despliegue no se
+considera aceptado hasta documentar estas pruebas con el entorno real:
+
+- creación, pago, webhook mTLS, conciliación y devolución Pix Efí;
+- entrega SMTP con TLS y registros SPF, DKIM y DMARC;
+- Web Push/VAPID en Chrome, Firefox y Safari, incluida rotación de suscripción;
+- TLS/HSTS del edge y sobrescritura de las cabeceras mTLS y de IP;
+- `TRUSTED_PROXY_CIDR` exacto observado desde los contenedores;
+- cifrado de volúmenes/snapshots y simulacro de restauración off-site.
+
+No declare “100 % producción” basándose únicamente en `pnpm verify` o en el
+health check: esas integraciones requieren credenciales, dinero y servicios que
+no existen dentro del repositorio.
 
 ## Rotación de secretos
 
