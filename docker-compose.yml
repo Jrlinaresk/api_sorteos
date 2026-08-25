@@ -209,6 +209,37 @@ services:
       - efi-secrets:/target
     network_mode: none
 
+  mailpit:
+    image: ghcr.io/axllent/mailpit:v1.30.6@sha256:7f33095f80e901f6ad08028f06ca284aa58fe84942be5496008d041d3b9f4d4d
+    restart: unless-stopped
+    logging: *default-logging
+    user: '65532:65532'
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - '127.0.0.1:8025:8025'
+    expose:
+      - '1025'
+    environment:
+      MP_DATABASE: /tmp/mailpit.db
+      MP_MAX_MESSAGES: '500'
+      MP_DISABLE_VERSION_CHECK: 'true'
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,uid=65532,gid=65532,mode=1770
+    mem_limit: 192m
+    cpus: 0.50
+    networks:
+      - sorteos-network
+    healthcheck:
+      test: ['CMD', '/mailpit', 'readyz']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   api-sorteos:
     build:
       context: .
@@ -228,8 +259,8 @@ services:
       HOST: '0.0.0.0'
       PORT: '8080'
       TRUST_PROXY: '${TRUST_PROXY:-false}'
-      CORS_ORIGINS: '${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173,http://localhost:5174}'
-      ADMIN_PANEL_ORIGINS: '${ADMIN_PANEL_ORIGINS:-}'
+      CORS_ORIGINS: '${CORS_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174}'
+      ADMIN_PANEL_ORIGINS: '${ADMIN_PANEL_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080,http://127.0.0.1:5173,http://localhost:5173}'
       SWAGGER_ENABLED: '${SWAGGER_ENABLED:-true}'
       ADMIN_PANEL_ENABLED: '${ADMIN_PANEL_ENABLED:-true}'
       DB_HOST: 'mongodb'
@@ -326,6 +357,8 @@ services:
         condition: service_completed_successfully
       efi-cert-init:
         condition: service_completed_successfully
+      mailpit:
+        condition: service_healthy
     volumes:
       - media-data:/app/uploads/media
       - efi-secrets:/run/secrets/efi:ro

@@ -106,8 +106,16 @@ if [[ "${development_mode}" == true ]]; then
   set_value NODE_ENV development
   set_value API_PORT 8080
   set_value TRUST_PROXY false
-  set_value CORS_ORIGINS http://localhost:3000
+  set_value CORS_ORIGINS http://127.0.0.1:8080,http://localhost:8080,http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174
+  set_value ADMIN_PANEL_ORIGINS http://127.0.0.1:8080,http://localhost:8080,http://127.0.0.1:5173,http://localhost:5173
   set_value SWAGGER_ENABLED true
+  set_value SMTP_HOST mailpit
+  set_value SMTP_PORT 1025
+  set_value SMTP_USER ''
+  set_value SMTP_PASS ''
+  set_value SMTP_FROM 'Sorteos Local <no-reply@sorteos.local>'
+  set_value SMTP_SECURE false
+  set_value SMTP_REQUIRE_TLS false
   set_value PAYMENTS_PROVIDER mock
   set_value PAYMENTS_ALLOW_MOCK true
   set_value EFI_PIX_ENV sandbox
@@ -127,7 +135,7 @@ install -d -m 700 "${script_dir}/runtime/efi"
 
 printf 'Entorno creado en %s con permisos 0600.\n' "${output_path}"
 if [[ "${development_mode}" == true ]]; then
-  printf '%s\n' 'Entorno de desarrollo listo para Docker Compose; los pagos usan el proveedor mock.'
+  printf '%s\n' 'Entorno de desarrollo listo para Docker Compose; Mailpit captura el correo local y los pagos usan el proveedor mock.'
 else
   printf '%s\n' 'Complete CORS_ORIGINS, SMTP_*, EFI_PIX_*, configure mTLS de Efí en el proxy TLS y copie el certificado en runtime/efi antes de desplegar.'
 fi

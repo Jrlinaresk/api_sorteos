@@ -22,7 +22,9 @@ levanta Mongo como replica set de un nodo:
 
 La API queda en `http://127.0.0.1:8080/api/v1`, el panel administrativo en
 `http://127.0.0.1:8080/admin`, el health check en `/api/v1/health` y Swagger en
-`/api/docs`. Para seguir los logs:
+`/api/docs`. Mailpit captura los correos de desarrollo en
+`http://127.0.0.1:8025`; desde esa bandeja puede copiar el código necesario para
+confirmar un registro de cliente. Para seguir los logs:
 
 ```bash
 ./deploy-dev.sh --follow
