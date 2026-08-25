@@ -76,7 +76,9 @@ sigue en guards y roles de Nest:
 - **Resumen:** ventas por periodo, ingreso neto, campañas activas, usuarios,
   excepciones operativas, ranking y pedidos recientes.
 - **Campañas:** búsqueda, filtros, paginación, alta/edición, máquina de estados,
-  prórroga de vencidas, eliminación segura y configuración de venta/sorteo.
+  prórroga de vencidas, eliminación segura, configuración de venta/sorteo y
+  galería ordenable de imágenes o vídeos con selección de portada desde la
+  biblioteca de medios.
 - **Pedidos:** búsqueda por comprador o identificador, estado, campaña, detalle
   administrativo, cuotas y descarga CSV de participantes.
 - **Pagos:** listado y detalle Pix, historial, conciliación, reintento del

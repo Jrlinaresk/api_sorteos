@@ -31,10 +31,23 @@ teléfono, correo y campaña sin persistir esos datos dentro del challenge. Una
 solicitud repetida durante el cooldown reutiliza el mismo challenge y no vuelve
 a enviar correo.
 
-La consulta lee como máximo `ORDER_ACCESS_MAX_ORDERS + 1`. Si prueba que existen
-más pedidos que el máximo, `confirm` consume el challenge sin rotar un
-subconjunto y devuelve `ORDER_ACCESS_CAMPAIGN_REQUIRED` con `meta.hasMore=true`;
-el cliente debe repetir la solicitud indicando `campaignId`.
+La solicitud global lee como máximo `ORDER_ACCESS_MAX_ORDERS + 1`. Si prueba que
+existen más pedidos que el máximo, `confirm` consume el challenge sin rotar un
+subconjunto y devuelve `ORDER_ACCESS_CAMPAIGN_REQUIRED` con `meta.hasMore=true`.
+Solo después de validar correctamente el código, la respuesta incluye en
+`meta.campaigns` las campañas realmente asociadas a esa identidad, incluidas
+campañas cerradas o canceladas. El cliente debe pedir otro código indicando uno
+de esos `campaignId`; no necesita ni debe consultar el catálogo público para
+descubrirlos.
+
+Una recuperación limitada a una campaña admite hasta el máximo absoluto de 50
+pedidos, independientemente del límite global configurable. Si esa misma
+campaña supera 50, el challenge se consume sin rotar un subconjunto y se
+devuelve `ORDER_ACCESS_SUPPORT_REQUIRED`; el cliente debe mostrar el canal de
+soporte en vez de repetir un selector que nunca podría completar la operación.
+Los identificadores de campañas verificados se almacenan con `select: false`,
+igual que el código y los IDs de pedido, para que ninguna consulta ordinaria los
+exponga.
 
 Configuración:
 
